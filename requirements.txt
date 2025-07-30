@@ -1,0 +1,13 @@
+numpy
+matplotlib
+scikit-learn
+pandas
+sentence-transformers
+patsy
+scipy
+wordcloud
+statsmodels
+notebook
+umap-learn
+plotly
+spacy

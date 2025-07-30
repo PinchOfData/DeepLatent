@@ -1,0 +1,14 @@
+venv/*
+ckpt/*
+src/__pycache__/*
+data/legislators-current.csv
+data/legislators-historical.csv
+data/us_congress_speeches_1994_2024.csv
+data/us_congress_stopwords.txt
+data/us_congress_speeches_sample.csv
+data/us_politicians_tweets.csv
+notebooks/.ipynb_checkpoints
+.DS_Store
+.idea
+*.pkl
+scripts/*
