@@ -4,8 +4,9 @@
 
 The package currently supports:
 
+* **Generic latent factor models** 
 * **Topic models:** The latent variables are a mixture of topics within documents.
-* **Ideal point models**: The latent variables are ideological dimensions.
+* **Ideal point models**: The latent variables are interpreted as ideological dimensions.
 
 ---
 
@@ -27,6 +28,7 @@ The package currently supports:
 
   * Document embeddings (for texts, images, audio-visual data)
   * Word frequencies (BoW)
+  * Raw images
   * Discrete choice data 
   * Voting records
 

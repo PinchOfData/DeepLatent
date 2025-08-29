@@ -8,7 +8,9 @@ data/us_congress_stopwords.txt
 data/us_congress_speeches_sample.csv
 data/us_politicians_tweets.csv
 notebooks/.ipynb_checkpoints
+notebooks/data/*
 .DS_Store
 .idea
 *.pkl
 scripts/*
+old/*

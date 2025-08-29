@@ -95,17 +95,21 @@ def generate_documents(
             M_prevalence_covariates[:, i + 1] = np.random.randint(2, size=num_docs)
 
         if lambda_ is None:
+            # Generate covariate effects for K dimensions
             lambda_ = np.random.randn(num_covs + 1, num_topics) * 0.5
         if sigma is None:
+            # Covariance matrix for K dimensions
             sigma = np.eye(num_topics)
     else:
         if sigma is None:
+            # Covariance matrix for K dimensions
             sigma = np.eye(num_topics)
         M_prevalence_covariates = None
 
     # Topic proportions
     if doc_topic_prior == 'dirichlet':
         if num_covs > 0:
+            # Generate alpha for K dimensions
             alpha = np.exp(M_prevalence_covariates @ lambda_)
         else:
             alpha = np.full((num_docs, num_topics), 0.1)
@@ -113,17 +117,19 @@ def generate_documents(
         true_doc_topic_matrix = np.array([np.random.dirichlet(a) for a in alpha])
 
     elif doc_topic_prior == 'logistic_normal':
-        if sigma is None:
-            sigma = np.eye(num_topics)
-
         if num_covs > 0:
-            mean = M_prevalence_covariates @ lambda_
+            # Generate mean for K dimensions
+            mean_k = M_prevalence_covariates @ lambda_
         else:
-            mean = np.zeros((num_docs, num_topics))
+            mean_k = np.zeros((num_docs, num_topics))
 
-        true_doc_topic_matrix = np.array([
-            np.exp(np.random.multivariate_normal(m, sigma)) for m in mean
+        # Sample from K dimensional multivariate normal
+        z_samples = np.array([
+            np.random.multivariate_normal(m, sigma) for m in mean_k
         ])
+        
+        # Apply softmax to get simplex
+        true_doc_topic_matrix = np.exp(z_samples)
         true_doc_topic_matrix /= true_doc_topic_matrix.sum(axis=1, keepdims=True)
 
     # Topic-word matrices per language
@@ -162,7 +168,7 @@ def generate_documents(
             probs = 1 / (1 + np.exp(-logits))
             labels = np.random.binomial(1, probs)
         elif label_type == "regression":
-            labels = logits + np.random.normal(0, 0.5, size=logits.shape[0])
+            labels = logits + np.random.normal(0, 0.05, size=logits.shape[0])
         else:
             raise ValueError(f"Unsupported label_type: {label_type}")
 

@@ -80,6 +80,19 @@ class Corpus(Dataset):
                         }
                     self.processed_modalities[modality_name][view_name]["type"] = "discrete_choice"
 
+                elif view_type == "image":
+                    # Store paths and transform function for lazy loading
+                    image_paths = df[view_column].tolist()
+                    transform_fn = view_config.get("transform_fn", None)
+                    if transform_fn is None:
+                        raise ValueError("Image view type requires a 'transform_fn' parameter")
+                    
+                    self.processed_modalities[modality_name][view_name] = {
+                        "image_paths": image_paths,
+                        "transform_fn": transform_fn,
+                        "type": "image"
+                    }
+
                 else:
                     raise ValueError(f"Unsupported view type: {view_type}")
 
@@ -140,6 +153,23 @@ class Corpus(Dataset):
                         col: torch.FloatTensor(info[col]["matrix"][i])
                         for col in info if col != "type"
                     }
+                elif view_type == "image":
+                    # Lazy loading: transform single image on demand
+                    image_path = info["image_paths"][i]
+                    transform_fn = info["transform_fn"]
+                    
+                    try:
+                        # Transform function should handle single image path -> tensor
+                        tensor = transform_fn([image_path])  # Pass as list for consistency
+                        if isinstance(tensor, list):
+                            tensor = tensor[0]  # Extract single tensor
+                        elif isinstance(tensor, torch.Tensor) and tensor.dim() == 4:
+                            tensor = tensor[0]  # Remove batch dimension if present
+                        d["modalities"][modality_name][view_name] = tensor
+                    except Exception as e:
+                        print(f"Error loading image {image_path}: {e}")
+                        # Fallback: create zero tensor with reasonable default shape
+                        d["modalities"][modality_name][view_name] = torch.zeros(3, 224, 224)
 
         if self.prevalence:
             d["M_prevalence_covariates"] = self.M_prevalence_covariates[i]

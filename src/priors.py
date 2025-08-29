@@ -2,419 +2,481 @@
 # -*- encoding: utf-8 -*-
 
 import torch
+import torch.nn as nn
 import numpy as np
 import pandas as pd
-from sklearn import linear_model
 from torch.distributions.multivariate_normal import MultivariateNormal
 from torch.distributions.dirichlet import Dirichlet
-from utils import compute_dirichlet_likelihood
-from sklearn.linear_model import LinearRegression,RidgeCV,MultiTaskLassoCV,MultiTaskElasticNetCV
 
 
-class Prior:
+class Prior(nn.Module):
     """
     Base template class for doc-topic priors.
+    All priors are now learnable neural networks.
     """
 
     def __init__(self):
-        pass
+        super().__init__()
 
-    def update_parameters(self):
-        """
-        M-step after each epoch.
-        """
-        pass
-
-    def sample(self):
+    def sample(self, N, M_prevalence_covariates=None, to_simplex=False, epoch=None, initialization=False):
         """
         Sample from the prior.
         """
-        pass
+        raise NotImplementedError
 
-    def simulate(self):
+    def simulate(self, M_prevalence_covariates, **kwargs):
         """
-        Simulate data to test the prior's updating rule.
+        Simulate data to test the prior.
         """
-        pass
+        raise NotImplementedError
 
 
 class LogisticNormalPrior(Prior):
     """
-    Logistic Normal prior
+    Learnable logistic Normal prior.
 
-    We draw from a multivariate gaussian and map it to the simplex.
-    Does not induce sparsity, but may account for topic correlations.
-
-    References:
-        - Roberts, M. E., Stewart, B. M., & Airoldi, E. M. (2016). A model of text for experimentation in the social sciences. Journal of the American Statistical Association, 111(515), 988-1003.
+    We learn the mean and full covariance parameters for K dimensions that define a multivariate gaussian,
+    then map samples to the simplex via softmax normalization.
+    Uses Cholesky decomposition for positive definiteness.
     """
 
     def __init__(
         self,
         prevalence_covariate_size,
         n_topics,
-        model_type,
-        prevalence_model_args,
-        device,
     ):
-        self.prevalence_covariates_size = prevalence_covariate_size
+        super().__init__()
+        self.prevalence_covariate_size = prevalence_covariate_size
         self.n_topics = n_topics
-        self.model_type = model_type
-        self.prevalence_model_args = prevalence_model_args
-        self.device = device
-        if prevalence_covariate_size != 0:
-            self.lambda_ = torch.zeros(prevalence_covariate_size, n_topics).to(
-                self.device
-            )
-            self.sigma = torch.diag(torch.Tensor([1.0] * self.n_topics)).to(self.device)
-
-    def update_parameters(self, posterior_mu, M_prevalence_covariates):
-        """
-        M-step after each epoch.
-        """
-        if self.model_type == "MultiTaskElasticNetCV":
-            reg = MultiTaskElasticNetCV(fit_intercept=False, **self.prevalence_model_args)
-        elif self.model_type == "MultiTaskLassoCV":
-            reg = MultiTaskLassoCV(fit_intercept=False, **self.prevalence_model_args)
-        elif self.model_type == "RidgeCV":
-            reg = RidgeCV(fit_intercept=False, **self.prevalence_model_args)
+        self.n_latent = n_topics  # Use full K dimensions
+        
+        if prevalence_covariate_size > 0:
+            # Learnable linear layer for mean prediction (K dimensions)
+            self.mean_net = nn.Linear(prevalence_covariate_size, self.n_latent)
         else:
-            reg = LinearRegression(fit_intercept=False, **self.prevalence_model_args)
+            # Learnable global mean parameters (K dimensions)
+            self.global_mean = nn.Parameter(torch.zeros(self.n_latent))
             
-        reg.fit(M_prevalence_covariates, posterior_mu)
-        lambda_ = reg.coef_
-        self.lambda_ = torch.from_numpy(lambda_.T).to(self.device)
+        # Learnable Cholesky factor for covariance matrix (K x K)
+        # Initialize as identity matrix (flattened lower triangular)
+        self.L_flat = nn.Parameter(torch.eye(self.n_latent)[torch.tril_indices(self.n_latent, self.n_latent)[0], 
+                                                             torch.tril_indices(self.n_latent, self.n_latent)[1]])
 
-        posterior_mu = torch.from_numpy(posterior_mu).to(self.device)
-        M_prevalence_covariates = torch.from_numpy(M_prevalence_covariates).to(
-            self.device
-        )
-        difference_in_means = posterior_mu - torch.matmul(
-            M_prevalence_covariates, self.lambda_.to(torch.float32)
-        )
-        self.sigma = (
-            torch.matmul(difference_in_means.T, difference_in_means)
-            / posterior_mu.shape[0]
-        )
+    @property
+    def sigma(self):
+        """Reconstruct covariance matrix from Cholesky factor (K x K)"""
+        device = self.L_flat.device  # Get device from existing parameter
+        L = torch.zeros(self.n_latent, self.n_latent, device=device)
+        tril_indices = torch.tril_indices(self.n_latent, self.n_latent, device=device)
+        L[tril_indices[0], tril_indices[1]] = self.L_flat
+        
+        # Ensure positive diagonal elements
+        diag_idx = torch.arange(self.n_latent, device=device)
+        L[diag_idx, diag_idx] = torch.exp(L[diag_idx, diag_idx]) + 1e-4
+        
+        return torch.mm(L, L.t())
 
-        self.lambda_ = self.lambda_ - self.lambda_[:, 0][:, None]
-        self.lambda_ = self.lambda_.to(torch.float32)
-
-    def sample(self, N, M_prevalence_covariates, to_simplex=True, epoch=None, initialization=False):
+    def get_parameters(self, M_prevalence_covariates):
         """
-        Sample from the prior.
+        Get mean and covariance for the current batch (K dimensions).
         """
-        if self.prevalence_covariates_size == 0 or initialization:
-            z_true = np.random.randn(N, self.n_topics)
-            z_true = torch.from_numpy(z_true).to(
-                    self.device
-                )
-        else:
-            if torch.is_tensor(M_prevalence_covariates) == False:
-                M_prevalence_covariates = torch.from_numpy(M_prevalence_covariates).to(
-                    self.device
-                )
-            means = torch.matmul(M_prevalence_covariates, self.lambda_)       
-            mvn = MultivariateNormal(loc=means, covariance_matrix=self.sigma)
-            z_true = mvn.sample()  # or mvn.rsample()
-
-        if to_simplex:
-            z_true = torch.softmax(z_true, dim=1)
-        return z_true.float()
-
-    def simulate(self, M_prevalence_covariates, lambda_, sigma, to_simplex=False):
-        """
-        Simulate data to test the prior's updating rule.
-        """
-        means = torch.matmul(M_prevalence_covariates, lambda_)
-        mvn = MultivariateNormal(loc=means, covariance_matrix=sigma)
-        z_sim = mvn.sample()  
-        if to_simplex:
-            z_sim = torch.softmax(z_sim, dim=1)
-        return z_sim.float()
-
-    def get_topic_correlations(self):
-        """
-        Plot correlations between topics for a logistic normal prior.
-        """
-        # Represent as a standard variance-covariance matrix
-        # See https://stackoverflow.com/questions/29432629/plot-correlation-matrix-using-pandas
-        sigma = pd.DataFrame(self.sigma.detach().cpu().numpy())
-        mask = np.zeros_like(sigma, dtype=bool)
-        mask[np.triu_indices_from(mask)] = True
-        sigma[mask] = np.nan
-        p = (
-            sigma.style.background_gradient(cmap="coolwarm", axis=None, vmin=-1, vmax=1)
-            .highlight_null(color="#f1f1f1")  # Color NaNs grey
-            .format(precision=2)
-        )
-        return p
-
-    def get_prior_params(self, M_prevalence_covariates):
-        """
-        Return the mean and log-variance of the metadata-informed prior.
-
-        Returns:
-            mu_p: (N, K) tensor of means
-            logvar_p: (N, K) tensor of log-variances (diagonal of Sigma)
-        """
-        if self.prevalence_covariates_size == 0:
-            # Use zero mean and identity covariance
-            mu_p = torch.zeros((M_prevalence_covariates.shape[0], self.n_topics)).to(self.device)
-            logvar_p = torch.zeros_like(mu_p).to(self.device)
-        else:
+        if self.prevalence_covariate_size > 0:
             if not torch.is_tensor(M_prevalence_covariates):
-                M_prevalence_covariates = torch.from_numpy(M_prevalence_covariates).to(self.device)
-            mu_p = torch.matmul(M_prevalence_covariates, self.lambda_)
-            logvar_p = torch.log(torch.diag(self.sigma)).unsqueeze(0).expand_as(mu_p)  # Broadcast
+                M_prevalence_covariates = torch.from_numpy(M_prevalence_covariates).float()
+            means = self.mean_net(M_prevalence_covariates)
+        else:
+            batch_size = M_prevalence_covariates.shape[0] if M_prevalence_covariates is not None else 1
+            means = self.global_mean.unsqueeze(0).expand(batch_size, -1)
+            
+        return means, self.sigma
 
-        return mu_p.float(), logvar_p.float()
-
-    def to(self, device):
+    def sample(self, N, M_prevalence_covariates=None, to_simplex=True, epoch=None, initialization=False):
         """
-        Move the model to a different device.
+        Sample from the prior and optionally map to simplex via softmax.
         """
-        self.device = device
-        self.lambda_ = self.lambda_.to(device)
-        self.sigma = self.sigma.to(device)
+        means, covariance = self.get_parameters(M_prevalence_covariates)
+        
+        if means.shape[0] != N:
+            # Handle case where we need to sample N times but have different batch size
+            if self.prevalence_covariate_size == 0:
+                means = self.global_mean.unsqueeze(0).expand(N, -1)
+            else:
+                # This should not happen if called correctly
+                raise ValueError(f"Batch size mismatch: got {means.shape[0]}, expected {N}")
+        
+        # Sample from multivariate normal with full covariance (K dimensions)
+        dist = MultivariateNormal(means, covariance.unsqueeze(0).expand(means.shape[0], -1, -1))
+        z_samples = dist.sample()  # Shape: [N, K]
 
+        if to_simplex:
+            # Normalize via softmax to get simplex
+            z_samples = torch.softmax(z_samples, dim=1)  # Shape: [N, K]
+            
+        return z_samples.float()
 
-class LinearModel(torch.nn.Module):
-    """
-    Simple linear model for the priors.
-    """
+    def get_prior_params(self, M_prevalence_covariates, return_full_cov=False):
+        """
+        Return the mean and covariance parameters of the metadata-informed prior.
+        Returns K dimensional parameters.
+        
+        Args:
+            M_prevalence_covariates: Prevalence covariates
+            return_full_cov: If True, return full covariance matrix. If False, return diagonal log-variance.
+        """
+        means, covariance = self.get_parameters(M_prevalence_covariates)
+        
+        if return_full_cov:
+            return means.float(), covariance.float()
+        else:
+            # For backward compatibility, return diagonal log-variance
+            logvar = torch.log(torch.diag(covariance)).unsqueeze(0).expand_as(means)
+            return means.float(), logvar.float()
 
-    def __init__(self, prevalence_covariates_size, n_topics):
-        super(LinearModel, self).__init__()
-        self.linear = torch.nn.Linear(prevalence_covariates_size, n_topics)
-
-    def forward(self, M_prevalence_covariates):
-        linear_preds = self.linear(M_prevalence_covariates)
-        return linear_preds
+    def simulate(self, M_prevalence_covariates, **kwargs):
+        """
+        Simulate data using current parameters.
+        """
+        return self.sample(M_prevalence_covariates.shape[0], M_prevalence_covariates, to_simplex=True)
 
 
 class DirichletPrior(Prior):
     """
-    Dirichlet prior
+    Learnable Dirichlet prior.
 
-    Induces sparsity, but does not account for topic correlations.
-
-    References:
-        - Mimno, D. M., & McCallum, A. (2008, July). Topic models conditioned on arbitrary features with Dirichlet-multinomial regression. In UAI (Vol. 24, pp. 411-418).
-        - Maier, M. (2014). DirichletReg: Dirichlet regression for compositional data in R.
+    We learn all K concentration parameters directly.
     """
 
     def __init__(
         self,
-        update_prior,
-        prevalence_covariates_size,
+        prevalence_covariate_size,
         n_topics,
-        alpha,
-        prevalence_model_args,
-        tol,
-        device,
     ):
-        self.update_prior = update_prior
-        self.prevalence_covariates_size = prevalence_covariates_size
+        super().__init__()
+        self.prevalence_covariate_size = prevalence_covariate_size
         self.n_topics = n_topics
-        self.alpha = alpha
-        if prevalence_model_args == {}:
-            self.prevalence_model_args = {"alphas":[0,0.1,1,10]}
-        else:
-            self.prevalence_model_args = prevalence_model_args
-        self.tol = tol
-        self.device = device
-        self.lambda_ = None
-        if prevalence_covariates_size != 0:
-            self.linear_model = LinearModel(prevalence_covariates_size, n_topics).to(
-                self.device
+        self.n_latent = n_topics  # Use full K dimensions
+        
+        if prevalence_covariate_size > 0:
+            # Learnable network to predict log-concentration parameters (K dimensions)
+            self.concentration_net = nn.Sequential(
+                nn.Linear(prevalence_covariate_size, self.n_latent),
+                nn.Softplus()  # Ensures positive output
             )
-
-    def update_parameters(self, posterior_theta, M_prevalence_covariates):
-        """
-        M-step after each epoch.
-        """
-
-        alphas = self.prevalence_model_args["alphas"]
-
-        # Simple Conditional Means Estimation
-        # (fast educated guess)
-        y = np.log(posterior_theta + 1e-6)
-        reg = linear_model.LinearRegression(fit_intercept=False)
-        self.lambda_ = reg.fit(M_prevalence_covariates, y).coef_.T
-        self.lambda_ = self.lambda_ - self.lambda_[:, 0][:, None]
-
-        # Maximum Likelihood Estimation (MLE)
-        # (pretty slow)
-        self.lambda_ = torch.from_numpy(self.lambda_).float().to(self.device)
-        posterior_theta = torch.from_numpy(posterior_theta).float().to(self.device)
-        M_prevalence_covariates = (
-            torch.from_numpy(M_prevalence_covariates).float().to(self.device)
-        )
-        with torch.no_grad():
-            self.linear_model.linear.weight.copy_(self.lambda_.T)
-
-        best_loss = float("inf")
-
-        for alpha in alphas:
-            optimizer = torch.optim.Adam(
-                self.linear_model.parameters(),
-                weight_decay=alpha,
-            )
-
-            previous_loss = 0
-            while True:
-                optimizer.zero_grad()
-                linear_preds = self.linear_model(M_prevalence_covariates)
-                alphas = torch.exp(linear_preds)
-                loss = -compute_dirichlet_likelihood(alphas, posterior_theta)
-                loss.backward()
-                optimizer.step()
-
-                if torch.abs(loss - previous_loss) < self.tol:
-                    break
-
-                previous_loss = loss
-
-            if loss < best_loss:
-                best_loss = loss
-
-                self.lambda_ = self.linear_model.linear.weight.detach().T
-                self.lambda_ = self.lambda_ - self.lambda_[:, 0][:, None]
-                #self.lambda_ = self.lambda_.cpu().numpy()
-
-    def sample(self, N, M_prevalence_covariates, epoch=10, initialization=True):
-        """
-        Sample from the prior.
-        """
-
-        if self.prevalence_covariates_size == 0 or epoch == 0 or self.update_prior == False or initialization:
-            z_true = np.random.dirichlet(np.ones(self.n_topics) * self.alpha, size=N)
-            z_true = torch.from_numpy(z_true).float()
         else:
-            with torch.no_grad():
-                if torch.is_tensor(M_prevalence_covariates) == False:
-                    M_prevalence_covariates = torch.from_numpy(
-                        M_prevalence_covariates
-                    ).to(self.device)
-                linear_preds = self.linear_model(M_prevalence_covariates)
-                alphas = torch.exp(linear_preds)
-                alphas = torch.exp(torch.matmul(M_prevalence_covariates, self.lambda_))
-                z_true = torch.empty((alphas.shape[0], self.lambda_.shape[1]))
-                for i in range(alphas.shape[0]):
-                    m = Dirichlet(alphas[i])
-                    z_true[i] = m.sample()
-        return z_true
+            # Learnable global concentration parameters (log scale for stability, K dimensions)
+            self.log_concentration = nn.Parameter(torch.zeros(self.n_latent))
 
-    def simulate(self, M_prevalence_covariates, lambda_):
+    def get_concentration(self, M_prevalence_covariates):
         """
-        Simulate data to test the prior's updating rule.
+        Get Dirichlet concentration parameters for the current batch (K dimensions).
         """
-        alphas = torch.exp(torch.matmul(M_prevalence_covariates, lambda_))
-        z_sim = torch.empty((alphas.shape[0], lambda_.shape[1]))
-        for i in range(alphas.shape[0]):
-            m = Dirichlet(alphas[i])
-            z_sim[i] = m.sample()
-        return z_sim
+        if self.prevalence_covariate_size > 0:
+            if not torch.is_tensor(M_prevalence_covariates):
+                M_prevalence_covariates = torch.from_numpy(M_prevalence_covariates).float()
+            concentration = self.concentration_net(M_prevalence_covariates)
+        else:
+            batch_size = M_prevalence_covariates.shape[0] if M_prevalence_covariates is not None else 1
+            concentration = torch.exp(self.log_concentration).unsqueeze(0).expand(batch_size, -1)
+            
+        # Add small epsilon to avoid numerical issues
+        concentration = concentration + 1e-6
+        
+        return concentration
 
-    def to(self, device):
+    def sample(self, N, M_prevalence_covariates=None, epoch=None, initialization=False):
         """
-        Move the model to a different device.
+        Sample from the Dirichlet prior.
         """
-        self.device = device
-        self.linear_model = self.linear_model.to(device)
+        concentration = self.get_concentration(M_prevalence_covariates)
+        
+        if concentration.shape[0] != N:
+            if self.prevalence_covariate_size == 0:
+                concentration = torch.exp(self.log_concentration).unsqueeze(0).expand(N, -1) + 1e-6
+            else:
+                raise ValueError(f"Batch size mismatch: got {concentration.shape[0]}, expected {N}")
+        
+        # Sample from Dirichlet distribution
+        device = concentration.device
+        samples = torch.empty_like(concentration, device=device)
+        for i in range(concentration.shape[0]):
+            dist = Dirichlet(concentration[i])
+            samples[i] = dist.sample()
+            
+        return samples.float()
+
+    def get_prior_params(self, M_prevalence_covariates):
+        """
+        Return parameters for KL divergence computation.
+        For Dirichlet, we return the concentration parameters as mean and logvar.
+        """
+        concentration = self.get_concentration(M_prevalence_covariates)
+        # Return as mean and logvar for consistency
+        # Dirichlet mean = alpha / sum(alpha)
+        alpha_sum = concentration.sum(dim=1, keepdim=True)
+        mean = concentration / alpha_sum
+        
+        # Dirichlet variance = alpha*(sum(alpha)-alpha) / (sum(alpha)^2 * (sum(alpha)+1))
+        var = concentration * (alpha_sum - concentration) / (alpha_sum**2 * (alpha_sum + 1))
+        logvar = torch.log(var + 1e-8)
+        
+        return mean.float(), logvar.float()
+
+    def simulate(self, M_prevalence_covariates, **kwargs):
+        """
+        Simulate data using current parameters.
+        """
+        return self.sample(M_prevalence_covariates.shape[0], M_prevalence_covariates)
+
 
 class GaussianPrior(Prior):
     """
-    Gaussian prior over latent variables (e.g., for ideal point modeling).
+    Learnable Gaussian prior over latent variables.
 
-    If prevalence covariates are provided, the mean is learned as a linear function.
-    The covariance is diagonal (shared across all documents).
-
-    This is similar to LogisticNormalPrior but without simplex projection.
+    We learn the mean and full covariance matrix via neural networks.
+    Uses Cholesky decomposition for positive definiteness.
     """
 
-    def __init__(self, prevalence_covariate_size, n_dims, model_type, prevalence_model_args, device):
+    def __init__(self, prevalence_covariate_size, n_dims):
+        super().__init__()
         self.prevalence_covariate_size = prevalence_covariate_size
         self.n_dims = n_dims
-        self.model_type = model_type
-        self.prevalence_model_args = prevalence_model_args
-        self.device = device
 
-        if self.prevalence_covariate_size != 0:
-            self.lambda_ = torch.zeros(prevalence_covariate_size, n_dims).to(self.device)
+        if self.prevalence_covariate_size > 0:
+            # Learnable network for mean prediction
+            self.mean_net = nn.Linear(prevalence_covariate_size, n_dims)
         else:
-            self.lambda_ = None
+            # Learnable global mean
+            self.global_mean = nn.Parameter(torch.zeros(n_dims))
 
-        self.logvar = torch.zeros(n_dims).to(self.device)
+        # Learnable Cholesky factor for covariance matrix
+        # Initialize as identity matrix (flattened lower triangular)
+        self.L_flat = nn.Parameter(torch.eye(n_dims)[torch.tril_indices(n_dims, n_dims)[0], 
+                                                      torch.tril_indices(n_dims, n_dims)[1]])
 
-    def update_parameters(self, posterior_mu, M_prevalence_covariates):
+    @property
+    def sigma(self):
+        """Reconstruct covariance matrix from Cholesky factor"""
+        device = self.L_flat.device  # Get device from existing parameter
+        L = torch.zeros(self.n_dims, self.n_dims, device=device)
+        tril_indices = torch.tril_indices(self.n_dims, self.n_dims, device=device)
+        L[tril_indices[0], tril_indices[1]] = self.L_flat
+        
+        # Ensure positive diagonal elements
+        diag_idx = torch.arange(self.n_dims, device=device)
+        L[diag_idx, diag_idx] = torch.exp(L[diag_idx, diag_idx]) + 1e-4
+        
+        return torch.mm(L, L.t())
+
+    def get_parameters(self, M_prevalence_covariates):
         """
-        Fit the prior mean via linear regression, and estimate diagonal covariance.
+        Get mean and covariance for the current batch.
         """
-        if self.prevalence_covariate_size == 0:
-            # Use standard normal: mean = 0, var = 1
-            self.logvar = torch.zeros(self.n_dims).to(self.device)
-            return
+        if self.prevalence_covariate_size > 0:
+            if not torch.is_tensor(M_prevalence_covariates):
+                M_prevalence_covariates = torch.from_numpy(M_prevalence_covariates).float()
+            means = self.mean_net(M_prevalence_covariates)
+        else:
+            batch_size = M_prevalence_covariates.shape[0] if M_prevalence_covariates is not None else 1
+            means = self.global_mean.unsqueeze(0).expand(batch_size, -1)
 
-        # Fit linear regression to posterior means
-        reg = LinearRegression(fit_intercept=False, **self.prevalence_model_args)
-        reg.fit(M_prevalence_covariates, posterior_mu)
-        lambda_ = reg.coef_
-        self.lambda_ = torch.from_numpy(lambda_.T).float().to(self.device)
-
-        # Compute residuals
-        posterior_mu = torch.from_numpy(posterior_mu).float().to(self.device)
-        M_prevalence_covariates = torch.from_numpy(M_prevalence_covariates).float().to(self.device)
-        mu = M_prevalence_covariates @ self.lambda_
-        residuals = posterior_mu - mu
-
-        # Estimate diagonal variance
-        var = torch.var(residuals, dim=0, unbiased=False) + 1e-5
-        self.logvar = torch.log(var)
+        return means, self.sigma
 
     def sample(self, N, M_prevalence_covariates=None, to_simplex=False, epoch=None, initialization=False):
         """
         Sample latent vectors from the Gaussian prior.
         """
-        if self.prevalence_covariate_size == 0 or initialization:
-            z = torch.randn(N, self.n_dims).to(self.device)
+        means, covariance = self.get_parameters(M_prevalence_covariates)
+        
+        if means.shape[0] != N:
+            if self.prevalence_covariate_size == 0:
+                means = self.global_mean.unsqueeze(0).expand(N, -1)
+            else:
+                raise ValueError(f"Batch size mismatch: got {means.shape[0]}, expected {N}")
+
+        # Sample from multivariate normal
+        dist = MultivariateNormal(means, covariance.unsqueeze(0).expand(means.shape[0], -1, -1))
+        z_samples = dist.sample()
+
+        return z_samples.float()
+
+    def get_prior_params(self, M_prevalence_covariates, return_full_cov=False):
+        """
+        Return the mean and covariance parameters for each document.
+        
+        Args:
+            M_prevalence_covariates: Prevalence covariates
+            return_full_cov: If True, return full covariance matrix. If False, return diagonal log-variance.
+        """
+        means, covariance = self.get_parameters(M_prevalence_covariates)
+        
+        if return_full_cov:
+            return means.float(), covariance.float()
         else:
-            if not torch.is_tensor(M_prevalence_covariates):
-                M_prevalence_covariates = torch.from_numpy(M_prevalence_covariates).float().to(self.device)
+            # For backward compatibility, return diagonal log-variance
+            logvar = torch.log(torch.diag(covariance)).unsqueeze(0).expand_as(means)
+            return means.float(), logvar.float()
 
-            mu = M_prevalence_covariates @ self.lambda_
-            std = torch.exp(0.5 * self.logvar).unsqueeze(0)
-            eps = torch.randn_like(mu)
-            z = mu + eps * std
-
-        return z.float()
-
-    def simulate(self, M_prevalence_covariates, lambda_, logvar):
+    def simulate(self, M_prevalence_covariates, **kwargs):
         """
-        Generate synthetic latent variables from a simulated prior.
+        Generate synthetic latent variables from current parameters.
         """
-        mu = M_prevalence_covariates @ lambda_
-        std = torch.exp(0.5 * logvar).unsqueeze(0)
-        eps = torch.randn_like(mu)
-        return mu + eps * std
+        return self.sample(M_prevalence_covariates.shape[0], M_prevalence_covariates)
+
+
+class FixedGaussianPrior(Prior):
+    """
+    Fixed Gaussian prior (standard normal) - not learnable.
+    """
+
+    def __init__(self, prevalence_covariate_size, n_dims):
+        super().__init__()
+        self.prevalence_covariate_size = prevalence_covariate_size
+        self.n_dims = n_dims
+        # Register a dummy parameter to track device
+        self.register_buffer('_device_tracker', torch.tensor(0.0))
+
+    @property
+    def device(self):
+        return self._device_tracker.device
+
+    def sample(self, N, M_prevalence_covariates=None, to_simplex=False, epoch=None, initialization=False):
+        """
+        Sample from standard normal distribution.
+        """
+        return torch.randn(N, self.n_dims, device=self.device)
+
+    def get_prior_params(self, M_prevalence_covariates, return_full_cov=False):
+        """
+        Return zero mean and unit variance.
+        
+        Args:
+            M_prevalence_covariates: Prevalence covariates
+            return_full_cov: If True, return full covariance matrix. If False, return diagonal log-variance.
+        """
+        batch_size = M_prevalence_covariates.shape[0] if M_prevalence_covariates is not None else 1
+        means = torch.zeros(batch_size, self.n_dims, device=self.device)
+        
+        if return_full_cov:
+            covariance = torch.eye(self.n_dims, device=self.device)
+            return means, covariance
+        else:
+            logvar = torch.zeros_like(means)
+            return means, logvar
+
+    @property
+    def sigma(self):
+        """Return identity covariance matrix"""
+        return torch.eye(self.n_dims, device=self.device)
+
+    def simulate(self, M_prevalence_covariates, **kwargs):
+        return self.sample(M_prevalence_covariates.shape[0], M_prevalence_covariates)
+
+
+class FixedLogisticNormalPrior(Prior):
+    """
+    Fixed Logistic Normal prior - not learnable.
+    Uses fixed zero mean and identity covariance matrix for K dimensions.
+    """
+
+    def __init__(self, prevalence_covariate_size, n_topics):
+        super().__init__()
+        self.prevalence_covariate_size = prevalence_covariate_size
+        self.n_topics = n_topics
+        self.n_latent = n_topics  # Use full K dimensions
+        # Register a dummy parameter to track device
+        self.register_buffer('_device_tracker', torch.tensor(0.0))
+
+    @property
+    def device(self):
+        return self._device_tracker.device
+
+    @property
+    def sigma(self):
+        """Return identity covariance matrix (K x K)"""
+        return torch.eye(self.n_latent, device=self.device)
+
+    def sample(self, N, M_prevalence_covariates=None, to_simplex=True, epoch=None, initialization=False):
+        """
+        Sample from fixed logistic normal distribution and optionally map to simplex.
+        """
+        # Sample from standard multivariate normal (K dimensions)
+        z_samples = torch.randn(N, self.n_latent, device=self.device)
+        
+        if to_simplex:
+            # Normalize via softmax to get simplex
+            z_samples = torch.softmax(z_samples, dim=1)  # Shape: [N, K]
+            
+        return z_samples.float()
+
+    def get_prior_params(self, M_prevalence_covariates, return_full_cov=False):
+        """
+        Return zero mean and unit variance for K dimensions.
+        
+        Args:
+            M_prevalence_covariates: Prevalence covariates
+            return_full_cov: If True, return full covariance matrix. If False, return diagonal log-variance.
+        """
+        batch_size = M_prevalence_covariates.shape[0] if M_prevalence_covariates is not None else 1
+        means = torch.zeros(batch_size, self.n_latent, device=self.device)
+        
+        if return_full_cov:
+            covariance = torch.eye(self.n_latent, device=self.device)
+            return means.float(), covariance.float()
+        else:
+            logvar = torch.zeros_like(means)
+            return means.float(), logvar.float()
+
+    def simulate(self, M_prevalence_covariates, **kwargs):
+        """
+        Simulate data using fixed parameters.
+        """
+        return self.sample(M_prevalence_covariates.shape[0], M_prevalence_covariates, to_simplex=True)
+
+
+class FixedDirichletPrior(Prior):
+    """
+    Fixed Dirichlet prior with specified concentration parameter - not learnable.
+    """
+
+    def __init__(self, prevalence_covariate_size, n_topics, alpha=1.0):
+        super().__init__()
+        self.prevalence_covariate_size = prevalence_covariate_size
+        self.n_topics = n_topics
+        self.alpha = alpha
+        # Register a dummy parameter to track device
+        self.register_buffer('_device_tracker', torch.tensor(0.0))
+
+    @property
+    def device(self):
+        return self._device_tracker.device
+
+    def sample(self, N, M_prevalence_covariates=None, epoch=None, initialization=False):
+        """
+        Sample from fixed Dirichlet distribution.
+        """
+        concentration = torch.full((N, self.n_topics), self.alpha, device=self.device)
+        samples = torch.empty_like(concentration)
+        for i in range(N):
+            dist = Dirichlet(concentration[i])
+            samples[i] = dist.sample()
+        return samples.float()
 
     def get_prior_params(self, M_prevalence_covariates):
         """
-        Return the mean and log-variance for each document.
+        Return fixed Dirichlet parameters.
         """
-        if self.prevalence_covariate_size == 0:
-            mu = torch.zeros((M_prevalence_covariates.shape[0], self.n_dims)).to(self.device)
-        else:
-            if not torch.is_tensor(M_prevalence_covariates):
-                M_prevalence_covariates = torch.from_numpy(M_prevalence_covariates).float().to(self.device)
-            mu = M_prevalence_covariates @ self.lambda_
+        batch_size = M_prevalence_covariates.shape[0] if M_prevalence_covariates is not None else 1
+        concentration = torch.full((batch_size, self.n_topics), self.alpha, device=self.device)
+        
+        # Dirichlet mean = alpha / sum(alpha)
+        alpha_sum = concentration.sum(dim=1, keepdim=True)
+        mean = concentration / alpha_sum
+        
+        # Dirichlet variance = alpha*(sum(alpha)-alpha) / (sum(alpha)^2 * (sum(alpha)+1))
+        var = concentration * (alpha_sum - concentration) / (alpha_sum**2 * (alpha_sum + 1))
+        logvar = torch.log(var + 1e-8)
+        
+        return mean.float(), logvar.float()
 
-        logvar = self.logvar.unsqueeze(0).expand_as(mu)
-        return mu.float(), logvar.float()
-
-    def to(self, device):
-        self.device = device
-        if self.lambda_ is not None:
-            self.lambda_ = self.lambda_.to(device)
-        self.logvar = self.logvar.to(device)
+    def simulate(self, M_prevalence_covariates, **kwargs):
+        return self.sample(M_prevalence_covariates.shape[0], M_prevalence_covariates)
