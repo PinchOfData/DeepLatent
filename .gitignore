@@ -16,3 +16,5 @@ scripts/*
 old/*
 figs/*
 data/*
+src2/*
+tests/*

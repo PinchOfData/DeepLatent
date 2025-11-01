@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
+import math
 from typing import List, Optional, Tuple, Dict, Callable        
 
 class FiLMLayer(nn.Module):
@@ -46,6 +47,7 @@ class ImageEncoder(nn.Module):
     
     def __init__(
         self,
+        input_size: Tuple[int, int],
         input_channels: int = 3,
         latent_dim: int = 20,
         prevalence_covariate_size: int = 0,
@@ -65,6 +67,7 @@ class ImageEncoder(nn.Module):
         self.labels_size = labels_size if include_labels else 0
         self.include_labels = include_labels
         self.dropout = nn.Dropout(p=dropout)
+        self.input_size = input_size
         
         # Total covariate size
         self.covariate_size = self.prevalence_covariate_size + self.labels_size
@@ -124,8 +127,7 @@ class ImageEncoder(nn.Module):
     def _get_conv_output_size(self, input_shape=None):
         """Calculate the size of flattened CNN output."""
         if input_shape is None:
-            # Use a reasonable default - many tests use smaller images
-            input_shape = (self.input_channels, 32, 32)
+            input_shape = (self.input_channels, *self.input_size)
             
         with torch.no_grad():
             dummy_input = torch.zeros(1, *input_shape)
@@ -208,11 +210,11 @@ class ImageDecoder(nn.Module):
     
     def __init__(
         self,
+        output_size: Tuple[int, int],
         latent_dim: int = 20,
         content_covariate_size: int = 0,
         output_channels: int = 3,
         hidden_dims: List[int] = [256, 128, 64, 32],
-        output_size: Tuple[int, int] = (224, 224),
         fc_hidden_dims: List[int] = [512],
         dropout: float = 0.1,
         activation: str = "relu",
@@ -224,6 +226,7 @@ class ImageDecoder(nn.Module):
         self.content_covariate_size = content_covariate_size
         self.output_channels = output_channels
         self.output_size = output_size
+        self.hidden_dims = hidden_dims  # Store for use in calculation method
         self.dropout = nn.Dropout(p=dropout)
         
         # Activation function
@@ -250,8 +253,8 @@ class ImageDecoder(nn.Module):
             prev_dim = hidden_dim
         
         # Calculate the size needed for reshaping into feature maps
-        # Assuming 7x7 feature maps for the first deconv layer
-        self.feature_map_size = 7
+        # Dynamically compute based on output size and number of upsampling layers
+        self.feature_map_size = self._calculate_initial_feature_map_size()
         self.first_conv_dim = hidden_dims[0]
         fc_output_dim = self.first_conv_dim * self.feature_map_size * self.feature_map_size
         
@@ -277,6 +280,45 @@ class ImageDecoder(nn.Module):
         ])
         
         self.deconv_layers = nn.Sequential(*deconv_layers)
+    
+    def _calculate_initial_feature_map_size(self):
+        """
+        Calculate the initial feature map size needed to reach target output size.
+        Works backwards from output size through the deconvolutional layers.
+        """
+        # Start with target output size
+        h, w = self.output_size
+        
+        # Work backwards through each deconv layer
+        # Each layer uses kernel_size=4, stride=2, padding=1
+        # Formula: output_size = (input_size - 1) * stride - 2 * padding + kernel_size
+        # Rearranged: input_size = (output_size + 2 * padding - kernel_size) / stride + 1
+        
+        kernel_size = 4
+        stride = 2
+        padding = 1
+        
+        # Count deconv layers (excluding the final output layer)
+        num_layers = len(self.hidden_dims) - 1 + 1  # hidden_dims[1:] + final layer
+        
+        current_h, current_w = h, w
+        
+        for _ in range(num_layers):
+            # Reverse the deconv operation
+            current_h = (current_h + 2 * padding - kernel_size) // stride + 1
+            current_w = (current_w + 2 * padding - kernel_size) // stride + 1
+        
+        # Ensure minimum size of 1
+        current_h = max(1, current_h)
+        current_w = max(1, current_w)
+        
+        # Use square feature maps (take the larger dimension for better results)
+        feature_map_size = max(current_h, current_w)
+        
+        # Clamp to reasonable bounds
+        feature_map_size = max(1, min(feature_map_size, 32))  # Between 1 and 32
+        
+        return feature_map_size
     
     def forward(
         self, 
@@ -613,7 +655,7 @@ class MultiModalEncoder(nn.Module):
     ):
         super().__init__()
 
-        assert ae_type in {"wae", "vae"}, f"Invalid ae_type: {ae_type}"
+        assert ae_type in {"wae", "vae", "ae"}, f"Invalid ae_type: {ae_type}"
         assert vi_type in {"mean_field", "full_rank", "iaf"}, f"Invalid vi_type: {vi_type}"
         assert moe_type in {"average", "gating", "learned_weights"}, f"Invalid moe_type: {moe_type}"
 
@@ -817,7 +859,7 @@ class MultiModalEncoder(nn.Module):
                     mu_logvar_info = [(mu, logvar, z0, zk, log_det_j)]
                     z_sample = zk
                     
-            else:  # WAE
+            else:  # WAE or plain AE
                 mu_logvar_info = [(z_raw,)]
                 z_sample = z_raw
             
@@ -892,7 +934,7 @@ class MultiModalEncoder(nn.Module):
                     mu_logvar_info.append((mu, logvar, z0, zk, log_det_j))
                     modality_outputs.append(zk)
                     
-            else:  # WAE
+            else:  # WAE or plain AE
                 mu_logvar_info.append((z_raw,))  # Wrap in tuple for consistency
                 modality_outputs.append(z_raw)
 

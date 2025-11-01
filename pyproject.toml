@@ -1,0 +1,93 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "deeplatent"
+version = "0.1.0"
+description = "A unified latent variable modeling framework for analyzing large multimodal and multilingual datasets"
+readme = "README.md"
+license = {file = "LICENSE"}
+authors = [
+    {name = "Germain Gauthier", email = "germain.jean.gauthier@gmail.com"},
+    {name = "Elliott Ash"},
+    {name = "Hugo Subtil"},
+    {name = "Philine Widmer"}
+]
+maintainers = [
+    {name = "Germain Gauthier", email = "germain.jean.gauthier@gmail.com"}
+]
+keywords = [
+    "machine learning",
+    "deep learning", 
+    "latent factor models",
+    "topic models",
+    "ideal point models",
+    "variational inference",
+    "multimodal",
+    "multilingual"
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",  
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Software Development :: Libraries :: Python Modules"
+]
+requires-python = ">=3.8"
+dependencies = [
+    "numpy",
+    "matplotlib", 
+    "scikit-learn",
+    "pandas",
+    "sentence-transformers",
+    "patsy",
+    "scipy",
+    "wordcloud",
+    "statsmodels",
+    "umap-learn",
+    "plotly",
+    "spacy",
+    "tqdm",
+    "torch"
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "pytest-cov",
+    "black",
+    "flake8",
+    "mypy",
+    "jupyter",
+    "notebook"
+]
+
+[project.urls]
+Homepage = "https://github.com/PinchOfData/DeepLatent"  # Replace with your actual repo
+Repository = "https://github.com/PinchOfData/DeepLatent.git"
+Documentation = "https://github.com/PinchOfData/DeepLatent#readme"
+"Bug Tracker" = "https://github.com/PinchOfData/DeepLatent/issues"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["deeplatent*"]
+
+[tool.setuptools.package-dir]
+"" = "."
+
+[tool.black]
+line-length = 88
+target-version = ['py38']
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = "test_*.py"
+python_classes = "Test*"
+python_functions = "test_*"

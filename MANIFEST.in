@@ -1,0 +1,10 @@
+include README.md
+include LICENSE
+include requirements.txt
+recursive-include src *.py
+recursive-include notebooks *.ipynb
+recursive-include examples *.py *.ipynb
+recursive-include figs *.png *.jpg *.jpeg *.gif *.svg
+recursive-exclude * __pycache__
+recursive-exclude * *.py[co]
+recursive-exclude * .DS_Store

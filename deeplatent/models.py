@@ -15,10 +15,10 @@ from wordcloud import WordCloud
 from sklearn.decomposition import PCA
 from sklearn.manifold import TSNE
 from umap import UMAP
-from autoencoders import EncoderMLP, DecoderMLP, MultiModalEncoder, ImageEncoder, ImageDecoder
-from predictors import Predictor
-from priors import DirichletPrior, LogisticNormalPrior, GaussianPrior, FixedDirichletPrior, FixedGaussianPrior, FixedLogisticNormalPrior
-from utils import compute_mmd_loss, top_k_indices_column, parse_modality_view
+from .autoencoders import EncoderMLP, DecoderMLP, MultiModalEncoder, ImageEncoder, ImageDecoder
+from .predictors import Predictor
+from .priors import DirichletPrior, LogisticNormalPrior, GaussianPrior, FixedDirichletPrior, FixedGaussianPrior, FixedLogisticNormalPrior
+from .utils import compute_mmd_loss, top_k_indices_column, parse_modality_view
 from typing import Optional, List
 from collections import OrderedDict
 
@@ -31,7 +31,7 @@ class DeepLatent:
         ae_type="wae",
         vi_type="iaf",   
         latent_factor_prior="logistic_normal",
-        fixed_prior=True,  
+        update_prior=False,  
         alpha=0.1, 
         encoder_args={},
         decoder_args={},
@@ -44,22 +44,22 @@ class DeepLatent:
         flow_hidden_dim=None,  
         flow_use_permutations=True,  
         initialization=False,
-        num_epochs=1000,
+        num_steps=10000,
         batch_size=64,
         num_workers=4,
         optim_args=None,
-        print_every_n_epochs=1,
-        print_every_n_batches=10000,
-        log_every_n_epochs=10000,
+        print_every_n_steps=1000,
+        log_every_n_steps=float("inf"),
         print_topics=False,
-        patience=1,
+        patience=float("inf"),
         patience_tol=1e-3,
         w_prior=1,
         w_pred_loss=1,
         kl_annealing_start=-1,
         kl_annealing_end=-1,
-        free_bits_lambda=None, 
+        free_bits=0.0,
         ckpt_folder="../ckpt",
+        return_best_model=True,
         device=None,
         seed=42,
     ):         
@@ -69,7 +69,7 @@ class DeepLatent:
             train_data: a Corpus object
             test_data: a Corpus object
             n_factors: number of factors (topics / ideal points) to learn.
-            ae_type: type of autoencoder. Either 'wae' (Wasserstein Autoencoder) or 'vae' (Variational Autoencoder).
+            ae_type: type of autoencoder. Either 'wae' (Wasserstein Autoencoder), 'vae' (Variational Autoencoder), or 'ae' (plain Autoencoder without prior).
             latent_factor_prior: prior on the document-topic distribution. Either 'dirichlet', 'logistic_normal', or 'gaussian'.
             alpha: parameter of the Dirichlet prior (legacy, now unused)
             encoder_args: dictionary with the parameters for the encoder.
@@ -82,22 +82,21 @@ class DeepLatent:
             num_flows: number of flows for IAF (if used).
             flow_hidden_dim: hidden dimension for IAF flows (if None, defaults to max(n_factors, 16)).
             flow_use_permutations: whether to use permutations between IAF flows for better expressivity.
-            num_epochs: number of epochs to train the model.
+            num_steps: number of training steps to train the model.
             num_workers: number of workers for the data loaders.
             batch_size: batch size for training.
-            optim_args: dictionary with the parameters for the optimizer. Can include 'main' for main parameters, 'prior' for prior parameters, and other Adam parameters like 'betas'. If None, uses default parameters.
-            print_every_n_epochs: number of epochs between each print.
-            print_every_n_batches: number of batches between each print.
-            log_every_n_epochs: number of epochs between each checkpoint.
-            patience: number of epochs to wait before stopping the training if the validation or training loss does not improve.
+            optim_args: dictionary with the parameters for the optimizer. Can include 'main' for main parameters (encoder+decoders), 'predictor' for predictor parameters, 'prior' for prior parameters, and other Adam parameters like 'betas'. If None, uses default parameters.
+            print_every_n_steps: number of steps between each print.
+            log_every_n_steps: number of steps between each checkpoint.
+            patience: number of steps to wait before stopping the training if the validation or training loss does not improve.
             patience_tol: tolerance for improvement in loss. Loss must improve by at least this amount to reset patience counter.
             w_prior: parameter to control the tightness of the encoder output with the document-topic prior. If set to None, w_prior is chosen automatically.
             w_pred_loss: parameter to control the weight given to the prediction task in the likelihood. Default is 1.
-            kl_annealing_start: epoch at which to start the KL annealing.
-            kl_annealing_end: epoch at which to end the KL annealing.
-            free_bits_lambda: Free bits threshold (e.g., 0.01). If None, no free bits constraint is applied. Free bits prevent posterior collapse by ensuring each latent dimension maintains a minimum KL divergence with the prior.
+            kl_annealing_start: step at which to start the KL annealing.
+            kl_annealing_end: step at which to end the KL annealing.
+            free_bits: minimum KL divergence per latent dimension (prevents posterior collapse). Now properly applied per dimension for all vi_types including full_rank and iaf. Default is 0.0 (disabled).
             ckpt_folder: folder to save the checkpoints.
-            ckpt: checkpoint to load the model from.
+            return_best_model: if True, return the best model based on validation/training loss (default behavior). If False, return the model from the latest step.
             device: device to use for training.
             seed: random seed.
         """  
@@ -116,28 +115,28 @@ class DeepLatent:
         self.n_factors = n_factors
 
         self.ae_type = ae_type
-        assert ae_type in {"wae", "vae"}, f"Invalid ae_type: {ae_type}"
+        assert ae_type in {"wae", "vae", "ae"}, f"Invalid ae_type: {ae_type}"
         self.vi_type = vi_type
         assert self.vi_type in {"mean_field", "full_rank", "iaf"}, f"Invalid vi_type: {vi_type}"
 
         self.latent_factor_prior = latent_factor_prior
-        self.fixed_prior = fixed_prior
+        self.update_prior = update_prior
         self.alpha = alpha
         self.initialization = initialization
-        self.num_epochs = num_epochs
+        self.num_steps = num_steps
         self.batch_size = batch_size
         self.num_workers = num_workers
-        self.print_every_n_epochs = print_every_n_epochs
-        self.print_every_n_batches = print_every_n_batches
-        self.log_every_n_epochs = log_every_n_epochs
+        self.print_every_n_steps = print_every_n_steps
+        self.log_every_n_steps = log_every_n_steps
         self.patience = patience
         self.patience_tol = patience_tol
         self.w_prior = w_prior
         self.w_pred_loss = w_pred_loss
         self.kl_annealing_start = kl_annealing_start
         self.kl_annealing_end = kl_annealing_end
-        self.free_bits_lambda = free_bits_lambda
+        self.free_bits = free_bits
         self.ckpt_folder = ckpt_folder
+        self.return_best_model = return_best_model
         self.print_topics = print_topics
         self.predictor_type = predictor_type
         self.fusion = fusion
@@ -187,10 +186,15 @@ class DeepLatent:
                         final_dim = n_factors * 2
                     else:
                         raise ValueError(f"Invalid vi_type: {self.vi_type}")
-                else:
+                else:  # wae or ae
                     final_dim = n_factors
                 
+                # input_size is now required in config
+                if "input_size" not in config:
+                    raise ValueError(f"input_size must be specified in encoder_args for image modality '{key}'")
+                
                 encoders[key] = ImageEncoder(
+                    input_size=config["input_size"],
                     input_channels=config.get("input_channels", 3),
                     latent_dim=final_dim,
                     prevalence_covariate_size=self.prevalence_covariate_size,
@@ -222,7 +226,7 @@ class DeepLatent:
                         final_dim = n_factors * 2  # base params, flows in encoder
                     else:
                         raise ValueError(f"Invalid vi_type: {self.vi_type}")
-                else:
+                else:  # wae or ae
                     final_dim = n_factors
 
                 extra_in = self.prevalence_covariate_size + (self.labels_size if self.include_labels_in_encoder else 0)
@@ -272,12 +276,16 @@ class DeepLatent:
 
             if view_type == "image":
                 # Image-specific decoder with CNN
+                # output_size is now required in config
+                if "output_size" not in config:
+                    raise ValueError(f"output_size must be specified in decoder_args for image modality '{key}'")
+                
                 self.decoders[key] = ImageDecoder(
+                    output_size=config["output_size"],
                     latent_dim=n_factors,
                     content_covariate_size=self.content_covariate_size,
                     output_channels=config.get("output_channels", 3),
                     hidden_dims=config.get("hidden_dims", [256, 128, 64, 32]),
-                    output_size=config.get("output_size", (224, 224)),
                     fc_hidden_dims=config.get("fc_hidden_dims", [512]),
                     dropout=config.get("dropout", 0.1),
                     activation=config.get("activation", "relu"),
@@ -309,7 +317,10 @@ class DeepLatent:
                 ).to(self.device)
 
         # PRIOR
-        if fixed_prior:
+        if self.ae_type == "ae":
+            # Plain autoencoder - no prior needed
+            self.prior = None
+        elif not update_prior:
             if latent_factor_prior == "dirichlet":
                 self.prior = FixedDirichletPrior(
                     self.prevalence_covariate_size,
@@ -364,8 +375,9 @@ class DeepLatent:
 
         # OPTIMIZER with different parameter groups
         main_params = list(self.encoder.parameters()) + list(self.decoders.parameters())
+        predictor_params = []
         if self.predictor is not None:
-            main_params += list(self.predictor.parameters())
+            predictor_params = list(self.predictor.parameters())
             
         # Set up optimizer configuration
         if optim_args is None:
@@ -375,13 +387,14 @@ class DeepLatent:
             }
         
         # Extract configurations for each parameter group
-        main_config = optim_args.get("main", {"lr": 1e-3, "weight_decay": 0.01})
-        prior_config = optim_args.get("prior", {"lr": 1e-4, "weight_decay": 0.01})
+        main_config = optim_args.get("main")
+        prior_config = optim_args.get("prior")
+        predictor_config = optim_args.get("predictor")
         
         # Extract global optimizer settings (applied to all parameter groups if not overridden)
         global_config = {k: v for k, v in optim_args.items() 
-                        if k not in ["main", "prior"]}
-        default_global = {"betas": (0.9, 0.999), "eps": 1e-8}
+                        if k not in ["main", "prior", "predictor"]}
+        default_global = {"eps": 1e-8}
         
         # Merge global defaults with user-provided global config
         for key, default_val in default_global.items():
@@ -389,28 +402,42 @@ class DeepLatent:
                 global_config[key] = default_val
         
         # Apply global config to parameter groups if not already specified
-        for config in [main_config, prior_config]:
-            for key, default_val in global_config.items():
-                if key not in config:
-                    config[key] = default_val
+        for config in [main_config, prior_config, predictor_config]:
+            if config is not None:
+                for key, default_val in global_config.items():
+                    if key not in config:
+                        config[key] = default_val
         
         # Create parameter groups
-        if not fixed_prior:
-            prior_params = list(self.prior.parameters())
-            param_groups = [
-                {'params': main_params, **main_config},
-                {'params': prior_params, **prior_config}
-            ]
+        param_groups = []
+        
+        # Add main parameters (encoder + decoders)
+        if main_config is not None:
+            param_groups.append({'params': main_params, **main_config})
         else:
-            # For fixed priors, only optimize main parameters
-            param_groups = [
-                {'params': main_params, **main_config}
-            ]
+            # If no main config specified, add main params to first group with global config
+            param_groups.append({'params': main_params, **global_config})
+        
+        # Add predictor parameters if they exist and have separate config
+        if self.predictor is not None and predictor_config is not None:
+            param_groups.append({'params': predictor_params, **predictor_config})
+        elif self.predictor is not None and predictor_config is None:
+            # If no separate predictor config, add predictor params to main group
+            param_groups[0]['params'].extend(predictor_params)
+        
+        # Add prior parameters if they exist and prior is updatable
+        if update_prior and self.prior is not None:
+            prior_params = list(self.prior.parameters())
+            if prior_config is not None:
+                param_groups.append({'params': prior_params, **prior_config})
+            else:
+                # If no prior config specified, use global config
+                param_groups.append({'params': prior_params, **global_config})
         
         # Create optimizer (no need to pass global_config again since it's in param_groups)
         self.optimizer = torch.optim.Adam(param_groups)
 
-        self.epochs = 0
+        self.steps = 0
         self.loss = np.inf
         self.reconstruction_loss = np.inf
         self.divergence_loss = np.inf
@@ -419,7 +446,6 @@ class DeepLatent:
         # Move all model components to the specified device
         self.to(self.device)
 
-        # No more initialization logic - everything is learned end-to-end
         self.train(train_data, test_data)
 
     def train(self, train_data, test_data=None):
@@ -443,219 +469,233 @@ class DeepLatent:
             )
 
         counter = 0
-        self.save_model("{}/best_model.ckpt".format(self.ckpt_folder))
+        if self.return_best_model:
+            self.save_model("{}/best_model.ckpt".format(self.ckpt_folder))
 
-        if self.epochs == 0:
+        if self.steps == 0:
             best_loss = np.inf
-            best_epoch = -1
+            best_step = -1
 
         else:
             best_loss = self.loss
-            best_epoch = self.epochs
+            best_step = self.steps
 
-        for epoch in range(self.epochs, self.num_epochs):
+        # Create infinite iterator for training data
+        train_iter = iter(train_data_loader)
+        
+        for step in range(self.steps, self.num_steps):
+            # Get next batch, restart iterator if needed
+            try:
+                train_data_batch = next(train_iter)
+            except StopIteration:
+                train_iter = iter(train_data_loader)
+                train_data_batch = next(train_iter)
 
-            training_loss = self.epoch(train_data_loader, validation=False)
+            # Training step
+            training_loss = self.step_batch(train_data_batch, train_data, validation=False)
 
+            # Validation step (if test data is available)
             if test_data is not None:
-                validation_loss = self.epoch(test_data_loader, validation=True)
+                # Use first batch of test data for validation
+                test_iter = iter(test_data_loader)
+                test_data_batch = next(test_iter)
+                validation_loss = self.step_batch(test_data_batch, test_data, validation=True)
 
-            if (epoch + 1) % self.log_every_n_epochs == 0:
-                save_name = f'{self.ckpt_folder}/M_K{self.n_factors}_{self.latent_factor_prior}_{self.predictor_type}_{time.strftime("%Y-%m-%d-%H-%M", time.localtime())}_{self.epochs+1}.ckpt'
-                self.save_model(save_name)
-
-            # Stopping rule for the optimization routine
+            # Determine current loss for patience checking
             if test_data is not None:
-                if validation_loss < best_loss - self.patience_tol:
-                    best_loss = validation_loss
-                    best_epoch = self.epochs
-                    self.save_model("{}/best_model.ckpt".format(self.ckpt_folder))
-                    counter = 0
-                else:
-                    counter += 1
+                current_loss = validation_loss
             else:
-                if training_loss < best_loss - self.patience_tol:
-                    best_loss = training_loss
-                    best_epoch = self.epochs
+                current_loss = training_loss
+
+            # Check for improvement
+            if current_loss < best_loss - self.patience_tol:
+                best_loss = current_loss
+                best_step = step
+                counter = 0
+                if self.return_best_model:
                     self.save_model("{}/best_model.ckpt".format(self.ckpt_folder))
-                    counter = 0
+            else:
+                counter += 1
+
+            # Early stopping check
+            if counter >= self.patience:
+                if self.return_best_model:
+                    self.load_model("{}/best_model.ckpt".format(self.ckpt_folder))
+                    print(f"\nEarly stopping at step {step + 1}. Reverting to step {best_step + 1}")
                 else:
-                    counter += 1
-
-            if counter >= self.patience or (epoch + 1) == self.num_epochs:
-
-                ckpt = "{}/best_model.ckpt".format(self.ckpt_folder)
-                self.load_model(ckpt)
-
-                print(
-                    "\nStopping at Epoch {}. Reverting to Epoch {}".format(
-                        epoch + 1, best_epoch + 1
-                    )
-                )
+                    print(f"\nEarly stopping at step {step + 1}. Using model from latest step.")
                 break
 
-            self.epochs += 1
+            # Logging
+            if (step + 1) % self.log_every_n_steps == 0:
+                save_name = f'{self.ckpt_folder}/M_K{self.n_factors}_{self.latent_factor_prior}_{self.predictor_type}_{time.strftime("%Y-%m-%d-%H-%M", time.localtime())}_{step+1}.ckpt'
+                self.save_model(save_name)
 
-    def epoch(self, data_loader, validation=False, num_samples=1):
+            self.steps = step + 1
+
+    def step_batch(self, data_batch, dataset, validation=False, num_samples=1):
         """
-        Train the model for one epoch.
+        Train the model for one batch (single step).
         """
         if validation:
             self.encoder.eval()
             self.decoders.eval()
             if self.labels_size != 0:
                 self.predictor.eval()
-            self.prior.eval()
+            if self.prior is not None:
+                self.prior.eval()
         else:
             self.encoder.train()
             self.decoders.train()
             if self.labels_size != 0:
                 self.predictor.train()
-            self.prior.train()
-
-        epochloss_lst = []
+            if self.prior is not None:
+                self.prior.train()
 
         with torch.no_grad() if validation else torch.enable_grad():
-            for iter, data in enumerate(data_loader):
-                # Initialize loss components
-                prediction_loss = 0.0
+            data = data_batch
+            # Initialize loss components
+            prediction_loss = 0.0
                 
-                if not validation:
-                    self.optimizer.zero_grad()
+            if not validation:
+                self.optimizer.zero_grad()
 
-                # Move all tensors to device
-                for key, value in data.items():
-                    if isinstance(value, torch.Tensor):
-                        data[key] = value.to(self.device)
+            # Move all tensors to device
+            for key, value in data.items():
+                if isinstance(value, torch.Tensor):
+                    data[key] = value.to(self.device)
 
-                prevalence_covariates = data.get("M_prevalence_covariates", None)
-                content_covariates = data.get("M_content_covariates", None)
-                prediction_covariates = data.get("M_prediction", None)
-                target_labels = data.get("M_labels", None)
+            prevalence_covariates = data.get("M_prevalence_covariates", None)
+            content_covariates = data.get("M_content_covariates", None)
+            prediction_covariates = data.get("M_prediction", None)
+            target_labels = data.get("M_labels", None)
 
-                # -------------------- ENCODER INPUT --------------------
-                modality_inputs = {}
-                for key in self.encoder.encoders.keys():
-                    mod, view = parse_modality_view(key)
-                    view_type = data_loader.dataset.processed_modalities[mod][view]["type"]
+            # -------------------- ENCODER INPUT --------------------
+            modality_inputs = {}
+            for key in self.encoder.encoders.keys():
+                mod, view = parse_modality_view(key)
+                view_type = dataset.processed_modalities[mod][view]["type"]
 
-                    if view_type == "image":
-                        # Images are already tensors from corpus lazy loading
-                        x = data["modalities"][mod][view].to(self.device)
-                        modality_inputs[key] = x  # Don't concatenate covariates for images - handled in encoder
-                    elif view_type in {"bow", "embedding"}:
-                        x = data["modalities"][mod][view].to(self.device)
+                if view_type == "image":
+                    # Images are already tensors from corpus lazy loading
+                    x = data["modalities"][mod][view].to(self.device)
+                    modality_inputs[key] = x  # Don't concatenate covariates for images - handled in encoder
+                elif view_type in {"bow", "embedding"}:
+                    x = data["modalities"][mod][view].to(self.device)
+                elif view_type == "vote":
+                    x = data["modalities"][mod][view]["matrix"].to(self.device)
+                elif view_type == "discrete_choice":
+                    # concatenate all questions into one input vector
+                    question_tensors = [
+                        data["modalities"][mod][view][q].to(self.device)
+                        for q in data["modalities"][mod][view]
+                        if q != "type"
+                    ]
+                    x = torch.cat(question_tensors, dim=-1)
+                else:
+                    raise ValueError(f"Unsupported view type: {view_type}")
+
+                # For non-image modalities, concatenate covariates as before
+                if view_type != "image":
+                    if prevalence_covariates is not None:
+                        x = torch.cat([x, prevalence_covariates], dim=1)
+                    if self.include_labels_in_encoder and target_labels is not None:
+                        # ensure labels are 2D; if class ids, one-hot encode to match self.labels_size
+                        lab = target_labels
+                        if lab.dim() == 1:  # class ids -> one-hot
+                            lab = F.one_hot(lab.to(torch.int64), num_classes=self.labels_size).float()
+                        x = torch.cat([x, lab], dim=1)
+
+                    modality_inputs[key] = x
+
+            theta_q, z, mu_logvar = self.encoder(
+                modality_inputs, 
+                prevalence_covariates=prevalence_covariates.to(self.device) if prevalence_covariates is not None else None,
+                labels=target_labels.to(self.device) if target_labels is not None and self.include_labels_in_encoder else None
+            )
+
+            if self.latent_factor_prior in {"dirichlet", "logistic_normal"}:
+                doc_latents = theta_q  # simplex (deterministic for ae_type="ae")
+            else:
+                doc_latents = z      # real-valued (deterministic for ae_type="ae")
+
+            # -------------------- DECODERS --------------------
+            reconstruction_loss = 0.0
+            theta_input = torch.cat([doc_latents, content_covariates], dim=1) if content_covariates is not None else doc_latents
+
+            for key, decoder in self.decoders.items():
+                mod, view = parse_modality_view(key)
+                view_type = dataset.processed_modalities[mod][view]["type"]
+                modality_data = data["modalities"][mod][view]
+
+                if view_type == "image":
+                    # Image reconstruction
+                    target_images = modality_data.to(self.device)
+                    
+                    # For image decoder, we need to pass content covariates separately
+                    reconstructed_images = decoder(doc_latents, content_covariates)
+                    
+                    # Use MSE loss for image reconstruction (could also use perceptual loss)
+                    recon_loss = F.mse_loss(reconstructed_images, target_images)
+                    reconstruction_loss += recon_loss
+                    
+                elif view_type == "discrete_choice":
+                    for question, question_decoder in decoder.items():
+                        if question == "type":
+                            continue
+                        x_out = modality_data[question].to(self.device)
+                        logits = question_decoder(theta_input)
+                        targets = x_out.argmax(dim=-1)
+                        reconstruction_loss += F.cross_entropy(logits, targets)
+
+                else:
+                    target = modality_data.to(self.device) if view_type in {"bow", "embedding"} else modality_data["matrix"].to(self.device)
+                    recon = decoder(theta_input)
+
+                    if view_type == "bow":
+                        log_probs = F.log_softmax(recon, dim=1)
+                        recon_loss = -torch.sum(target * log_probs) / torch.sum(target)
+
+                    elif view_type == "embedding":
+                        recon_loss = F.mse_loss(recon, target)
+
                     elif view_type == "vote":
-                        x = data["modalities"][mod][view]["matrix"].to(self.device)
-                    elif view_type == "discrete_choice":
-                        # concatenate all questions into one input vector
-                        question_tensors = [
-                            data["modalities"][mod][view][q].to(self.device)
-                            for q in data["modalities"][mod][view]
-                            if q != "type"
-                        ]
-                        x = torch.cat(question_tensors, dim=-1)
+                        mask = ~modality_data["mask"].to(self.device)
+                        loss_fn = nn.BCEWithLogitsLoss(reduction='none')
+                        losses = loss_fn(recon, target)
+                        recon_loss = torch.sum(losses * mask) / torch.sum(mask)
+
                     else:
                         raise ValueError(f"Unsupported view type: {view_type}")
 
-                    # For non-image modalities, concatenate covariates as before
-                    if view_type != "image":
-                        if prevalence_covariates is not None:
-                            x = torch.cat([x, prevalence_covariates], dim=1)
-                        if self.include_labels_in_encoder and target_labels is not None:
-                            # ensure labels are 2D; if class ids, one-hot encode to match self.labels_size
-                            lab = target_labels
-                            if lab.dim() == 1:  # class ids -> one-hot
-                                lab = F.one_hot(lab.to(torch.int64), num_classes=self.labels_size).float()
-                            x = torch.cat([x, lab], dim=1)
+                    reconstruction_loss += recon_loss
 
-                        modality_inputs[key] = x
-
-                theta_q, z, mu_logvar = self.encoder(
-                    modality_inputs, 
-                    prevalence_covariates=prevalence_covariates.to(self.device) if prevalence_covariates is not None else None,
-                    labels=target_labels.to(self.device) if target_labels is not None and self.include_labels_in_encoder else None
-                )
-
-                if self.latent_factor_prior in {"dirichlet", "logistic_normal"}:
-                    doc_latents = theta_q  # simplex
-                else:
-                    doc_latents = z      # real-valued
-
-                # -------------------- DECODERS --------------------
-                reconstruction_loss = 0.0
-                theta_input = torch.cat([doc_latents, content_covariates], dim=1) if content_covariates is not None else doc_latents
-
-                for key, decoder in self.decoders.items():
-                    mod, view = parse_modality_view(key)
-                    view_type = data_loader.dataset.processed_modalities[mod][view]["type"]
-                    modality_data = data["modalities"][mod][view]
-
-                    if view_type == "image":
-                        # Image reconstruction
-                        target_images = modality_data.to(self.device)
-                        
-                        # For image decoder, we need to pass content covariates separately
-                        reconstructed_images = decoder(doc_latents, content_covariates)
-                        
-                        # Use MSE loss for image reconstruction (could also use perceptual loss)
-                        recon_loss = F.mse_loss(reconstructed_images, target_images)
-                        reconstruction_loss += recon_loss
-                        
-                    elif view_type == "discrete_choice":
-                        for question, question_decoder in decoder.items():
-                            if question == "type":
-                                continue
-                            x_out = modality_data[question].to(self.device)
-                            logits = question_decoder(theta_input)
-                            targets = x_out.argmax(dim=-1)
-                            reconstruction_loss += F.cross_entropy(logits, targets)
-
-                    else:
-                        target = modality_data.to(self.device) if view_type in {"bow", "embedding"} else modality_data["matrix"].to(self.device)
-                        recon = decoder(theta_input)
-
-                        if view_type == "bow":
-                            log_probs = F.log_softmax(recon, dim=1)
-                            recon_loss = -torch.sum(target * log_probs) / torch.sum(target)
-
-                        elif view_type == "embedding":
-                            recon_loss = F.mse_loss(recon, target)
-
-                        elif view_type == "vote":
-                            mask = ~modality_data["mask"].to(self.device)
-                            loss_fn = nn.BCEWithLogitsLoss(reduction='none')
-                            losses = loss_fn(recon, target)
-                            recon_loss = torch.sum(losses * mask) / torch.sum(mask)
-
-                        else:
-                            raise ValueError(f"Unsupported view type: {view_type}")
-
-                        reconstruction_loss += recon_loss
-
-                # -------------------- PRIOR / MMD / KL Divergence --------------------
+            # -------------------- PRIOR / MMD / KL Divergence --------------------
+            if self.ae_type == "ae":
+                # Plain autoencoder - no prior loss
+                divergence_loss = torch.tensor(0.0, device=self.device)
+            else:
+                # WAE or VAE - compute prior-related losses
                 mmd_loss = 0.0
                 for _ in range(num_samples):
                     theta_prior = self.prior.sample(
                         N=doc_latents.shape[0],
                         M_prevalence_covariates=prevalence_covariates,
-                        epoch=self.epochs
+                        epoch=self.steps
                     ).to(self.device)
                     mmd_loss += compute_mmd_loss(doc_latents, theta_prior, device=self.device)
 
-                if self.epochs < self.kl_annealing_start:
+                if self.steps < self.kl_annealing_start:
                     beta = 0.0
-                elif self.epochs > self.kl_annealing_end:
+                elif self.steps > self.kl_annealing_end:
                     beta = self.w_prior
                 else:
+                    # Linear KL annealing schedule
                     span = self.kl_annealing_end - self.kl_annealing_start
-                    t = (self.epochs - self.kl_annealing_start) / span  # 0→1
-                    # Sigmoid annealing: smooth S-shaped curve
-                    # Shift and scale sigmoid to go from 0 to 1
-                    sigmoid_input = 12 * (t - 0.5)  # Scale and center around 0.5
-                    beta = self.w_prior * torch.sigmoid(torch.tensor(sigmoid_input)).item()
+                    t = (self.steps - self.kl_annealing_start) / span  # 0→1
+                    beta = self.w_prior * t
 
-                if self.ae_type == "vae":
+            if self.ae_type == "vae":
                     # Expect a single fused posterior tuple in mu_logvar_fused
                     mu_logvar_fused = mu_logvar if isinstance(mu_logvar, tuple) else mu_logvar[-1]
                     
@@ -702,15 +742,34 @@ class DeepLatent:
                         # Monte Carlo KL (note the minus sign on log_det_j)
                         kl_per_sample = log_q_z0 - log_det_j - log_p_zk  # [B]
                         
-                        # Apply free bits if specified
-                        if self.free_bits_lambda is not None:
-                            # For IAF, approximate per-dimension free bits using base distribution
+                        # For free_bits, approximate per-dimension KL
+                        if self.free_bits > 0.0:
+                            # Approximate per-dimension KL using base distribution
+                            # This is an approximation since flow transforms don't preserve per-dimension structure
                             var_q = torch.exp(logvar_q)  # [B, D]
-                            kl_per_dim_base = 0.5 * (var_q + mu_q.pow(2) - 1 - logvar_q)  # [B, D]
-                            kl_per_dim_clamped = torch.clamp(kl_per_dim_base, min=self.free_bits_lambda)
-                            kl = kl_per_dim_clamped.sum(dim=1).mean()
+                            
+                            if has_full_cov:
+                                # Use diagonal approximation for full covariance prior
+                                Sigma_p_diag = torch.diagonal(Sigma_p, dim1=0, dim2=1).unsqueeze(0).expand(B, -1)  # [B, D]
+                                kl_per_dim_base = 0.5 * (
+                                    -logvar_q + torch.log(Sigma_p_diag) - 1 + 
+                                    var_q / Sigma_p_diag + (mu_q - mu_p).pow(2) / Sigma_p_diag
+                                )  # [B, D]
+                            else:
+                                # Diagonal prior - exact per-dimension KL for base distribution
+                                kl_per_dim_base = 0.5 * (
+                                    logvar_p - logvar_q - 1 + var_q / var_p + (mu_q - mu_p).pow(2) / var_p
+                                )  # [B, D]
+                            
+                            # Distribute the flow correction (log_det_j) equally across dimensions
+                            # This is an approximation, but better than ignoring per-dimension structure
+                            flow_correction_per_dim = log_det_j.unsqueeze(1) / zk.size(1)  # [B, 1] -> [B, D]
+                            kl_per_dim_approx = kl_per_dim_base - flow_correction_per_dim  # [B, D]
+                            
+                            kl_raw = kl_per_dim_approx  # [B, D] for free_bits processing
+                            kl_raw_total = kl_per_sample  # [B] store total for reference
                         else:
-                            kl = kl_per_sample.mean()
+                            kl_raw = kl_per_sample  # [B] for regular processing
                         
                     elif self.vi_type == "mean_field":
                         mu_q, logvar_q = mu_logvar_fused
@@ -737,15 +796,7 @@ class DeepLatent:
                             quad_term = torch.bmm(torch.bmm(diff.transpose(1, 2), Sigma_p_inv), diff).squeeze(-1).squeeze(-1)  # [B]
                             
                             kl_raw = 0.5 * (logdet_p - logdet_q - D + trace_term + quad_term)  # [B]
-                            
-                            # Apply free bits if specified
-                            if self.free_bits_lambda is not None:
-                                # Approximate per-dimension KL using diagonal elements
-                                kl_per_dim = 0.5 * (var_q + mu_q.pow(2) - 1 - logvar_q)  # [B, D]
-                                kl_per_dim_clamped = torch.clamp(kl_per_dim, min=self.free_bits_lambda)
-                                kl = kl_per_dim_clamped.sum(dim=1).mean()
-                            else:
-                                kl = kl_raw.mean()
+                            kl = kl_raw.mean()
                         else:
                             # Diagonal prior
                             mu_p, logvar_p = self.prior.get_prior_params(prevalence_covariates)
@@ -756,13 +807,7 @@ class DeepLatent:
                             kl_per_dim = 0.5 * (
                                 logvar_p - logvar_q - 1 + var_q / var_p + (mu_q - mu_p).pow(2) / var_p
                             )  # [B, D]
-                            
-                            # Apply free bits if specified
-                            if self.free_bits_lambda is not None:
-                                kl_per_dim_clamped = torch.clamp(kl_per_dim, min=self.free_bits_lambda)
-                                kl = kl_per_dim_clamped.sum(dim=1).mean()
-                            else:
-                                kl = kl_per_dim.sum(dim=1).mean()
+                            kl_raw = kl_per_dim  # Keep tensor for free_bits processing
                             
                     elif self.vi_type == "full_rank":
                         mu_q, L = mu_logvar_fused  # L lower-triangular with positive diag
@@ -789,86 +834,102 @@ class DeepLatent:
                             quad_term = torch.bmm(torch.bmm(diff.transpose(1, 2), Sigma_p_inv), diff).squeeze(-1).squeeze(-1)  # [B]
                             
                             kl_raw = 0.5 * (logdet_p - logdet_q - D + trace_term + quad_term)  # [B]
+                            
+                            # For free_bits, approximate per-dimension KL using diagonal elements
+                            # This is an approximation since full_rank KL can't be exactly decomposed per dimension
+                            if self.free_bits > 0.0:
+                                # Use diagonal elements of Sigma_q and Sigma_p to approximate per-dimension contributions
+                                diag_q = torch.diagonal(Sigma_q, dim1=1, dim2=2)  # [B, D]
+                                diag_p_inv = torch.diagonal(Sigma_p_inv, dim1=1, dim2=2)  # [B, D]
+                                
+                                # Approximate per-dimension KL using diagonal terms
+                                kl_per_dim_approx = 0.5 * (
+                                    -torch.log(diag_q) + torch.log(1.0 / diag_p_inv) - 1 + 
+                                    diag_q * diag_p_inv + (mu_q - mu_p).pow(2) * diag_p_inv
+                                )  # [B, D]
                         else:
-                            # Diagonal prior
+                            # Diagonal prior - can compute exact per-dimension KL
                             mu_p, logvar_p = self.prior.get_prior_params(prevalence_covariates)
                             var_p = torch.exp(logvar_p)
+                            var_q_diag = torch.diagonal(Sigma_q, dim1=1, dim2=2)  # [B, D]
+                            
+                            # Per-dimension KL for diagonal prior
+                            kl_per_dim_approx = 0.5 * (
+                                logvar_p - torch.log(var_q_diag) - 1 + 
+                                var_q_diag / var_p + (mu_q - mu_p).pow(2) / var_p
+                            )  # [B, D]
+                            
+                            # Total KL for backward compatibility
                             logdet_p = torch.sum(logvar_p, dim=1)  # diag prior
-                            trace_term = torch.sum(torch.diagonal(Sigma_q, dim1=1, dim2=2) / var_p, dim=1)
+                            trace_term = torch.sum(var_q_diag / var_p, dim=1)
                             diff = mu_q - mu_p
                             quad_term = torch.sum(diff.pow(2) / var_p, dim=1)
                             kl_raw = 0.5 * (logdet_p - logdet_q - D + trace_term + quad_term)  # [B]
                         
-                        # Apply free bits if specified (use already computed Sigma_q)
-                        if self.free_bits_lambda is not None:
-                            var_q_diag = torch.diagonal(Sigma_q, dim1=1, dim2=2)  # [B, D]
-                            kl_per_dim = 0.5 * (var_q_diag + mu_q.pow(2) - 1 - torch.log(var_q_diag + 1e-8))
-                            kl_per_dim_clamped = torch.clamp(kl_per_dim, min=self.free_bits_lambda)
-                            kl = kl_per_dim_clamped.sum(dim=1).mean()
+                        # Store both total and per-dimension approximations for free_bits processing
+                        kl_raw_total = kl_raw  # [B]
+                        if self.free_bits > 0.0:
+                            kl_raw = kl_per_dim_approx  # [B, D] for free_bits processing
                         else:
-                            kl = kl_raw.mean()
+                            kl_raw = kl_raw_total  # [B] for regular processing
                     
+                    # Apply free_bits if specified (now truly per dimension for all vi_types)
+                    if self.free_bits > 0.0:
+                        if kl_raw.dim() == 2:  # [B, D] case - per dimension KL available
+                            kl_raw = torch.max(kl_raw, torch.tensor(self.free_bits, device=self.device))
+                        else:  # [B] case - fallback to old behavior (shouldn't happen with new implementation)
+                            min_kl_total = self.free_bits * self.n_factors
+                            kl_raw = torch.max(kl_raw, torch.tensor(min_kl_total, device=self.device))
+                    
+                    # Now take the mean (and sum over dimensions if needed)
+                    if kl_raw.dim() == 2:  # [B, D] case - sum over dimensions, then mean over batch
+                        kl = kl_raw.sum(dim=1).mean()
+                    else:  # [B] case - just mean over batch
+                        kl = kl_raw.mean()
+                        
                     divergence_loss = beta * kl
-                else:
-                    divergence_loss = mmd_loss * self.w_prior
+            elif self.ae_type == "wae":
+                divergence_loss = mmd_loss * self.w_prior
 
-                # -------------------- PREDICTION --------------------
-                if target_labels is not None:
-                    predictions = self.predictor(doc_latents, prediction_covariates)
-                    if self.predictor_type == "classifier":
-                        target_labels = target_labels.squeeze().to(torch.int64)
-                        prediction_loss = F.cross_entropy(predictions, target_labels)
-                    elif self.predictor_type == "regressor":
-                        prediction_loss = F.mse_loss(predictions, target_labels)
-                else:
-                    prediction_loss = 0.0
+            # -------------------- PREDICTION --------------------
+            if target_labels is not None:
+                predictions = self.predictor(doc_latents, prediction_covariates)
+                if self.predictor_type == "classifier":
+                    target_labels = target_labels.squeeze().to(torch.int64)
+                    prediction_loss = F.cross_entropy(predictions, target_labels)
+                elif self.predictor_type == "regressor":
+                    prediction_loss = F.mse_loss(predictions, target_labels)
+            else:
+                prediction_loss = 0.0
 
-                # -------------------- TOTAL LOSS --------------------
-                loss = (
-                    reconstruction_loss
-                    + divergence_loss
-                    + prediction_loss * self.w_pred_loss
-                )
-
-                self.loss = loss
-                self.reconstruction_loss = reconstruction_loss
-                self.divergence_loss = divergence_loss
-                self.prediction_loss = prediction_loss
-
-                if not validation:
-                    loss.backward()
-                    self.optimizer.step()
-
-                epochloss_lst.append(loss.item())
-
-                if (iter + 1) % self.print_every_n_batches == 0:
-                    msg = (
-                        f"Epoch {(self.epochs+1):>3d}\tIter {(iter+1):>4d}"
-                        f"\tMean {'Validation' if validation else 'Training'} Loss:{loss.item():<.7f}"
-                        f"\nRec Loss:{reconstruction_loss.item():<.7f}"
-                        f"\nDivergence Loss:{divergence_loss.item():<.7f}"
-                        f"\nPred Loss:{prediction_loss * self.w_pred_loss:<.7f}\n"
-                    )
-                    print(msg)
-
-        # -------------------- END OF EPOCH --------------------
-        if (self.epochs + 1) % self.print_every_n_epochs == 0:
-            avg_loss = sum(epochloss_lst) / len(epochloss_lst)
-            print(
-                f"\nEpoch {(self.epochs+1):>3d}\tMean {'Validation' if validation else 'Training'} Loss:{avg_loss:<.7f}\n"
+            # -------------------- TOTAL LOSS --------------------
+            loss = (
+                reconstruction_loss
+                + divergence_loss
+                + prediction_loss * self.w_pred_loss
             )
 
-            if self.print_topics==True:
-                print(
-                    "\n".join(
-                        [
-                            "{}: {}".format(str(k), str(v))
-                            for k, v in self.get_topic_words(topK=5).items()
-                        ]
-                    )
-                )
+            self.loss = loss
+            self.reconstruction_loss = reconstruction_loss
+            self.divergence_loss = divergence_loss
+            self.prediction_loss = prediction_loss
 
-        return sum(epochloss_lst)
+            if not validation:
+                loss.backward()
+                self.optimizer.step()
+
+            # Print progress if needed
+            if (self.steps + 1) % self.print_every_n_steps == 0:
+                msg = (
+                    f"Step {(self.steps+1):>6d}"
+                    f"\tMean {'Validation' if validation else 'Training'} Loss:{loss.item():<.7f}"
+                    f"\nRec Loss:{reconstruction_loss.item():<.7f}"
+                    f"\nDivergence Loss:{divergence_loss.item():<.7f}"
+                    f"\nPred Loss:{prediction_loss * self.w_pred_loss:<.7f}\n"
+                )
+                print(msg)
+
+        return loss.item()
     
     def get_topic_words(self):
         pass
@@ -882,6 +943,7 @@ class DeepLatent:
         single_modality: Optional[str] = None,
         num_samples: int = 1,
         return_std: bool = False,
+        return_samples: bool = False,
     ):
         """
         Get the topic distribution of each document in the corpus.
@@ -894,6 +956,7 @@ class DeepLatent:
             single_modality: if set, uses only this modality (e.g., "default_bow")
             num_samples: number of samples from the VAE encoder (only used for VAE).
             return_std: whether to return standard errors across samples.
+            return_samples: whether to return all samples instead of mean (and std). If True, returns [B, num_samples, D] tensor.
         """
         if num_workers is None:
             num_workers = self.num_workers
@@ -1008,10 +1071,14 @@ class DeepLatent:
                         thetas.append(theta_q if to_simplex else z)
                     
                     samples = torch.stack(thetas, dim=1)  # [B, num_samples, D]
-                    theta_q = samples.mean(dim=1)
                     
-                    if return_std:
-                        theta_std = samples.std(dim=1)
+                    if return_samples:
+                        # Return all samples instead of mean/std
+                        theta_q = samples
+                    else:
+                        theta_q = samples.mean(dim=1)
+                        if return_std:
+                            theta_std = samples.std(dim=1)
                 else:
                     theta_q, z, _ = self.encoder(
                         modality_inputs, 
@@ -1020,25 +1087,39 @@ class DeepLatent:
                         labels=data.get("M_labels", None) if self.include_labels_in_encoder else None
                     )
                     theta_q = theta_q if to_simplex else z
-                    if return_std:
+                    if return_samples:
+                        # For non-VAE, expand to have num_samples dimension
+                        theta_q = theta_q.unsqueeze(1).expand(-1, num_samples, -1)
+                    elif return_std:
                         theta_std = torch.zeros_like(theta_q)
 
                 final_thetas.append(theta_q)
-                if return_std:
+                if return_std and not return_samples:
                     final_stds.append(theta_std)
 
         if to_numpy:
             final_thetas = [t.cpu().numpy() for t in final_thetas]
-            final_thetas = np.concatenate(final_thetas, axis=0)
-            if return_std:
+            if return_samples:
+                # For samples, concatenate along batch dimension to get [total_batch, num_samples, D]
+                final_thetas = np.concatenate(final_thetas, axis=0)
+            else:
+                final_thetas = np.concatenate(final_thetas, axis=0)
+            if return_std and not return_samples:
                 final_stds = [s.cpu().numpy() for s in final_stds]
                 final_stds = np.concatenate(final_stds, axis=0)
         else:
-            final_thetas = torch.cat(final_thetas, dim=0)
-            if return_std:
+            if return_samples:
+                # For samples, concatenate along batch dimension to get [total_batch, num_samples, D]
+                final_thetas = torch.cat(final_thetas, dim=0)
+            else:
+                final_thetas = torch.cat(final_thetas, dim=0)
+            if return_std and not return_samples:
                 final_stds = torch.cat(final_stds, dim=0)
 
-        return (final_thetas, final_stds) if return_std else final_thetas
+        if return_samples:
+            return final_thetas
+        else:
+            return (final_thetas, final_stds) if return_std else final_thetas
 
     def get_predictions(self, dataset, to_simplex=True, num_workers=None, to_numpy=True, num_samples: int = 1):
         """
@@ -1364,7 +1445,8 @@ class DeepLatent:
                     sub_decoder.eval()
             else:
                 decoder.eval()
-        self.prior.eval()
+        if self.prior is not None:
+            self.prior.eval()
         
         # Default to all modalities if not specified
         if modality_keys is None:
@@ -1390,13 +1472,21 @@ class DeepLatent:
         generated_samples = {}
         
         with torch.no_grad():
-            # Sample from prior
-            if self.latent_factor_prior in {"dirichlet", "logistic_normal"}:
+            # Sample from prior (or provide latents for plain autoencoder)
+            if self.ae_type == "ae":
+                # Plain autoencoder - users need to provide latent codes
+                raise ValueError(
+                    "For plain autoencoders (ae_type='ae'), you need to provide the values for the latent codes. "
+                    "Plain autoencoders don't have a learned prior distribution to sample from. "
+                    "Please encode some data first to get latent representations, or provide specific latent codes manually."
+                )
+                    
+            elif self.latent_factor_prior in {"dirichlet", "logistic_normal"}:
                 # For topic models, sample from prior and use as simplex
                 doc_latents = self.prior.sample(
                     N=n_samples,
                     M_prevalence_covariates=prevalence_covariates,
-                    epoch=self.epochs
+                    epoch=self.steps
                 ).to(device)
                 
                 # Apply temperature scaling for topic models
@@ -1408,7 +1498,7 @@ class DeepLatent:
                 doc_latents = self.prior.sample(
                     N=n_samples,
                     M_prevalence_covariates=prevalence_covariates,
-                    epoch=self.epochs
+                    epoch=self.steps
                 ).to(device)
                 
                 # Apply temperature scaling
@@ -1569,8 +1659,9 @@ class DeepLatent:
         if not hasattr(self, "optimizer"):
             # Create parameter groups with different parameter groups as in __init__
             main_params = list(self.encoder.parameters()) + list(self.decoders.parameters())
+            predictor_params = []
             if self.labels_size != 0 and hasattr(self, "predictor"):
-                main_params += list(self.predictor.parameters())
+                predictor_params = list(self.predictor.parameters())
             
             # Use default optimizer configuration
             default_optim_args = {
@@ -1582,26 +1673,31 @@ class DeepLatent:
             
             main_config = default_optim_args["main"]
             prior_config = default_optim_args["prior"]
+            predictor_config = default_optim_args.get("predictor")
             global_config = {k: v for k, v in default_optim_args.items() 
-                           if k not in ["main", "prior"]}
+                           if k not in ["main", "prior", "predictor"]}
             
             # Apply global config to parameter groups
-            for config in [main_config, prior_config]:
-                for key, default_val in global_config.items():
-                    if key not in config:
-                        config[key] = default_val
+            for config in [main_config, prior_config, predictor_config]:
+                if config is not None:
+                    for key, default_val in global_config.items():
+                        if key not in config:
+                            config[key] = default_val
+            
+            # Create parameter groups
+            param_groups = []
+            
+            # Add main parameters (encoder + decoders)
+            param_groups.append({'params': main_params, **main_config})
+            
+            # Add predictor parameters if they exist (no separate config in default case)
+            if predictor_params:
+                param_groups[0]['params'].extend(predictor_params)
             
             # Add prior parameters if it's a learnable prior
-            if not getattr(self, "fixed_prior", False) and hasattr(self, "prior"):
+            if getattr(self, "update_prior", False) and hasattr(self, "prior") and self.prior is not None:
                 prior_params = list(self.prior.parameters())
-                param_groups = [
-                    {'params': main_params, **main_config},
-                    {'params': prior_params, **prior_config}
-                ]
-            else:
-                param_groups = [
-                    {'params': main_params, **main_config}
-                ]
+                param_groups.append({'params': prior_params, **prior_config})
                 
             self.optimizer = torch.optim.Adam(param_groups)
 
@@ -1613,7 +1709,8 @@ class DeepLatent:
         """
         self.encoder.to(device)
         self.decoders.to(device)
-        self.prior.to(device)
+        if self.prior is not None:
+            self.prior.to(device)
         if self.labels_size != 0:
             self.predictor.to(device)
         self.device = device
@@ -1631,8 +1728,14 @@ class GTM(DeepLatent):
         n_topics: int = 10,
         **kwargs,
     ):
-        assert doc_topic_prior in {"dirichlet", "logistic_normal"}, \
-            "GTM supports only 'dirichlet' or 'logistic_normal' priors."
+        # Check if ae_type is 'ae' (plain autoencoder)
+        ae_type = kwargs.get('ae_type', 'wae')
+        
+        if ae_type == "ae":
+            pass
+        else:
+            assert doc_topic_prior in {"dirichlet", "logistic_normal"}, \
+                "GTM supports only 'dirichlet' or 'logistic_normal' priors (or ae_type='ae' for plain autoencoder)."
 
         self.n_topics = n_topics
         self.doc_topic_prior = doc_topic_prior
@@ -1640,7 +1743,7 @@ class GTM(DeepLatent):
 
         super().__init__(
             latent_factor_prior=doc_topic_prior,
-            n_factors=n_topics,  # Learn K factors
+            n_factors=n_topics,  
             *args,
             **kwargs
         )
@@ -2166,6 +2269,7 @@ class IdealPointNN(DeepLatent):
         self.n_ideal_points = n_ideal_points
         self.print_topics = False
 
+        # For plain autoencoder, the prior won't be used anyway
         super().__init__(
             latent_factor_prior="gaussian",
             n_factors=n_ideal_points,
@@ -2181,6 +2285,7 @@ class IdealPointNN(DeepLatent):
         single_modality: Optional[str] = None,
         num_samples: int = 1,
         return_std: bool = False,
+        return_samples: bool = False,
     ):
         """
         Returns unconstrained latent ideal points (z ∈ ℝⁿ).
@@ -2193,6 +2298,7 @@ class IdealPointNN(DeepLatent):
             single_modality: if set, uses only this modality (e.g., "default_bow")
             num_samples: number of samples from the VAE encoder (only used for VAE).
             return_std: whether to return standard errors across samples.
+            return_samples: whether to return all samples instead of mean (and std). If True, returns [B, num_samples, D] tensor.
         """
         return self.get_latent_factors(
             dataset=dataset,
@@ -2202,4 +2308,5 @@ class IdealPointNN(DeepLatent):
             single_modality=single_modality,
             num_samples=num_samples,
             return_std=return_std,
+            return_samples=return_samples,
         )

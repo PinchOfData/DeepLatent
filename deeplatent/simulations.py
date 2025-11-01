@@ -232,11 +232,21 @@ def generate_ideal_points(
     ]
 
     # 4. Generate votes
-    bill_positions = np.random.randn(num_bills, dim_ideal_points)
-    vote_probs = norm.cdf(ideal_points @ bill_positions.T)
-    votes = np.random.binomial(1, vote_probs).astype(float)
-    mask = np.random.rand(*votes.shape) < 0.3
-    votes[mask] = np.nan
+    # Generate bill parameters with some structure
+    # The decoder outputs beta and delta directly now
+    true_beta = np.random.normal(0, 1, num_bills)
+    true_delta = np.random.normal(0, 0.5, num_bills)  # Less variable intercepts
+
+    # Generate votes based on ideal point model
+    # For multi-dimensional ideal points, take the first dimension or sum them
+    if dim_ideal_points == 1:
+        ideal_points_for_voting = ideal_points[:, 0]
+    else:
+        ideal_points_for_voting = np.sum(ideal_points, axis=1)  # Or take first dimension: ideal_points[:, 0]
+    
+    logits = ideal_points_for_voting[:, None] * true_beta[None, :] - true_delta[None, :]
+    probs = 1 / (1 + np.exp(-logits))
+    votes = np.random.binomial(1, probs).astype(float)
 
     # 5. Generate survey responses
     if progress_bar:
