@@ -7,7 +7,7 @@ large multimodal and multilingual datasets using variational inference
 with deep neural networks.
 """
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"
 __author__ = "Germain Gauthier, Elliott Ash, Hugo Subtil, Philine Widmer"
 __email__ = "germain.jean.gauthier@gmail.com"  
 

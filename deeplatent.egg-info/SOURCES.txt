@@ -24,6 +24,7 @@ deeplatent.egg-info/SOURCES.txt
 deeplatent.egg-info/dependency_links.txt
 deeplatent.egg-info/requires.txt
 deeplatent.egg-info/top_level.txt
+examples/augmented_lagrangian_example.py
 figs/doc2vec_pca_density.png
 figs/doc2vec_pca_scatter.png
 figs/doc2vec_trump_harris_direction_density.png
@@ -36,6 +37,7 @@ notebooks/06_IdealPointNN_real_world_example.ipynb
 notebooks/07_IdealPointNN_simulations.ipynb
 notebooks/08_IdealPointNN_multimodal_comparison.ipynb
 notebooks/09_images.ipynb
+notebooks/simulations.ipynb
 notebooks/.ipynb_checkpoints/01_gtm_real_world_example-checkpoint.ipynb
 notebooks/.ipynb_checkpoints/02_gtm_with_embeddings-checkpoint.ipynb
 notebooks/.ipynb_checkpoints/03_gtm_basic_simulation-checkpoint.ipynb
@@ -45,6 +47,7 @@ notebooks/.ipynb_checkpoints/06_IdealPointNN_real_world_example-checkpoint.ipynb
 notebooks/.ipynb_checkpoints/07_IdealPointNN_simulations-checkpoint.ipynb
 notebooks/.ipynb_checkpoints/08_IdealPointNN_multimodal_comparison-checkpoint.ipynb
 notebooks/.ipynb_checkpoints/09_images-checkpoint.ipynb
+notebooks/.ipynb_checkpoints/simulations-checkpoint.ipynb
 src2/models.py
 tests/test_advanced_families.py
 tests/test_all_likelihoods.py

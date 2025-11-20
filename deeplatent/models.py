@@ -77,7 +77,7 @@ class DeepLatent:
             predictor_args: dictionary with the parameters for the predictor.
             predictor_type: type of predictor model. Either 'classifier' or 'regressor'.
             include_labels_in_encoder: whether to include labels in the encoder input.
-            fusion: type of fusion method to use. Either 'moe_average', 'moe_gating', or 'poe'.
+            fusion: type of fusion method to use. Options: 'moe_average' (equal weights), 'moe_gating' (learned gating), 'moe_learned' (learned fixed weights), 'poe' (uncorrected Product of Experts), 'corrected_poe' (corrected PoE matching true posterior p(z|x₁,...,xₘ) ∝ p(z) × ∏ₘ p(xₘ|z)).
             gating_hidden_dim: hidden dimension for gating mechanism (if used).
             num_flows: number of flows for IAF (if used).
             flow_hidden_dim: hidden dimension for IAF flows (if None, defaults to max(n_factors, 16)).
@@ -246,23 +246,11 @@ class DeepLatent:
         elif self.fusion == "moe_learned":
             moe_type, gating, poe = "learned_weights", False, False
         elif self.fusion == "poe":
-            moe_type, gating, poe = "average", False, True
+            moe_type, gating, poe = "average", False, "uncorrected"
+        elif self.fusion == "corrected_poe":
+            moe_type, gating, poe = "average", False, "corrected"
         else:
             raise ValueError(f"Unsupported fusion method: {self.fusion}")
-
-        self.encoder = MultiModalEncoder(
-            encoders=encoders,
-            topic_dim=n_factors,
-            gating=gating,
-            gating_hidden_dim=gating_hidden_dim,
-            ae_type=ae_type,
-            poe=poe,
-            vi_type=self.vi_type,
-            num_flows=num_flows,
-            flow_hidden_dim=self.flow_hidden_dim,
-            flow_use_permutations=self.flow_use_permutations,
-            moe_type=moe_type
-        ).to(self.device)
 
         # DECODERS
         if not decoder_args:
@@ -357,6 +345,22 @@ class DeepLatent:
                 )
             else:
                 raise ValueError(f"Unrecognized prior: {latent_factor_prior}")
+
+        # ENCODER - initialized after prior so self.prior is available
+        self.encoder = MultiModalEncoder(
+            encoders=encoders,
+            topic_dim=n_factors,
+            prior=self.prior if ae_type == "vae" else None,
+            gating=gating,
+            gating_hidden_dim=gating_hidden_dim,
+            ae_type=ae_type,
+            poe=poe,
+            vi_type=self.vi_type,
+            num_flows=num_flows,
+            flow_hidden_dim=self.flow_hidden_dim,
+            flow_use_permutations=self.flow_use_permutations,
+            moe_type=moe_type
+        ).to(self.device)
 
         # PREDICTOR
         if self.labels_size != 0:
@@ -556,6 +560,22 @@ class DeepLatent:
             data = data_batch
             # Initialize loss components
             prediction_loss = 0.0
+            
+            # Sample random subset of modalities for training with PoE (use all for validation)
+            available_modalities = list(self.encoder.encoders.keys())
+            if not validation and len(available_modalities) > 1 and self.fusion in ["poe", "corrected_poe"]:
+                # Randomly sample which modalities to use (at least 1)
+                # Each modality has independent 0.5 probability of being selected
+                active_modalities = [
+                    mod for mod in available_modalities 
+                    if torch.rand(1).item() > 0.5
+                ]
+                # Ensure at least one modality is selected
+                if len(active_modalities) == 0:
+                    active_modalities = [available_modalities[torch.randint(len(available_modalities), (1,)).item()]]
+            else:
+                # Use all modalities for validation, non-PoE fusion, or single-modality models
+                active_modalities = None
                 
             if not validation:
                 self.optimizer.zero_grad()
@@ -609,7 +629,8 @@ class DeepLatent:
                     modality_inputs[key] = x
 
             theta_q, z, mu_logvar = self.encoder(
-                modality_inputs, 
+                modality_inputs,
+                active_modalities=active_modalities,
                 prevalence_covariates=prevalence_covariates.to(self.device) if prevalence_covariates is not None else None,
                 labels=target_labels.to(self.device) if target_labels is not None and self.include_labels_in_encoder else None
             )
@@ -624,6 +645,10 @@ class DeepLatent:
             theta_input = torch.cat([doc_latents, content_covariates], dim=1) if content_covariates is not None else doc_latents
 
             for key, decoder in self.decoders.items():
+                # Skip inactive modalities during training with modality masking
+                if active_modalities is not None and key not in active_modalities:
+                    continue
+                    
                 mod, view = parse_modality_view(key)
                 view_type = dataset.processed_modalities[mod][view]["type"]
                 modality_data = data["modalities"][mod][view]
@@ -1235,7 +1260,8 @@ class DeepLatent:
         Returns modality weights per observation.
         
         For moe_gating: softmax weights from the gating network.
-        For poe: normalized precisions (inverse variances).
+        For poe (uncorrected): normalized total precisions Λ_m (inverse variances).
+        For corrected_poe: normalized precision increments Δ_m = Λ_m - Λ_0.
         For moe_average: equal weights.
         
         Returns:
@@ -1328,9 +1354,8 @@ class DeepLatent:
                             std = torch.exp(0.5 * logvar)
                             eps = torch.randn_like(std)
                             z0 = mu + eps * std
-                            # Apply flow
-                            flow = self.encoder.flows[name]
-                            zk, log_det_j = flow(z0)
+                            # Apply shared flow
+                            zk, log_det_j = self.encoder.shared_flow(z0)
                             mu_logvars.append((mu, logvar, zk, log_det_j))
                             zs.append(zk)
                         else:
@@ -1359,16 +1384,53 @@ class DeepLatent:
 
                     weights = self.encoder.gate_net(gate_input)
 
-                elif self.fusion == "poe":
+                elif self.fusion in ["poe", "corrected_poe"]:
                     if self.ae_type == "vae":
                         if self.vi_type == "mean_field":
-                            precisions = [1.0 / torch.exp(logvar) for _, logvar in mu_logvars 
-                                        if len(mu_logvars[0]) == 2]
-                            if precisions:
-                                precision_stack = torch.stack(precisions, dim=1)  # (B, M, D)
-                                weights = precision_stack.sum(dim=2)  # (B, M)
+                            if self.fusion == "corrected_poe":
+                                # For corrected PoE: weights based on precision INCREMENTS Δ_m
+                                # Get prior precision Λ_0
+                                has_full_cov = hasattr(self.prior, 'sigma') and not isinstance(
+                                    self.prior, (FixedGaussianPrior, FixedLogisticNormalPrior, FixedDirichletPrior)
+                                )
+                                if has_full_cov:
+                                    mu_p, Sigma_p = self.prior.get_prior_params(prevalence_covariates, return_full_cov=True)
+                                    Sigma_p_batch = Sigma_p.unsqueeze(0).expand(B, -1, -1)
+                                    Lambda_0_diag = 1.0 / (torch.diagonal(Sigma_p_batch, dim1=1, dim2=2) + 1e-8)
+                                else:
+                                    mu_p, logvar_p = self.prior.get_prior_params(prevalence_covariates)
+                                    Lambda_0_diag = torch.exp(-logvar_p)
+                                
+                                # Precision increments: Δ_m = Λ_m - Λ_0
+                                deltas = []
+                                for _, logvar in mu_logvars:
+                                    if len(mu_logvars[0]) == 2:
+                                        Lambda_m = torch.exp(-logvar)  # Total precision
+                                        Delta_m = Lambda_m - Lambda_0_diag  # Precision increment
+                                        Delta_m = torch.clamp(Delta_m, min=0.0)  # Ensure non-negative
+                                        deltas.append(Delta_m)
+                                
+                                if deltas:
+                                    delta_stack = torch.stack(deltas, dim=1)  # (B, M, D)
+                                    # Normalize across modalities
+                                    delta_sum = delta_stack.sum(dim=1, keepdim=True)  # (B, 1, D)
+                                    delta_normalized = delta_stack / (delta_sum + 1e-8)  # (B, M, D)
+                                    # Average across dimensions
+                                    weights = delta_normalized.mean(dim=2)  # (B, M)
+                                else:
+                                    weights = torch.full((B, M), 1.0 / M, device=self.device)
                             else:
-                                weights = torch.full((B, M), 1.0 / M, device=self.device)
+                                # Uncorrected PoE: weights based on total precisions Λ_m
+                                precisions = [1.0 / torch.exp(logvar) for _, logvar in mu_logvars 
+                                            if len(mu_logvars[0]) == 2]
+                                if precisions:
+                                    precision_stack = torch.stack(precisions, dim=1)  # (B, M, D)
+                                    # Normalize across modalities for each dimension
+                                    precision_normalized = precision_stack / precision_stack.sum(dim=1, keepdim=True)  # (B, M, D)
+                                    # Average across dimensions to get overall modality weight
+                                    weights = precision_normalized.mean(dim=2)  # (B, M)
+                                else:
+                                    weights = torch.full((B, M), 1.0 / M, device=self.device)
 
                         elif self.vi_type == "full_rank":
                             precisions = []
@@ -1407,6 +1469,246 @@ class DeepLatent:
 
         weights_all = torch.cat(weights_list, dim=0)  # (N, M)
         return weights_all.cpu().numpy() if to_numpy else weights_all
+
+    def get_mutual_information(
+        self,
+        dataset,
+        num_workers: Optional[int] = None,
+        to_numpy: bool = True
+    ):
+        """
+        Computes pointwise mutual information I_q^{(i)}(X_m; Z) per observation and modality.
+        
+        For each observation i and modality m, computes:
+            I_q^{(i)}(X_m; Z) = KL(q(z|x_m^{(i)}) || p(z))
+        
+        This measures how much information modality m provides about the latent variable
+        for observation i, by computing how far the modality-specific posterior moves
+        from the prior.
+        
+        Mathematical definitions:
+        - Mean-field: KL(N(μ, diag(σ²)) || N(μ_p, Σ_p))
+        - Full-rank: KL(N(μ, Σ) || N(μ_p, Σ_p))
+        - IAF: KL computed via the base distribution (flow transformations cancel in expectation)
+        
+        For Gaussian posteriors with Gaussian priors:
+            KL = 0.5 * (tr(Σ_p^{-1} Σ_q) + (μ_q - μ_p)^T Σ_p^{-1} (μ_q - μ_p) - d - log(det(Σ_q)/det(Σ_p)))
+        
+        Args:
+            dataset: a Corpus object
+            num_workers: number of workers for the data loaders
+            to_numpy: whether to return as numpy array
+            
+        Returns:
+            mi_matrix: tensor/array of shape (N, M) containing pointwise mutual information
+                      per observation (N) and modality (M)
+        """
+        if num_workers is None:
+            num_workers = self.num_workers
+
+        if self.ae_type != "vae":
+            raise ValueError(
+                "Mutual information computation is only supported for VAE models. "
+                f"Current ae_type is '{self.ae_type}'."
+            )
+
+        self.encoder.eval()
+        data_loader = DataLoader(
+            dataset,
+            batch_size=self.batch_size,
+            shuffle=False,
+            num_workers=num_workers,
+        )
+
+        mi_list = []
+        modality_names = list(self.encoder.encoders.keys())
+        M = len(modality_names)
+
+        with torch.no_grad():
+            for data in data_loader:
+                for key, value in data.items():
+                    if isinstance(value, torch.Tensor):
+                        data[key] = value.to(self.device)
+
+                prevalence_covariates = data.get("M_prevalence_covariates", None)
+                labels = data.get("M_labels", None)
+
+                # Prepare modality inputs and get individual posteriors
+                modality_inputs = {}
+                modality_posteriors = []
+
+                for name in modality_names:
+                    mod, view = parse_modality_view(name)
+                    view_data = data["modalities"][mod][view]
+                    view_type = dataset.processed_modalities[mod][view]["type"]
+
+                    if view_type == "image":
+                        x = view_data.to(self.device)
+                        modality_inputs[name] = x
+                    elif view_type in {"bow", "embedding"}:
+                        x = view_data.to(self.device)
+                    elif view_type == "vote":
+                        x = view_data["matrix"].to(self.device)
+                    elif view_type == "discrete_choice":
+                        x = torch.cat([view_data[q].to(self.device) for q in view_data if q != "type"], dim=-1)
+                    else:
+                        raise ValueError(f"Unsupported view type: {view_type}")
+
+                    # For non-image modalities, concatenate covariates
+                    if view_type != "image":
+                        if prevalence_covariates is not None:
+                            x = torch.cat((x, prevalence_covariates), dim=1)
+                        if self.include_labels_in_encoder and labels is not None:
+                            lab = labels
+                            if lab.dim() == 1:
+                                lab = F.one_hot(lab.to(torch.int64), num_classes=self.labels_size).float()
+                            x = torch.cat([x, lab], dim=1)
+                        modality_inputs[name] = x
+
+                    # Encode each modality separately to get individual posterior parameters
+                    encoder = self.encoder.encoders[name]
+                    if isinstance(encoder, ImageEncoder):
+                        z = encoder(modality_inputs[name], prevalence_covariates=prevalence_covariates, labels=labels)
+                    else:
+                        z = encoder(modality_inputs[name])
+
+                    # Extract posterior parameters based on vi_type
+                    if self.vi_type == "mean_field":
+                        mu, logvar = torch.chunk(z, 2, dim=1)
+                        modality_posteriors.append((mu, logvar))
+                    elif self.vi_type == "full_rank":
+                        D = self.n_factors
+                        mu = z[:, :D]
+                        L_flat = z[:, D:]
+                        B = mu.size(0)
+                        tril_indices = torch.tril_indices(D, D, device=z.device)
+                        L = torch.zeros(B, D, D, device=z.device)
+                        L[:, tril_indices[0], tril_indices[1]] = L_flat
+                        diag_idx = torch.arange(D, device=z.device)
+                        L[:, diag_idx, diag_idx] = F.softplus(L[:, diag_idx, diag_idx]) + 1e-4
+                        modality_posteriors.append((mu, L))
+                    elif self.vi_type == "iaf":
+                        mu, logvar = torch.chunk(z, 2, dim=1)
+                        modality_posteriors.append((mu, logvar, name))
+                    else:
+                        raise ValueError(f"Unsupported vi_type: {self.vi_type}")
+
+                B = modality_posteriors[0][0].size(0)
+                mi_batch = torch.zeros(B, M, device=self.device)
+
+                # Get prior parameters (per observation if prevalence covariates exist)
+                # Check if prior has full covariance
+                has_full_cov = hasattr(self.prior, 'sigma') and not isinstance(
+                    self.prior, (FixedGaussianPrior, FixedLogisticNormalPrior, FixedDirichletPrior)
+                )
+                
+                if has_full_cov:
+                    mu_p, Sigma_p = self.prior.get_prior_params(prevalence_covariates, return_full_cov=True)
+                    # Expand for batch if needed
+                    if Sigma_p.dim() == 2:  # [D, D]
+                        Sigma_p = Sigma_p.unsqueeze(0).expand(B, -1, -1)  # [B, D, D]
+                    Sigma_p_inv = torch.inverse(Sigma_p)
+                    logdet_p = torch.logdet(Sigma_p)  # [B] or scalar
+                    if logdet_p.dim() == 0:
+                        logdet_p = logdet_p.unsqueeze(0).expand(B)
+                else:
+                    mu_p, logvar_p = self.prior.get_prior_params(prevalence_covariates)
+                    var_p = torch.exp(logvar_p)
+
+                # Compute KL divergence for each modality: KL(q(z|x_m) || p(z))
+                for m_idx, posterior in enumerate(modality_posteriors):
+                    if self.vi_type == "mean_field":
+                        mu_q, logvar_q = posterior
+                        var_q = torch.exp(logvar_q)
+                        
+                        if has_full_cov:
+                            # KL(N(μ_q, diag(σ_q²)) || N(μ_p, Σ_p))
+                            # = 0.5 * (tr(Σ_p^{-1} Σ_q) + (μ_q - μ_p)^T Σ_p^{-1} (μ_q - μ_p) - d - log(det(Σ_q)/det(Σ_p)))
+                            
+                            # Trace term: tr(Σ_p^{-1} diag(σ_q²))
+                            trace_term = torch.sum(torch.diagonal(Sigma_p_inv, dim1=1, dim2=2) * var_q, dim=1)  # [B]
+                            
+                            # Quadratic term
+                            diff = (mu_q - mu_p).unsqueeze(2)  # [B, D, 1]
+                            quad_term = torch.bmm(torch.bmm(diff.transpose(1, 2), Sigma_p_inv), diff).squeeze(-1).squeeze(-1)  # [B]
+                            
+                            # Log determinant term
+                            logdet_q = torch.sum(logvar_q, dim=1)  # [B]
+                            
+                            kl = 0.5 * (trace_term + quad_term - self.n_factors - logdet_q + logdet_p)
+                        else:
+                            # KL(N(μ_q, diag(σ_q²)) || N(μ_p, diag(σ_p²)))
+                            # = 0.5 * Σ_d (σ_q²/σ_p² + (μ_q - μ_p)²/σ_p² - 1 - log(σ_q²/σ_p²))
+                            kl = 0.5 * torch.sum(
+                                var_q / var_p + (mu_q - mu_p).pow(2) / var_p - 1 + logvar_p - logvar_q,
+                                dim=1
+                            )
+                    
+                    elif self.vi_type == "full_rank":
+                        mu_q, L_q = posterior
+                        Sigma_q = torch.bmm(L_q, L_q.transpose(1, 2))  # [B, D, D]
+                        logdet_q = 2 * torch.sum(torch.log(torch.diagonal(L_q, dim1=1, dim2=2) + 1e-6), dim=1)  # [B]
+                        
+                        if has_full_cov:
+                            # KL(N(μ_q, Σ_q) || N(μ_p, Σ_p))
+                            # = 0.5 * (tr(Σ_p^{-1} Σ_q) + (μ_q - μ_p)^T Σ_p^{-1} (μ_q - μ_p) - d - log(det(Σ_q)/det(Σ_p)))
+                            
+                            # Trace term
+                            trace_term = torch.sum(
+                                torch.diagonal(torch.bmm(Sigma_p_inv, Sigma_q), dim1=1, dim2=2),
+                                dim=1
+                            )  # [B]
+                            
+                            # Quadratic term
+                            diff = (mu_q - mu_p).unsqueeze(2)  # [B, D, 1]
+                            quad_term = torch.bmm(torch.bmm(diff.transpose(1, 2), Sigma_p_inv), diff).squeeze(-1).squeeze(-1)  # [B]
+                            
+                            kl = 0.5 * (trace_term + quad_term - self.n_factors - logdet_q + logdet_p)
+                        else:
+                            # KL(N(μ_q, Σ_q) || N(μ_p, diag(σ_p²)))
+                            # = 0.5 * (tr(diag(1/σ_p²) Σ_q) + (μ_q - μ_p)^T diag(1/σ_p²) (μ_q - μ_p) - d - log(det(Σ_q)) + Σ log(σ_p²))
+                            
+                            # Trace term: tr(diag(1/σ_p²) Σ_q)
+                            diag_Sigma_q = torch.diagonal(Sigma_q, dim1=1, dim2=2)  # [B, D]
+                            trace_term = torch.sum(diag_Sigma_q / var_p, dim=1)  # [B]
+                            
+                            # Quadratic term
+                            quad_term = torch.sum((mu_q - mu_p).pow(2) / var_p, dim=1)  # [B]
+                            
+                            # Log determinant terms
+                            logdet_p_sum = torch.sum(logvar_p, dim=1)  # [B]
+                            
+                            kl = 0.5 * (trace_term + quad_term - self.n_factors - logdet_q + logdet_p_sum)
+                    
+                    elif self.vi_type == "iaf":
+                        # For IAF, the KL is computed on the base distribution
+                        # The flow transformations cancel out in expectation
+                        mu_q, logvar_q, name_m = posterior
+                        var_q = torch.exp(logvar_q)
+                        
+                        if has_full_cov:
+                            # KL using base distribution parameters
+                            trace_term = torch.sum(torch.diagonal(Sigma_p_inv, dim1=1, dim2=2) * var_q, dim=1)
+                            diff = (mu_q - mu_p).unsqueeze(2)
+                            quad_term = torch.bmm(torch.bmm(diff.transpose(1, 2), Sigma_p_inv), diff).squeeze(-1).squeeze(-1)
+                            logdet_q = torch.sum(logvar_q, dim=1)
+                            kl = 0.5 * (trace_term + quad_term - self.n_factors - logdet_q + logdet_p)
+                        else:
+                            # Diagonal prior
+                            kl = 0.5 * torch.sum(
+                                var_q / var_p + (mu_q - mu_p).pow(2) / var_p - 1 + logvar_p - logvar_q,
+                                dim=1
+                            )
+                    
+                    else:
+                        raise ValueError(f"Unsupported vi_type: {self.vi_type}")
+                    
+                    mi_batch[:, m_idx] = kl
+
+                mi_list.append(mi_batch)
+
+        mi_all = torch.cat(mi_list, dim=0)  # (N, M)
+        return mi_all.cpu().numpy() if to_numpy else mi_all
 
     def generate_samples(
         self,

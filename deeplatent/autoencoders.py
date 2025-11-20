@@ -3,7 +3,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
 import math
-from typing import List, Optional, Tuple, Dict, Callable        
+from typing import List, Optional, Tuple, Dict, Callable, Union
+from .priors import FixedGaussianPrior, FixedLogisticNormalPrior, FixedDirichletPrior        
 
 class FiLMLayer(nn.Module):
     """Feature-wise Linear Modulation layer for conditioning CNNs on covariates."""
@@ -643,10 +644,11 @@ class MultiModalEncoder(nn.Module):
         self,
         encoders: Dict[str, EncoderMLP],
         topic_dim: int,
+        prior: Optional[nn.Module] = None,
         gating: bool = False,
         gating_hidden_dim: Optional[int] = None,
         ae_type: str = "wae",
-        poe: bool = False,
+        poe: Union[bool, str] = False,  # False, "uncorrected", or "corrected"
         vi_type: str = "mean_field",  # "mean_field", "full_rank", "iaf"
         num_flows: int = 4,
         flow_hidden_dim: Optional[int] = None,  # Hidden dimension for IAF
@@ -658,9 +660,11 @@ class MultiModalEncoder(nn.Module):
         assert ae_type in {"wae", "vae", "ae"}, f"Invalid ae_type: {ae_type}"
         assert vi_type in {"mean_field", "full_rank", "iaf"}, f"Invalid vi_type: {vi_type}"
         assert moe_type in {"average", "gating", "learned_weights"}, f"Invalid moe_type: {moe_type}"
+        assert poe in {False, "uncorrected", "corrected"}, f"Invalid poe: {poe}"
 
         self.encoders = nn.ModuleDict(encoders)
         self.topic_dim = topic_dim
+        self.prior = prior
         self.gating = gating
         self.ae_type = ae_type
         self.poe = poe
@@ -671,12 +675,16 @@ class MultiModalEncoder(nn.Module):
         if self.gating and self.poe:
             raise ValueError("Cannot use both gating and PoE. Choose one fusion method.")
 
-        # Initialize IAF flows if needed
-        if self.vi_type == "iaf":
-            self.flows = nn.ModuleDict({
-                name: IAF(topic_dim, num_flows, flow_hidden_dim, use_permutations=flow_use_permutations) 
-                for name in encoders.keys()
-            })
+        # Initialize IAF flow if needed (single shared flow for all modalities)
+        if self.ae_type == "vae" and self.vi_type == "iaf":
+            self.shared_flow = IAF(
+                dim=topic_dim,
+                num_flows=num_flows,
+                hidden_dim=flow_hidden_dim if flow_hidden_dim else max(topic_dim, 16),
+                use_permutations=flow_use_permutations
+            )
+        else:
+            self.shared_flow = None
 
         # MoE gating network
         if self.moe_type == "gating" or self.gating:
@@ -704,45 +712,102 @@ class MultiModalEncoder(nn.Module):
 
     def product_of_experts(
         self, 
-        distributions: List[Tuple[torch.Tensor, torch.Tensor]]
+        distributions: List[Tuple[torch.Tensor, torch.Tensor]],
+        prevalence_covariates: Optional[torch.Tensor] = None
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         Combine Gaussian distributions using Product of Experts.
+        Supports both standard (uncorrected) and corrected PoE.
         
         Args:
             distributions: List of (mu, logvar) tuples for each modality
+            prevalence_covariates: Covariates for prior parameters (needed for corrected PoE)
             
         Returns:
             Combined (mu, logvar) from PoE
         """
-        # Convert to precision (inverse variance) and precision-weighted means
-        precisions = []
-        precision_means = []
+        # Uncorrected PoE (standard, backward compatible)
+        if self.poe != "corrected" or self.prior is None:
+            precisions = []
+            precision_means = []
+            
+            for mu, logvar in distributions:
+                precision = torch.exp(-logvar)  # 1/var
+                precisions.append(precision)
+                precision_means.append(mu * precision)
+            
+            # Combine precisions and precision-weighted means
+            combined_precision = torch.stack(precisions, dim=0).sum(dim=0)
+            combined_precision_mean = torch.stack(precision_means, dim=0).sum(dim=0)
+            
+            # Convert back to mean and logvar
+            combined_mu = combined_precision_mean / combined_precision
+            combined_logvar = -torch.log(combined_precision)
+            
+            return combined_mu, combined_logvar
         
-        for mu, logvar in distributions:
-            precision = torch.exp(-logvar)  # 1/var
-            precisions.append(precision)
-            precision_means.append(mu * precision)
+        # Corrected PoE: Λ_S = Σ_m Λ_m - (|S|-1)Λ_0
+        # Get prior parameters
+        B = distributions[0][0].size(0)  # Batch size
         
-        # Combine precisions and precision-weighted means
-        combined_precision = torch.stack(precisions, dim=0).sum(dim=0)
-        combined_precision_mean = torch.stack(precision_means, dim=0).sum(dim=0)
+        has_full_cov = hasattr(self.prior, 'sigma') and not isinstance(
+            self.prior, (FixedGaussianPrior, FixedLogisticNormalPrior, FixedDirichletPrior)
+        )
         
-        # Convert back to mean and logvar
-        combined_mu = combined_precision_mean / combined_precision
-        combined_logvar = -torch.log(combined_precision)
+        if has_full_cov:
+            mu_p, Sigma_p = self.prior.get_prior_params(prevalence_covariates, return_full_cov=True)
+            Sigma_p_batch = Sigma_p.unsqueeze(0).expand(B, -1, -1)
+            Lambda_0_diag = 1.0 / (torch.diagonal(Sigma_p_batch, dim1=1, dim2=2) + 1e-8)
+        else:
+            mu_p, logvar_p = self.prior.get_prior_params(prevalence_covariates)
+            Lambda_0_diag = torch.exp(-logvar_p)
         
-        return combined_mu, combined_logvar
+        # Ensure prior parameters are properly batched
+        if mu_p.size(0) == 1 and B > 1:
+            mu_p = mu_p.expand(B, -1)
+            Lambda_0_diag = Lambda_0_diag.expand(B, -1)
+        
+        eta_0 = Lambda_0_diag * mu_p
+        
+        # Accumulate unimodal natural parameters
+        # For corrected PoE: η_m = Λ_m * μ_m where Λ_m comes from (μ_m, logvar_m)
+        num_modalities = len(distributions)
+        Lambda_sum = torch.zeros_like(Lambda_0_diag)
+        eta_sum = torch.zeros_like(eta_0)
+        
+        for mu_m, logvar_m in distributions:
+            # Λ_m is encoded in logvar_m (already includes Λ_0 + Δ_m if corrected PoE)
+            Lambda_m = torch.exp(-logvar_m)
+            # Natural mean: η_m = Λ_m * μ_m
+            eta_m = Lambda_m * mu_m
+            Lambda_sum += Lambda_m
+            eta_sum += eta_m
+        
+        # Corrected PoE formula
+        Lambda_S = Lambda_sum - (num_modalities - 1) * Lambda_0_diag
+        eta_S = eta_sum - (num_modalities - 1) * eta_0
+        
+        # Ensure positive precision
+        Lambda_S = torch.clamp(Lambda_S, min=1e-8)
+        
+        # Fused posterior mean: μ_S = Λ_S^(-1) * η_S (precision-weighted average)
+        mu_S = eta_S / Lambda_S
+        logvar_S = -torch.log(Lambda_S)
+        
+        return mu_S, logvar_S
 
     def product_of_experts_full_rank(
         self, 
-        distributions: List[Tuple[torch.Tensor, torch.Tensor]]
+        distributions: List[Tuple[torch.Tensor, torch.Tensor]],
+        prevalence_covariates: Optional[torch.Tensor] = None
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         Combine full-rank Gaussian distributions using Product of Experts.
+        Supports both standard (uncorrected) and corrected PoE.
         
         Args:
             distributions: List of (mu, L) tuples where L is lower triangular
+            prevalence_covariates: Covariates for prior parameters (needed for corrected PoE)
             
         Returns:
             Combined (mu, L) from PoE
@@ -750,49 +815,104 @@ class MultiModalEncoder(nn.Module):
         batch_size = distributions[0][0].size(0)
         dim = self.topic_dim
         device = distributions[0][0].device
+        eye = torch.eye(dim, device=device).unsqueeze(0).expand(batch_size, -1, -1)
         
-        # Convert to precision matrices and precision-weighted means
-        precisions = []
-        precision_means = []
-        
-        for mu, L in distributions:
-            # Sigma = L @ L^T
-            Sigma = torch.bmm(L, L.transpose(-2, -1))
-            # Add small regularization for numerical stability
-            eye = torch.eye(dim, device=device).unsqueeze(0).expand(batch_size, -1, -1)
-            Sigma_reg = Sigma + 1e-4 * eye
+        # Uncorrected PoE (standard, backward compatible)
+        if self.poe != "corrected" or self.prior is None:
+            precisions = []
+            precision_means = []
             
-            # Precision matrix
-            precision = torch.linalg.inv(Sigma_reg)
-            precisions.append(precision)
+            for mu, L in distributions:
+                # Sigma = L @ L^T
+                Sigma = torch.bmm(L, L.transpose(-2, -1))
+                Sigma_reg = Sigma + 1e-4 * eye
+                
+                # Precision matrix
+                precision = torch.linalg.inv(Sigma_reg)
+                precisions.append(precision)
+                
+                # Precision-weighted mean
+                precision_mean = torch.bmm(precision, mu.unsqueeze(-1)).squeeze(-1)
+                precision_means.append(precision_mean)
             
-            # Precision-weighted mean
-            precision_mean = torch.bmm(precision, mu.unsqueeze(-1)).squeeze(-1)
-            precision_means.append(precision_mean)
+            # Combine precisions and precision-weighted means
+            combined_precision = torch.stack(precisions, dim=0).sum(dim=0)
+            combined_precision_mean = torch.stack(precision_means, dim=0).sum(dim=0)
+            
+            # Convert back to mean and covariance
+            combined_Sigma = torch.linalg.inv(combined_precision)
+            combined_mu = torch.bmm(combined_Sigma, combined_precision_mean.unsqueeze(-1)).squeeze(-1)
+            
+            # Cholesky decomposition to get L
+            try:
+                combined_L = torch.linalg.cholesky(combined_Sigma)
+            except:
+                combined_Sigma_reg = combined_Sigma + 1e-3 * eye
+                combined_L = torch.linalg.cholesky(combined_Sigma_reg)
+            
+            return combined_mu, combined_L
         
-        # Combine precisions and precision-weighted means
-        combined_precision = torch.stack(precisions, dim=0).sum(dim=0)
-        combined_precision_mean = torch.stack(precision_means, dim=0).sum(dim=0)
+        # Corrected PoE: Λ_S = Σ_m Λ_m - (|S|-1)Λ_0
+        # Get prior precision matrix
+        has_full_cov = hasattr(self.prior, 'sigma') and not isinstance(
+            self.prior, (FixedGaussianPrior, FixedLogisticNormalPrior, FixedDirichletPrior)
+        )
         
-        # Convert back to mean and covariance
-        combined_Sigma = torch.linalg.inv(combined_precision)
-        combined_mu = torch.bmm(combined_Sigma, combined_precision_mean.unsqueeze(-1)).squeeze(-1)
+        if has_full_cov:
+            mu_p, Sigma_p = self.prior.get_prior_params(prevalence_covariates, return_full_cov=True)
+            Sigma_p_batch = Sigma_p.unsqueeze(0).expand(batch_size, -1, -1)
+            Lambda_0 = torch.linalg.inv(Sigma_p_batch + 1e-6 * eye)
+        else:
+            mu_p, logvar_p = self.prior.get_prior_params(prevalence_covariates)
+            Lambda_0_diag = torch.exp(-logvar_p)
+            Lambda_0 = torch.diag_embed(Lambda_0_diag)
         
-        # Cholesky decomposition to get L
+        # Ensure prior parameters are properly batched
+        if mu_p.size(0) == 1 and batch_size > 1:
+            mu_p = mu_p.expand(batch_size, -1)
+            if Lambda_0.dim() == 2:  # [D, D] -> [B, D, D]
+                Lambda_0 = Lambda_0.unsqueeze(0).expand(batch_size, -1, -1)
+            elif Lambda_0.size(0) == 1:  # [1, D, D] -> [B, D, D]
+                Lambda_0 = Lambda_0.expand(batch_size, -1, -1)
+        
+        eta_0 = torch.bmm(Lambda_0, mu_p.unsqueeze(-1)).squeeze(-1)
+        
+        # Accumulate modality natural parameters
+        num_modalities = len(distributions)
+        Lambda_sum = torch.zeros(batch_size, dim, dim, device=device)
+        eta_sum = torch.zeros(batch_size, dim, device=device)
+        
+        for mu_m, L_m in distributions:
+            Sigma_m = torch.bmm(L_m, L_m.transpose(-2, -1))
+            Lambda_m = torch.linalg.inv(Sigma_m + 1e-6 * eye)
+            eta_m = torch.bmm(Lambda_m, mu_m.unsqueeze(-1)).squeeze(-1)
+            Lambda_sum += Lambda_m
+            eta_sum += eta_m
+        
+        # Corrected PoE formula
+        Lambda_S = Lambda_sum - (num_modalities - 1) * Lambda_0
+        eta_S = eta_sum - (num_modalities - 1) * eta_0
+        
+        # Regularization
+        Lambda_S = Lambda_S + 1e-6 * eye
+        
+        # Convert to mean parameterization
+        Sigma_S = torch.linalg.inv(Lambda_S)
+        mu_S = torch.bmm(Sigma_S, eta_S.unsqueeze(-1)).squeeze(-1)
+        
         try:
-            combined_L = torch.linalg.cholesky(combined_Sigma)
+            L_S = torch.linalg.cholesky(Sigma_S)
         except:
-            # Fallback: add more regularization
-            eye = torch.eye(dim, device=device).unsqueeze(0).expand(batch_size, -1, -1)
-            combined_Sigma_reg = combined_Sigma + 1e-3 * eye
-            combined_L = torch.linalg.cholesky(combined_Sigma_reg)
+            Sigma_S_reg = Sigma_S + 1e-3 * eye
+            L_S = torch.linalg.cholesky(Sigma_S_reg)
         
-        return combined_mu, combined_L
+        return mu_S, L_S
 
     def forward(
         self,
         modality_inputs: Dict[str, torch.Tensor],
         single_modality: Optional[str] = None,
+        active_modalities: Optional[List[str]] = None,
         prevalence_covariates: Optional[torch.Tensor] = None,
         labels: Optional[torch.Tensor] = None
     ) -> Tuple[torch.Tensor, torch.Tensor, List[Tuple]]:
@@ -852,9 +972,8 @@ class MultiModalEncoder(nn.Module):
                     eps = torch.randn_like(std)
                     z0 = mu + eps * std
                     
-                    # Apply IAF flow
-                    flow = self.flows[single_modality]
-                    zk, log_det_j = flow(z0)
+                    # Apply shared IAF flow
+                    zk, log_det_j = self.shared_flow(z0)
                     
                     mu_logvar_info = [(mu, logvar, z0, zk, log_det_j)]
                     z_sample = zk
@@ -872,8 +991,16 @@ class MultiModalEncoder(nn.Module):
         modality_outputs = []
         mu_logvar_info = []
         
-        # Process each modality
+        # Determine which modalities to process
+        if active_modalities is None:
+            active_modalities = list(self.encoders.keys())
+        
+        # Process each active modality
         for name, encoder in self.encoders.items():
+            # Skip inactive modalities
+            if name not in active_modalities:
+                continue
+                
             x = modality_inputs[name]
            
             # Handle different encoder types
@@ -887,12 +1014,48 @@ class MultiModalEncoder(nn.Module):
             if self.ae_type == "vae":
                 if self.vi_type == "mean_field":
                     mu, logvar = torch.chunk(z_raw, 2, dim=1)
-                    mu_logvar_info.append((mu, logvar))
                     
-                    # Sample from distribution
-                    std = torch.exp(0.5 * logvar)
-                    eps = torch.randn_like(std)
-                    z_sample = mu + eps * std
+                    # For corrected PoE with precision increments:
+                    # Encoder outputs (μ_m, Δ_m) where Δ_m ≥ 0 is the precision increment
+                    # The unimodal posterior is q_m(z|x_m) = N(μ_m, (Λ_0 + Δ_m)^(-1))
+                    if self.poe == "corrected" and self.prior is not None:
+                        # Get prior precision Λ_0
+                        has_full_cov = hasattr(self.prior, 'sigma') and not isinstance(
+                            self.prior, (FixedGaussianPrior, FixedLogisticNormalPrior, FixedDirichletPrior)
+                        )
+                        if has_full_cov:
+                            mu_p, Sigma_p = self.prior.get_prior_params(prevalence_covariates, return_full_cov=True)
+                            B = mu.size(0)
+                            Sigma_p_batch = Sigma_p.unsqueeze(0).expand(B, -1, -1)
+                            Lambda_0_diag = 1.0 / (torch.diagonal(Sigma_p_batch, dim1=1, dim2=2) + 1e-8)
+                        else:
+                            mu_p, logvar_p = self.prior.get_prior_params(prevalence_covariates)
+                            Lambda_0_diag = torch.exp(-logvar_p)
+                        
+                        # Precision increment Δ_m from encoder (logvar encodes -log(Δ_m))
+                        Delta_m = torch.exp(-logvar)
+                        
+                        # Total unimodal precision: Λ_m = Λ_0 + Δ_m
+                        Lambda_m = Lambda_0_diag + Delta_m
+                        
+                        # Convert to logvar for distribution sampling
+                        logvar_m = -torch.log(Lambda_m)
+                        
+                        # Store (μ_m, logvar_m) for PoE fusion
+                        # Note: μ_m is the encoder's point estimate, NOT the fused posterior mean
+                        mu_logvar_info.append((mu, logvar_m))
+                        
+                        # Sample from unimodal posterior
+                        std = torch.exp(0.5 * logvar_m)
+                        eps = torch.randn_like(std)
+                        z_sample = mu + eps * std
+                    else:
+                        # Standard VAE (uncorrected PoE or no PoE)
+                        mu_logvar_info.append((mu, logvar))
+                        std = torch.exp(0.5 * logvar)
+                        eps = torch.randn_like(std)
+                        z_sample = mu + eps * std
+                    
                     modality_outputs.append(z_sample)
                     
                 elif self.vi_type == "full_rank":
@@ -921,18 +1084,9 @@ class MultiModalEncoder(nn.Module):
                 elif self.vi_type == "iaf":
                     mu, logvar = torch.chunk(z_raw, 2, dim=1)
                     
-                    # Sample from base distribution
-                    std = torch.exp(0.5 * logvar)
-                    eps = torch.randn_like(std)
-                    z0 = mu + eps * std
-                    
-                    # Apply IAF flow
-                    flow = self.flows[name]
-                    zk, log_det_j = flow(z0)
-                    
-                    # Store base parameters, base sample, flow output, and log determinant
-                    mu_logvar_info.append((mu, logvar, z0, zk, log_det_j))
-                    modality_outputs.append(zk)
+                    # Store base parameters only - will apply shared flow after PoE fusion
+                    mu_logvar_info.append((mu, logvar))
+                    modality_outputs.append((mu, logvar))
                     
             else:  # WAE or plain AE
                 mu_logvar_info.append((z_raw,))  # Wrap in tuple for consistency
@@ -940,12 +1094,15 @@ class MultiModalEncoder(nn.Module):
 
         # Fusion step
         if self.poe and self.ae_type == "vae":
-            # Product of Experts fusion
+            # Product of Experts fusion (both corrected and uncorrected)
             if self.vi_type == "mean_field":
                 distributions = [(info[0], info[1]) for info in mu_logvar_info 
                             if len(info) >= 2]
                 if distributions:
-                    combined_mu, combined_logvar = self.product_of_experts(distributions)
+                    combined_mu, combined_logvar = self.product_of_experts(
+                        distributions,
+                        prevalence_covariates=prevalence_covariates
+                    )
                     # Sample from combined distribution
                     std = torch.exp(0.5 * combined_logvar)
                     eps = torch.randn_like(std)
@@ -959,7 +1116,10 @@ class MultiModalEncoder(nn.Module):
                 distributions = [(info[0], info[1]) for info in mu_logvar_info 
                             if len(info) >= 2]
                 if distributions:
-                    combined_mu, combined_L = self.product_of_experts_full_rank(distributions)
+                    combined_mu, combined_L = self.product_of_experts_full_rank(
+                        distributions,
+                        prevalence_covariates=prevalence_covariates
+                    )
                     # Sample from combined distribution
                     eps = torch.randn(combined_mu.size(0), self.topic_dim, 1, device=combined_mu.device)
                     z_final = combined_mu.unsqueeze(-1) + torch.bmm(combined_L, eps)
@@ -970,29 +1130,45 @@ class MultiModalEncoder(nn.Module):
                     z_final = torch.stack(modality_outputs, dim=1).mean(dim=1)
                     
             elif self.vi_type == "iaf":
-                # For IAF flows with PoE, combine base distributions then apply average flow
+                # For IAF with PoE, combine base distributions then apply shared flow
                 base_distributions = [(info[0], info[1]) for info in mu_logvar_info 
-                                    if len(info) >= 5]
+                                    if len(info) == 2]
                 if base_distributions:
-                    combined_mu, combined_logvar = self.product_of_experts(base_distributions)
-                    # Use first flow as representative (could be improved)
-                    first_flow_name = list(self.flows.keys())[0]
-                    flow = self.flows[first_flow_name]
+                    combined_mu, combined_logvar = self.product_of_experts(
+                        base_distributions,
+                        prevalence_covariates=prevalence_covariates
+                    )
                     
+                    # Sample from fused base distribution
                     std = torch.exp(0.5 * combined_logvar)
                     eps = torch.randn_like(std)
-                    z0 = combined_mu + eps * std
-                    z_final, log_det_j = flow(z0)
+                    z0_fused = combined_mu + eps * std
+                    
+                    # Apply shared flow to fused base
+                    z_final, log_det_j = self.shared_flow(z0_fused)
                     
                     # Update mu_logvar_info for consistency
-                    mu_logvar_info = [(combined_mu, combined_logvar, z0, z_final, log_det_j)]
+                    mu_logvar_info = [(combined_mu, combined_logvar, z0_fused, z_final, log_det_j)]
                 else:
-                    z_final = torch.stack(modality_outputs, dim=1).mean(dim=1)
+                    # Fallback if no valid distributions
+                    z_final = torch.zeros(prevalence_covariates.size(0) if prevalence_covariates is not None else 1, 
+                                        self.topic_dim, device=prevalence_covariates.device if prevalence_covariates is not None else 'cpu')
         
         else:
             # Mixture of Experts fusion
             if self.moe_type == "average":
-                z_final = torch.stack(modality_outputs, dim=1).mean(dim=1)
+                # For IAF, modality_outputs contains (mu, logvar) tuples - need to sample and apply flow
+                if self.ae_type == "vae" and self.vi_type == "iaf":
+                    samples = []
+                    for mu, logvar in modality_outputs:
+                        std = torch.exp(0.5 * logvar)
+                        eps = torch.randn_like(std)
+                        z0 = mu + eps * std
+                        zk, _ = self.shared_flow(z0)
+                        samples.append(zk)
+                    z_final = torch.stack(samples, dim=1).mean(dim=1)
+                else:
+                    z_final = torch.stack(modality_outputs, dim=1).mean(dim=1)
                 
             elif self.moe_type == "gating" or self.gating:
                 # Prepare input for gating network
@@ -1004,8 +1180,18 @@ class MultiModalEncoder(nn.Module):
                         gate_input = torch.cat([torch.cat((info[0], info[1].view(info[0].size(0), -1)), dim=1) 
                                             for info in mu_logvar_info if len(info) >= 2], dim=1)
                     elif self.vi_type == "iaf":
+                        # For IAF with MoE, need to get actual samples from modality_outputs
+                        # Each modality_outputs element is (mu, logvar) - sample and apply shared flow
+                        samples = []
+                        for mu, logvar in modality_outputs:
+                            std = torch.exp(0.5 * logvar)
+                            eps = torch.randn_like(std)
+                            z0 = mu + eps * std
+                            zk, _ = self.shared_flow(z0)
+                            samples.append(zk)
+                        modality_outputs = samples
                         gate_input = torch.cat([torch.cat((info[0], info[1]), dim=1) 
-                                            for info in mu_logvar_info if len(info) >= 5], dim=1)
+                                            for info in mu_logvar_info if len(info) >= 2], dim=1)
                 else:
                     gate_input = torch.cat([info[0] for info in mu_logvar_info], dim=1)
                 
@@ -1015,8 +1201,19 @@ class MultiModalEncoder(nn.Module):
                 z_final = torch.sum(modality_stack * weights, dim=1)
                 
             elif self.moe_type == "learned_weights":
+                # For IAF, need to sample from base distributions and apply shared flow
+                if self.ae_type == "vae" and self.vi_type == "iaf":
+                    samples = []
+                    for mu, logvar in modality_outputs:
+                        std = torch.exp(0.5 * logvar)
+                        eps = torch.randn_like(std)
+                        z0 = mu + eps * std
+                        zk, _ = self.shared_flow(z0)
+                        samples.append(zk)
+                    modality_stack = torch.stack(samples, dim=1)  # [B, M, D]
+                else:
+                    modality_stack = torch.stack(modality_outputs, dim=1)  # [B, M, D]
                 weights = F.softmax(self.mixture_weights, dim=0)
-                modality_stack = torch.stack(modality_outputs, dim=1)  # [B, M, D]
                 z_final = torch.sum(modality_stack * weights.unsqueeze(0).unsqueeze(2), dim=1)
 
         # Convert to simplex for topic models

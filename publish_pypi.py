@@ -65,13 +65,22 @@ def main():
         sys.exit(1)
     
     # Clean previous builds
-    if os.path.exists("dist"):
-        if not run_command("rmdir /s /q dist", "Cleaning previous builds"):
-            print("⚠️  Could not clean previous builds, continuing...")
+    import shutil
+    try:
+        if os.path.exists("dist"):
+            print("\n🔧 Cleaning previous builds...")
+            shutil.rmtree("dist")
+            print("✅ Cleaned dist directory")
+    except Exception as e:
+        print(f"⚠️  Could not clean dist directory: {e}, continuing...")
     
-    if os.path.exists("build"):
-        if not run_command("rmdir /s /q build", "Cleaning build directory"):
-            print("⚠️  Could not clean build directory, continuing...")
+    try:
+        if os.path.exists("build"):
+            print("\n🔧 Cleaning build directory...")
+            shutil.rmtree("build")
+            print("✅ Cleaned build directory")
+    except Exception as e:
+        print(f"⚠️  Could not clean build directory: {e}, continuing...")
     
     # Build the package
     if not run_command("python -m build", "Building package"):
