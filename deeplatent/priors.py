@@ -12,32 +12,79 @@ from torch.distributions.dirichlet import Dirichlet
 class Prior(nn.Module):
     """
     Base template class for doc-topic priors.
-    All priors are now learnable neural networks.
+    
+    All priors are now learnable neural networks that can optionally condition on
+    prevalence covariates. Subclasses implement specific prior distributions
+    (Dirichlet, Logistic Normal, Gaussian) with either fixed or learnable parameters.
+    
+    Subclasses must implement:
+        - sample(): Draw samples from the prior distribution
+        - simulate(): Generate synthetic data for testing
+        - get_prior_params(): Return distribution parameters for KL computation
     """
 
     def __init__(self):
         super().__init__()
 
-    def sample(self, N, M_prevalence_covariates=None, to_simplex=False, epoch=None, initialization=False):
+    def sample(self, N, M_prevalence_covariates=None, to_simplex=False):
         """
-        Sample from the prior.
+        Sample from the prior distribution.
+        
+        Args:
+            N: Number of samples to draw
+            M_prevalence_covariates: Prevalence covariates [batch_size, covariate_dim].
+                                    If None, uses global parameters (no covariates).
+            to_simplex: Whether to map samples to the simplex via softmax.
+                       Only applicable for certain prior types.
+        
+        Returns:
+            Samples from the prior [N, latent_dim]
+            
+        Raises:
+            NotImplementedError: Must be implemented by subclasses
         """
         raise NotImplementedError
 
     def simulate(self, M_prevalence_covariates, **kwargs):
         """
-        Simulate data to test the prior.
+        Simulate data to test the prior's behavior.
+        
+        Args:
+            M_prevalence_covariates: Prevalence covariates for simulation
+            **kwargs: Additional arguments specific to the prior type
+            
+        Returns:
+            Simulated samples from the prior
+            
+        Raises:
+            NotImplementedError: Must be implemented by subclasses
         """
         raise NotImplementedError
 
 
 class LogisticNormalPrior(Prior):
     """
-    Learnable logistic Normal prior.
+    Learnable Logistic Normal prior for topic modeling.
 
-    We learn the mean and full covariance parameters for K dimensions that define a multivariate gaussian,
-    then map samples to the simplex via softmax normalization.
-    Uses Cholesky decomposition for positive definiteness.
+    This prior learns a K-dimensional multivariate Gaussian distribution, then
+    maps samples to the (K-1)-simplex via softmax normalization. The mean can
+    optionally depend on prevalence covariates via a linear transformation.
+    
+    The covariance matrix is parameterized via Cholesky decomposition to ensure
+    positive definiteness: Σ = L L^T where L is lower triangular with positive
+    diagonal elements.
+    
+    Mathematical formulation:
+        z ~ N(μ(x), Σ)  where μ(x) = W*x (if covariates) or μ (global)
+        θ = softmax(z)   maps to simplex
+    
+    Attributes:
+        prevalence_covariate_size: Dimension of prevalence covariates
+        n_topics: Number of topics (K)
+        n_latent: Latent dimension (equals n_topics)
+        mean_net: Linear layer for covariate-dependent mean (if covariates > 0)
+        global_mean: Learnable global mean parameter (if no covariates)
+        L_flat: Flattened lower triangular Cholesky factor
     """
 
     def __init__(
@@ -64,7 +111,15 @@ class LogisticNormalPrior(Prior):
 
     @property
     def sigma(self):
-        """Reconstruct covariance matrix from Cholesky factor (K x K)"""
+        """
+        Reconstruct covariance matrix from Cholesky factor.
+        
+        Computes Σ = L L^T where L is the lower triangular Cholesky factor.
+        Diagonal elements of L are exponentiated to ensure positivity.
+        
+        Returns:
+            Covariance matrix [K, K]
+        """
         device = self.L_flat.device  # Get device from existing parameter
         L = torch.zeros(self.n_latent, self.n_latent, device=device)
         tril_indices = torch.tril_indices(self.n_latent, self.n_latent, device=device)
@@ -78,7 +133,19 @@ class LogisticNormalPrior(Prior):
 
     def get_parameters(self, M_prevalence_covariates):
         """
-        Get mean and covariance for the current batch (K dimensions).
+        Get mean and covariance for the current batch.
+        
+        If prevalence covariates are provided, computes batch-specific means
+        via a learned linear transformation. Otherwise, uses a global mean
+        parameter broadcasted to the batch size.
+        
+        Args:
+            M_prevalence_covariates: Prevalence covariates [batch_size, covariate_dim]
+                                    or None for global parameters
+        
+        Returns:
+            means: Mean vectors [batch_size, K]
+            covariance: Covariance matrix [K, K] (shared across batch)
         """
         if self.prevalence_covariate_size > 0:
             if not torch.is_tensor(M_prevalence_covariates):
@@ -90,9 +157,24 @@ class LogisticNormalPrior(Prior):
             
         return means, self.sigma
 
-    def sample(self, N, M_prevalence_covariates=None, to_simplex=True, epoch=None, initialization=False):
+    def sample(self, N, M_prevalence_covariates=None, to_simplex=True):
         """
-        Sample from the prior and optionally map to simplex via softmax.
+        Sample from the Logistic Normal prior.
+        
+        Draws samples from the learned multivariate Gaussian and optionally
+        applies softmax normalization to map to the probability simplex.
+        
+        Args:
+            N: Number of samples to draw
+            M_prevalence_covariates: Prevalence covariates [N, covariate_dim] or None
+            to_simplex: If True, apply softmax to map samples to simplex.
+                       If False, return raw Gaussian samples.
+        
+        Returns:
+            Samples [N, K]. If to_simplex=True, samples lie on the simplex.
+            
+        Raises:
+            ValueError: If batch size mismatch between N and M_prevalence_covariates
         """
         means, covariance = self.get_parameters(M_prevalence_covariates)
         
@@ -141,9 +223,22 @@ class LogisticNormalPrior(Prior):
 
 class DirichletPrior(Prior):
     """
-    Learnable Dirichlet prior.
+    Learnable Dirichlet prior for topic modeling.
 
-    We learn all K concentration parameters directly.
+    This prior learns K concentration parameters (α₁, ..., αₖ) that define
+    a Dirichlet distribution over the topic simplex. The concentration parameters
+    can optionally depend on prevalence covariates via a neural network.
+    
+    Mathematical formulation:
+        α = exp(f(x)) where f is a learned function (if covariates)
+        θ ~ Dirichlet(α)
+    
+    Attributes:
+        prevalence_covariate_size: Dimension of prevalence covariates
+        n_topics: Number of topics (K)
+        n_latent: Latent dimension (equals n_topics)
+        concentration_net: Neural network for covariate-dependent α (if covariates > 0)
+        log_concentration: Learnable log-concentration parameters (if no covariates)
     """
 
     def __init__(
@@ -168,7 +263,18 @@ class DirichletPrior(Prior):
 
     def get_concentration(self, M_prevalence_covariates):
         """
-        Get Dirichlet concentration parameters for the current batch (K dimensions).
+        Get Dirichlet concentration parameters for the current batch.
+        
+        If prevalence covariates are provided, computes batch-specific concentration
+        parameters via a learned neural network with softplus activation (ensures
+        positivity). Otherwise, uses global concentration parameters.
+        
+        Args:
+            M_prevalence_covariates: Prevalence covariates [batch_size, covariate_dim]
+                                    or None for global parameters
+        
+        Returns:
+            Concentration parameters α [batch_size, K], all elements positive
         """
         if self.prevalence_covariate_size > 0:
             if not torch.is_tensor(M_prevalence_covariates):
@@ -183,9 +289,22 @@ class DirichletPrior(Prior):
         
         return concentration
 
-    def sample(self, N, M_prevalence_covariates=None, epoch=None, initialization=False):
+    def sample(self, N, M_prevalence_covariates=None):
         """
         Sample from the Dirichlet prior.
+        
+        Draws samples from the Dirichlet distribution with learned concentration
+        parameters. Samples automatically lie on the probability simplex.
+        
+        Args:
+            N: Number of samples to draw
+            M_prevalence_covariates: Prevalence covariates [N, covariate_dim] or None
+        
+        Returns:
+            Samples on the simplex [N, K], where each row sums to 1
+            
+        Raises:
+            ValueError: If batch size mismatch between N and M_prevalence_covariates
         """
         concentration = self.get_concentration(M_prevalence_covariates)
         
@@ -223,17 +342,45 @@ class DirichletPrior(Prior):
 
     def simulate(self, M_prevalence_covariates, **kwargs):
         """
-        Simulate data using current parameters.
+        Simulate data using current learned parameters.
+        
+        Convenience method that samples from the prior with the current
+        learned concentration parameters.
+        
+        Args:
+            M_prevalence_covariates: Prevalence covariates [batch_size, covariate_dim]
+            **kwargs: Additional arguments (unused, for API compatibility)
+        
+        Returns:
+            Simulated samples on the simplex [batch_size, K]
         """
         return self.sample(M_prevalence_covariates.shape[0], M_prevalence_covariates)
 
 
 class GaussianPrior(Prior):
     """
-    Learnable Gaussian prior over latent variables.
+    Learnable Gaussian prior for ideal point models.
 
-    We learn the mean and full covariance matrix via neural networks.
-    Uses Cholesky decomposition for positive definiteness.
+    This prior learns a multivariate Gaussian distribution over unconstrained
+    latent variables (ideal points). The mean can optionally depend on prevalence
+    covariates via a linear transformation.
+    
+    Unlike LogisticNormalPrior, samples are NOT mapped to the simplex - they
+    remain as real-valued vectors in ℝⁿ. This is suitable for ideal point models
+    where latent dimensions represent policy positions or other continuous factors.
+    
+    The covariance matrix is parameterized via Cholesky decomposition to ensure
+    positive definiteness: Σ = L L^T where L is lower triangular.
+    
+    Mathematical formulation:
+        z ~ N(μ(x), Σ)  where μ(x) = W*x (if covariates) or μ (global)
+    
+    Attributes:
+        prevalence_covariate_size: Dimension of prevalence covariates
+        n_dims: Dimension of latent space
+        mean_net: Linear layer for covariate-dependent mean (if covariates > 0)
+        global_mean: Learnable global mean parameter (if no covariates)
+        L_flat: Flattened lower triangular Cholesky factor
     """
 
     def __init__(self, prevalence_covariate_size, n_dims):
@@ -255,7 +402,15 @@ class GaussianPrior(Prior):
 
     @property
     def sigma(self):
-        """Reconstruct covariance matrix from Cholesky factor"""
+        """
+        Reconstruct covariance matrix from Cholesky factor.
+        
+        Computes Σ = L L^T where L is the lower triangular Cholesky factor.
+        Diagonal elements of L are exponentiated to ensure positivity.
+        
+        Returns:
+            Covariance matrix [n_dims, n_dims]
+        """
         device = self.L_flat.device  # Get device from existing parameter
         L = torch.zeros(self.n_dims, self.n_dims, device=device)
         tril_indices = torch.tril_indices(self.n_dims, self.n_dims, device=device)
@@ -270,6 +425,18 @@ class GaussianPrior(Prior):
     def get_parameters(self, M_prevalence_covariates):
         """
         Get mean and covariance for the current batch.
+        
+        If prevalence covariates are provided, computes batch-specific means
+        via a learned linear transformation. Otherwise, uses a global mean
+        parameter broadcasted to the batch size.
+        
+        Args:
+            M_prevalence_covariates: Prevalence covariates [batch_size, covariate_dim]
+                                    or None for global parameters
+        
+        Returns:
+            means: Mean vectors [batch_size, n_dims]
+            covariance: Covariance matrix [n_dims, n_dims] (shared across batch)
         """
         if self.prevalence_covariate_size > 0:
             if not torch.is_tensor(M_prevalence_covariates):
@@ -281,9 +448,23 @@ class GaussianPrior(Prior):
 
         return means, self.sigma
 
-    def sample(self, N, M_prevalence_covariates=None, to_simplex=False, epoch=None, initialization=False):
+    def sample(self, N, M_prevalence_covariates=None, to_simplex=False):
         """
         Sample latent vectors from the Gaussian prior.
+        
+        Draws samples from the learned multivariate Gaussian distribution.
+        Samples are unconstrained real-valued vectors (not on the simplex).
+        
+        Args:
+            N: Number of samples to draw
+            M_prevalence_covariates: Prevalence covariates [N, covariate_dim] or None
+            to_simplex: Ignored for Gaussian prior (included for API compatibility)
+        
+        Returns:
+            Unconstrained samples [N, n_dims] from ℝⁿ
+            
+        Raises:
+            ValueError: If batch size mismatch between N and M_prevalence_covariates
         """
         means, covariance = self.get_parameters(M_prevalence_covariates)
         
@@ -318,7 +499,17 @@ class GaussianPrior(Prior):
 
     def simulate(self, M_prevalence_covariates, **kwargs):
         """
-        Generate synthetic latent variables from current parameters.
+        Generate synthetic latent variables from current learned parameters.
+        
+        Convenience method that samples from the prior with the current
+        learned parameters.
+        
+        Args:
+            M_prevalence_covariates: Prevalence covariates [batch_size, covariate_dim]
+            **kwargs: Additional arguments (unused, for API compatibility)
+        
+        Returns:
+            Simulated samples [batch_size, n_dims]
         """
         return self.sample(M_prevalence_covariates.shape[0], M_prevalence_covariates)
 
@@ -326,6 +517,18 @@ class GaussianPrior(Prior):
 class FixedGaussianPrior(Prior):
     """
     Fixed Gaussian prior (standard normal) - not learnable.
+    
+    This prior uses a fixed standard multivariate normal distribution N(0, I)
+    with zero mean and identity covariance. Parameters are not learned during
+    training. Useful as a baseline or when you want a simple, non-informative prior.
+    
+    Mathematical formulation:
+        z ~ N(0, I)
+    
+    Attributes:
+        prevalence_covariate_size: Ignored (for API compatibility)
+        n_dims: Dimension of latent space
+        _device_tracker: Buffer to track device placement
     """
 
     def __init__(self, prevalence_covariate_size, n_dims):
@@ -337,11 +540,23 @@ class FixedGaussianPrior(Prior):
 
     @property
     def device(self):
+        """Get the device (CPU/GPU) where the prior is located."""
         return self._device_tracker.device
 
-    def sample(self, N, M_prevalence_covariates=None, to_simplex=False, epoch=None, initialization=False):
+    def sample(self, N, M_prevalence_covariates=None, to_simplex=False):
         """
         Sample from standard normal distribution.
+        
+        Draws samples from N(0, I). Covariates are ignored since this is
+        a fixed, non-covariate-dependent prior.
+        
+        Args:
+            N: Number of samples to draw
+            M_prevalence_covariates: Ignored (for API compatibility)
+            to_simplex: Ignored (for API compatibility)
+        
+        Returns:
+            Samples from standard normal [N, n_dims]
         """
         return torch.randn(N, self.n_dims, device=self.device)
 
@@ -365,17 +580,48 @@ class FixedGaussianPrior(Prior):
 
     @property
     def sigma(self):
-        """Return identity covariance matrix"""
+        """
+        Return identity covariance matrix.
+        
+        Returns:
+            Identity matrix I [n_dims, n_dims]
+        """
         return torch.eye(self.n_dims, device=self.device)
 
     def simulate(self, M_prevalence_covariates, **kwargs):
+        """
+        Simulate data from standard normal distribution.
+        
+        Args:
+            M_prevalence_covariates: Used only for batch size
+            **kwargs: Additional arguments (unused)
+        
+        Returns:
+            Simulated samples from N(0, I) [batch_size, n_dims]
+        """
         return self.sample(M_prevalence_covariates.shape[0], M_prevalence_covariates)
 
 
 class FixedLogisticNormalPrior(Prior):
     """
     Fixed Logistic Normal prior - not learnable.
-    Uses fixed zero mean and identity covariance matrix for K dimensions.
+    
+    This prior uses a fixed logistic normal distribution: samples are drawn from
+    a standard multivariate normal N(0, I) and then mapped to the simplex via
+    softmax. Parameters are not learned during training.
+    
+    This is equivalent to a uniform Dirichlet prior over the simplex and serves
+    as a non-informative baseline for topic models.
+    
+    Mathematical formulation:
+        z ~ N(0, I)
+        θ = softmax(z)
+    
+    Attributes:
+        prevalence_covariate_size: Ignored (for API compatibility)
+        n_topics: Number of topics (K)
+        n_latent: Latent dimension (equals n_topics)
+        _device_tracker: Buffer to track device placement
     """
 
     def __init__(self, prevalence_covariate_size, n_topics):
@@ -388,16 +634,34 @@ class FixedLogisticNormalPrior(Prior):
 
     @property
     def device(self):
+        """Get the device (CPU/GPU) where the prior is located."""
         return self._device_tracker.device
 
     @property
     def sigma(self):
-        """Return identity covariance matrix (K x K)"""
+        """
+        Return identity covariance matrix.
+        
+        Returns:
+            Identity matrix I [K, K]
+        """
         return torch.eye(self.n_latent, device=self.device)
 
-    def sample(self, N, M_prevalence_covariates=None, to_simplex=True, epoch=None, initialization=False):
+    def sample(self, N, M_prevalence_covariates=None, to_simplex=True):
         """
-        Sample from fixed logistic normal distribution and optionally map to simplex.
+        Sample from fixed logistic normal distribution.
+        
+        Draws samples from N(0, I) and optionally applies softmax to map to
+        the simplex. Covariates are ignored since this is a fixed prior.
+        
+        Args:
+            N: Number of samples to draw
+            M_prevalence_covariates: Ignored (for API compatibility)
+            to_simplex: If True, apply softmax to map samples to simplex.
+                       If False, return raw Gaussian samples.
+        
+        Returns:
+            Samples [N, K]. If to_simplex=True, samples lie on the simplex.
         """
         # Sample from standard multivariate normal (K dimensions)
         z_samples = torch.randn(N, self.n_latent, device=self.device)
@@ -428,7 +692,14 @@ class FixedLogisticNormalPrior(Prior):
 
     def simulate(self, M_prevalence_covariates, **kwargs):
         """
-        Simulate data using fixed parameters.
+        Simulate data using fixed standard normal parameters.
+        
+        Args:
+            M_prevalence_covariates: Used only for batch size
+            **kwargs: Additional arguments (unused)
+        
+        Returns:
+            Simulated samples on the simplex [batch_size, K]
         """
         return self.sample(M_prevalence_covariates.shape[0], M_prevalence_covariates, to_simplex=True)
 
@@ -436,6 +707,23 @@ class FixedLogisticNormalPrior(Prior):
 class FixedDirichletPrior(Prior):
     """
     Fixed Dirichlet prior with specified concentration parameter - not learnable.
+    
+    This prior uses a fixed symmetric Dirichlet distribution Dir(α, ..., α)
+    where α is specified at initialization. Parameters are not learned during
+    training.
+    
+    When α = 1, this gives a uniform distribution over the simplex. Values
+    α < 1 encourage sparsity (few active topics), while α > 1 encourages
+    more uniform topic distributions.
+    
+    Mathematical formulation:
+        θ ~ Dir(α, α, ..., α)  where α is fixed
+    
+    Attributes:
+        prevalence_covariate_size: Ignored (for API compatibility)
+        n_topics: Number of topics (K)
+        alpha: Fixed concentration parameter (default 1.0)
+        _device_tracker: Buffer to track device placement
     """
 
     def __init__(self, prevalence_covariate_size, n_topics, alpha=1.0):
@@ -448,11 +736,23 @@ class FixedDirichletPrior(Prior):
 
     @property
     def device(self):
+        """Get the device (CPU/GPU) where the prior is located."""
         return self._device_tracker.device
 
-    def sample(self, N, M_prevalence_covariates=None, epoch=None, initialization=False):
+    def sample(self, N, M_prevalence_covariates=None):
         """
-        Sample from fixed Dirichlet distribution.
+        Sample from fixed symmetric Dirichlet distribution.
+        
+        Draws samples from Dir(α, ..., α) with the fixed concentration
+        parameter. Samples automatically lie on the simplex. Covariates
+        are ignored since this is a fixed prior.
+        
+        Args:
+            N: Number of samples to draw
+            M_prevalence_covariates: Ignored (for API compatibility)
+        
+        Returns:
+            Samples on the simplex [N, K], where each row sums to 1
         """
         concentration = torch.full((N, self.n_topics), self.alpha, device=self.device)
         samples = torch.empty_like(concentration)
@@ -463,7 +763,18 @@ class FixedDirichletPrior(Prior):
 
     def get_prior_params(self, M_prevalence_covariates):
         """
-        Return fixed Dirichlet parameters.
+        Return fixed Dirichlet parameters as mean and log-variance.
+        
+        Computes the mean and variance of the Dirichlet distribution for
+        use in KL divergence calculations. Both are derived from the fixed
+        concentration parameter α.
+        
+        Args:
+            M_prevalence_covariates: Used only for batch size
+        
+        Returns:
+            mean: Dirichlet mean [batch_size, K]
+            logvar: Log-variance [batch_size, K]
         """
         batch_size = M_prevalence_covariates.shape[0] if M_prevalence_covariates is not None else 1
         concentration = torch.full((batch_size, self.n_topics), self.alpha, device=self.device)
@@ -479,4 +790,14 @@ class FixedDirichletPrior(Prior):
         return mean.float(), logvar.float()
 
     def simulate(self, M_prevalence_covariates, **kwargs):
+        """
+        Simulate data from fixed Dirichlet distribution.
+        
+        Args:
+            M_prevalence_covariates: Used only for batch size
+            **kwargs: Additional arguments (unused)
+        
+        Returns:
+            Simulated samples on the simplex [batch_size, K]
+        """
         return self.sample(M_prevalence_covariates.shape[0], M_prevalence_covariates)

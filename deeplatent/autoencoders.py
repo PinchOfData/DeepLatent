@@ -1157,16 +1157,22 @@ class MultiModalEncoder(nn.Module):
         else:
             # Mixture of Experts fusion
             if self.moe_type == "average":
-                # For IAF, modality_outputs contains (mu, logvar) tuples - need to sample and apply flow
+                # Fuse base distributions first, then apply flow
                 if self.ae_type == "vae" and self.vi_type == "iaf":
-                    samples = []
-                    for mu, logvar in modality_outputs:
-                        std = torch.exp(0.5 * logvar)
-                        eps = torch.randn_like(std)
-                        z0 = mu + eps * std
-                        zk, _ = self.shared_flow(z0)
-                        samples.append(zk)
-                    z_final = torch.stack(samples, dim=1).mean(dim=1)
+                    # Average base distribution parameters (fusion)
+                    avg_mu = torch.stack([info[0] for info in mu_logvar_info], dim=1).mean(dim=1)
+                    avg_logvar = torch.stack([info[1] for info in mu_logvar_info], dim=1).mean(dim=1)
+                    
+                    # Sample from fused base distribution
+                    std = torch.exp(0.5 * avg_logvar)
+                    eps = torch.randn_like(std)
+                    z0_fused = avg_mu + eps * std
+                    
+                    # Apply flow to fused sample
+                    z_final, log_det_j = self.shared_flow(z0_fused)
+                    
+                    # Store fused flow information
+                    mu_logvar_info = [(avg_mu, avg_logvar, z0_fused, z_final, log_det_j)]
                 else:
                     z_final = torch.stack(modality_outputs, dim=1).mean(dim=1)
                 
@@ -1180,16 +1186,7 @@ class MultiModalEncoder(nn.Module):
                         gate_input = torch.cat([torch.cat((info[0], info[1].view(info[0].size(0), -1)), dim=1) 
                                             for info in mu_logvar_info if len(info) >= 2], dim=1)
                     elif self.vi_type == "iaf":
-                        # For IAF with MoE, need to get actual samples from modality_outputs
-                        # Each modality_outputs element is (mu, logvar) - sample and apply shared flow
-                        samples = []
-                        for mu, logvar in modality_outputs:
-                            std = torch.exp(0.5 * logvar)
-                            eps = torch.randn_like(std)
-                            z0 = mu + eps * std
-                            zk, _ = self.shared_flow(z0)
-                            samples.append(zk)
-                        modality_outputs = samples
+                        # Use base distribution parameters for gating
                         gate_input = torch.cat([torch.cat((info[0], info[1]), dim=1) 
                                             for info in mu_logvar_info if len(info) >= 2], dim=1)
                 else:
@@ -1197,24 +1194,50 @@ class MultiModalEncoder(nn.Module):
                 
                 # Compute mixture weights
                 weights = self.gate_net(gate_input).unsqueeze(2)  # [B, M, 1]
-                modality_stack = torch.stack(modality_outputs, dim=1)  # [B, M, D]
-                z_final = torch.sum(modality_stack * weights, dim=1)
                 
-            elif self.moe_type == "learned_weights":
-                # For IAF, need to sample from base distributions and apply shared flow
+                # Fuse base distributions with learned weights, then apply flow
                 if self.ae_type == "vae" and self.vi_type == "iaf":
-                    samples = []
-                    for mu, logvar in modality_outputs:
-                        std = torch.exp(0.5 * logvar)
-                        eps = torch.randn_like(std)
-                        z0 = mu + eps * std
-                        zk, _ = self.shared_flow(z0)
-                        samples.append(zk)
-                    modality_stack = torch.stack(samples, dim=1)  # [B, M, D]
+                    # Weight and fuse base distribution parameters
+                    fused_mu = torch.sum(torch.stack([info[0] for info in mu_logvar_info], dim=1) * weights, dim=1)
+                    fused_logvar = torch.sum(torch.stack([info[1] for info in mu_logvar_info], dim=1) * weights, dim=1)
+                    
+                    # Sample from fused base distribution
+                    std = torch.exp(0.5 * fused_logvar)
+                    eps = torch.randn_like(std)
+                    z0_fused = fused_mu + eps * std
+                    
+                    # Apply flow to fused sample
+                    z_final, log_det_j = self.shared_flow(z0_fused)
+                    
+                    # Store fused flow information
+                    mu_logvar_info = [(fused_mu, fused_logvar, z0_fused, z_final, log_det_j)]
                 else:
                     modality_stack = torch.stack(modality_outputs, dim=1)  # [B, M, D]
+                    z_final = torch.sum(modality_stack * weights, dim=1)
+                
+            elif self.moe_type == "learned_weights":
                 weights = F.softmax(self.mixture_weights, dim=0)
-                z_final = torch.sum(modality_stack * weights.unsqueeze(0).unsqueeze(2), dim=1)
+                weights_expanded = weights.unsqueeze(0).unsqueeze(2)  # [1, M, 1]
+                
+                # Fuse base distributions with learned weights, then apply flow
+                if self.ae_type == "vae" and self.vi_type == "iaf":
+                    # Weight and fuse base distribution parameters
+                    fused_mu = torch.sum(torch.stack([info[0] for info in mu_logvar_info], dim=1) * weights_expanded, dim=1)
+                    fused_logvar = torch.sum(torch.stack([info[1] for info in mu_logvar_info], dim=1) * weights_expanded, dim=1)
+                    
+                    # Sample from fused base distribution
+                    std = torch.exp(0.5 * fused_logvar)
+                    eps = torch.randn_like(std)
+                    z0_fused = fused_mu + eps * std
+                    
+                    # Apply flow to fused sample
+                    z_final, log_det_j = self.shared_flow(z0_fused)
+                    
+                    # Store fused flow information
+                    mu_logvar_info = [(fused_mu, fused_logvar, z0_fused, z_final, log_det_j)]
+                else:
+                    modality_stack = torch.stack(modality_outputs, dim=1)  # [B, M, D]
+                    z_final = torch.sum(modality_stack * weights_expanded, dim=1)
 
         # Convert to simplex for topic models
         theta = F.softmax(z_final, dim=1)

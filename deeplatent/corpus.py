@@ -70,7 +70,7 @@ class Corpus(Dataset):
                 elif view_type == "vote":
                     M = df[view_column].astype(float).values
                     mask = np.isnan(M)
-                    M = np.nan_to_num(M)
+                    M = np.where(mask, 2.0, M)
                     self.processed_modalities[modality_name][view_name] = {
                         "matrix": M,
                         "mask": mask,

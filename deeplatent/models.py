@@ -43,7 +43,6 @@ class DeepLatent:
         num_flows=4,
         flow_hidden_dim=None,  
         flow_use_permutations=True,  
-        initialization=False,
         num_steps=10000,
         batch_size=64,
         num_workers=4,
@@ -51,6 +50,7 @@ class DeepLatent:
         print_every_n_steps=1000,
         log_every_n_steps=float("inf"),
         print_topics=False,
+        print_covariates=False,
         patience=float("inf"),
         patience_tol=1e-3,
         w_prior=1,
@@ -71,7 +71,7 @@ class DeepLatent:
             n_factors: number of factors (topics / ideal points) to learn.
             ae_type: type of autoencoder. Either 'wae' (Wasserstein Autoencoder), 'vae' (Variational Autoencoder), or 'ae' (plain Autoencoder without prior).
             latent_factor_prior: prior on the document-topic distribution. Either 'dirichlet', 'logistic_normal', or 'gaussian'.
-            alpha: parameter of the Dirichlet prior (legacy, now unused)
+            alpha: concentration parameter of the Dirichlet prior (only used when latent_factor_prior='dirichlet' and update_prior=False).
             encoder_args: dictionary with the parameters for the encoder.
             decoder_args: dictionary with the parameters for the decoder.
             predictor_args: dictionary with the parameters for the predictor.
@@ -88,6 +88,8 @@ class DeepLatent:
             optim_args: dictionary with the parameters for the optimizer. Can include 'main' for main parameters (encoder+decoders), 'predictor' for predictor parameters, 'prior' for prior parameters, and other Adam parameters like 'betas'. If None, uses default parameters.
             print_every_n_steps: number of steps between each print.
             log_every_n_steps: number of steps between each checkpoint.
+            print_topics: whether to print topic words during training.
+            print_covariates: whether to print covariate words during training.
             patience: number of steps to wait before stopping the training if the validation or training loss does not improve.
             patience_tol: tolerance for improvement in loss. Loss must improve by at least this amount to reset patience counter.
             w_prior: parameter to control the tightness of the encoder output with the document-topic prior. If set to None, w_prior is chosen automatically.
@@ -122,7 +124,6 @@ class DeepLatent:
         self.latent_factor_prior = latent_factor_prior
         self.update_prior = update_prior
         self.alpha = alpha
-        self.initialization = initialization
         self.num_steps = num_steps
         self.batch_size = batch_size
         self.num_workers = num_workers
@@ -138,6 +139,7 @@ class DeepLatent:
         self.ckpt_folder = ckpt_folder
         self.return_best_model = return_best_model
         self.print_topics = print_topics
+        self.print_covariates = print_covariates
         self.predictor_type = predictor_type
         self.fusion = fusion
         self.gating_hidden_dim = gating_hidden_dim
@@ -378,7 +380,16 @@ class DeepLatent:
             self.predictor = None
 
         # OPTIMIZER with different parameter groups
-        main_params = list(self.encoder.parameters()) + list(self.decoders.parameters())
+        # Get encoder parameters, excluding prior if it will be updated separately
+        encoder_params = []
+        if update_prior and self.prior is not None:
+            # Collect prior parameter ids to exclude them from encoder params
+            prior_param_ids = {id(p) for p in self.prior.parameters()}
+            encoder_params = [p for p in self.encoder.parameters() if id(p) not in prior_param_ids]
+        else:
+            encoder_params = list(self.encoder.parameters())
+        
+        main_params = encoder_params + list(self.decoders.parameters())
         predictor_params = []
         if self.predictor is not None:
             predictor_params = list(self.predictor.parameters())
@@ -705,8 +716,7 @@ class DeepLatent:
                 for _ in range(num_samples):
                     theta_prior = self.prior.sample(
                         N=doc_latents.shape[0],
-                        M_prevalence_covariates=prevalence_covariates,
-                        epoch=self.steps
+                        M_prevalence_covariates=prevalence_covariates
                     ).to(self.device)
                     mmd_loss += compute_mmd_loss(doc_latents, theta_prior, device=self.device)
 
@@ -954,9 +964,42 @@ class DeepLatent:
                 )
                 print(msg)
 
+                if self.print_topics == True:
+                    print(
+                        "\n".join(
+                            [
+                                "{}: {}".format(str(k), str(v))
+                                for k, v in self.get_topic_words(topK=5).items()
+                            ]
+                        )
+                    )
+
+                if self.print_covariates == True and self.content_covariate_size > 0:
+                    print(
+                        "\n".join(
+                            [
+                                "{}: {}".format(str(k), str(v))
+                                for k, v in self.get_covariate_words(topK=5).items()
+                            ]
+                        )
+                    )
+
         return loss.item()
     
     def get_topic_words(self):
+        """
+        Get top words per topic (not implemented in base DeepLatent class).
+        
+        This method is a stub in the base class. Use the GTM subclass which
+        implements this method for topic models with BOW decoders.
+        
+        Raises:
+            NotImplementedError: This method should be called on GTM instances,
+                                not on the base DeepLatent class.
+        
+        See Also:
+            GTM.get_topic_words(): Implemented version for topic models
+        """
         pass
 
     def get_latent_factors(
@@ -970,6 +1013,46 @@ class DeepLatent:
         return_std: bool = False,
         return_samples: bool = False,
     ):
+        """
+        Get the latent factor distribution for each document in the corpus.
+        
+        For topic models (with Dirichlet/Logistic Normal priors), returns document-topic
+        distributions on the simplex. For ideal point models (with Gaussian priors),
+        returns unconstrained real-valued vectors.
+        
+        Args:
+            dataset: A Corpus object containing the documents
+            to_simplex: Whether to map the latent factors to the simplex via softmax.
+                       For topic models, this returns the K-dimensional topic distribution.
+                       For ideal points, this parameter is typically False.
+            num_workers: Number of workers for the data loaders. If None, uses self.num_workers.
+            to_numpy: Whether to return as a numpy array (True) or torch tensor (False).
+            single_modality: If set, uses only this modality (e.g., "default_bow").
+                           Useful for analyzing modality-specific representations.
+            num_samples: Number of samples from the VAE encoder (only used for ae_type="vae").
+                        Results are averaged across samples unless return_samples=True.
+            return_std: Whether to return standard errors across samples (only for VAE with num_samples > 1).
+            return_samples: Whether to return all samples instead of mean. If True, returns
+                          [batch_size, num_samples, latent_dim] tensor/array.
+        
+        Returns:
+            If return_samples=True:
+                Samples array [N, num_samples, latent_dim]
+            If return_std=True:
+                Tuple of (means [N, latent_dim], stds [N, latent_dim])
+            Otherwise:
+                Latent factors [N, latent_dim]
+                
+        Examples:
+            >>> # Get document-topic distributions for a topic model
+            >>> theta = model.get_latent_factors(corpus, to_simplex=True)
+            >>> 
+            >>> # Get ideal points for an ideal point model
+            >>> ideal_points = model.get_latent_factors(corpus, to_simplex=False)
+            >>> 
+            >>> # Get representation from only text modality
+            >>> text_theta = model.get_latent_factors(corpus, single_modality="default_bow")
+        """
         """
         Get the topic distribution of each document in the corpus.
 
@@ -1148,14 +1231,36 @@ class DeepLatent:
 
     def get_predictions(self, dataset, to_simplex=True, num_workers=None, to_numpy=True, num_samples: int = 1):
         """
-        Predict the labels of the documents in the corpus based on topic proportions.
-
+        Predict labels for documents based on learned latent representations.
+        
+        Uses the predictor network to generate predictions from document latent factors.
+        For classification tasks, returns class probabilities (after softmax). For
+        regression tasks, returns continuous predictions.
+        
         Args:
-            dataset: a Corpus object
-            to_simplex: whether to map the topic distribution to the simplex. If False, the topic distribution is returned in the logit space.
-            num_workers: number of workers for the data loaders.
-            to_numpy: whether to return the predictions as a numpy array.
-            num_samples: number of samples for VAE (only used if ae_type == 'vae').
+            dataset: A Corpus object containing the documents to predict
+            to_simplex: Whether to map latent factors to simplex before prediction.
+                       Should match the model's latent_factor_prior (True for topic models,
+                       False for ideal point models).
+            num_workers: Number of workers for data loaders. If None, uses self.num_workers.
+            to_numpy: Whether to return as numpy array (True) or torch tensor (False).
+            num_samples: Number of samples for VAE (only used if ae_type="vae").
+                        Predictions are averaged across samples.
+        
+        Returns:
+            Predictions [N, num_classes] for classification or [N, 1] for regression.
+            For classification, values are class probabilities summing to 1.
+            
+        Raises:
+            AttributeError: If model was not trained with labels (predictor is None)
+            
+        Examples:
+            >>> # Binary classification
+            >>> probs = model.get_predictions(test_corpus)
+            >>> predictions = (probs[:, 1] > 0.5).astype(int)
+            >>> 
+            >>> # Regression
+            >>> values = model.get_predictions(test_corpus)
         """
         if num_workers is None:
             num_workers = self.num_workers
@@ -1257,15 +1362,36 @@ class DeepLatent:
         to_numpy: bool = True
     ):
         """
-        Returns modality weights per observation.
+        Returns modality weights per observation for multimodal models.
         
-        For moe_gating: softmax weights from the gating network.
-        For poe (uncorrected): normalized total precisions Λ_m (inverse variances).
-        For corrected_poe: normalized precision increments Δ_m = Λ_m - Λ_0.
-        For moe_average: equal weights.
+        The weights indicate how much each modality contributes to the final latent
+        representation. The interpretation depends on the fusion method:
+        
+        - **moe_gating**: Softmax weights from the learned gating network
+        - **poe (uncorrected)**: Normalized total precisions Λ_m (inverse variances)
+        - **corrected_poe**: Normalized precision increments Δ_m = Λ_m - Λ_0
+        - **moe_average**: Equal weights (1/M) for all modalities
+        - **moe_learned**: Fixed learned mixture weights (same across observations)
+        
+        Mathematical formulations:
+        - Gating: w_m = softmax(g(μ_1, σ_1, ..., μ_M, σ_M))
+        - PoE: w_m ∝ Λ_m (precision of modality m's posterior)
+        - Corrected PoE: w_m ∝ Δ_m (precision increment from prior to posterior)
+        
+        Args:
+            dataset: A Corpus object containing the documents
+            num_workers: Number of workers for data loaders. If None, uses self.num_workers.
+            to_numpy: Whether to return as numpy array (True) or torch tensor (False).
         
         Returns:
-            weights: tensor of shape (N, M) where M is number of modalities
+            Modality weights [N, M] where N is number of documents and M is number of modalities.
+            Each row sums to 1 (weights are normalized).
+            
+        Examples:
+            >>> # Get modality importance for each document
+            >>> weights = model.get_modality_weights(corpus)
+            >>> print(f"Text weight: {weights[:, 0].mean():.3f}")
+            >>> print(f"Image weight: {weights[:, 1].mean():.3f}")
         """
         if num_workers is None:
             num_workers = self.num_workers
@@ -1486,22 +1612,37 @@ class DeepLatent:
         for observation i, by computing how far the modality-specific posterior moves
         from the prior.
         
-        Mathematical definitions:
-        - Mean-field: KL(N(μ, diag(σ²)) || N(μ_p, Σ_p))
-        - Full-rank: KL(N(μ, Σ) || N(μ_p, Σ_p))
-        - IAF: KL computed via the base distribution (flow transformations cancel in expectation)
+        Higher values indicate that the modality provides more information about the latent
+        structure. A value of 0 would mean the modality provides no information (posterior
+        equals prior).
+        
+        Mathematical definitions by variational inference type:
+        - **Mean-field**: KL(N(μ, diag(σ²)) || N(μ_p, Σ_p))
+        - **Full-rank**: KL(N(μ, Σ) || N(μ_p, Σ_p))
+        - **IAF**: KL computed via the base distribution (flow transformations cancel in expectation)
         
         For Gaussian posteriors with Gaussian priors:
             KL = 0.5 * (tr(Σ_p^{-1} Σ_q) + (μ_q - μ_p)^T Σ_p^{-1} (μ_q - μ_p) - d - log(det(Σ_q)/det(Σ_p)))
         
         Args:
-            dataset: a Corpus object
-            num_workers: number of workers for the data loaders
-            to_numpy: whether to return as numpy array
+            dataset: A Corpus object containing the documents
+            num_workers: Number of workers for data loaders. If None, uses self.num_workers.
+            to_numpy: Whether to return as numpy array (True) or torch tensor (False).
             
         Returns:
-            mi_matrix: tensor/array of shape (N, M) containing pointwise mutual information
-                      per observation (N) and modality (M)
+            Pointwise mutual information matrix [N, M] where N is number of observations
+            and M is number of modalities. All values are non-negative.
+            
+        Raises:
+            ValueError: If model is not a VAE (ae_type != "vae")
+            
+        Examples:
+            >>> # Analyze which modality is more informative
+            >>> mi = model.get_mutual_information(corpus)
+            >>> print(f"Average MI - Text: {mi[:, 0].mean():.3f}, Images: {mi[:, 1].mean():.3f}")
+            >>> 
+            >>> # Find observations where images are most informative
+            >>> image_informative = mi[:, 1] > mi[:, 0]
         """
         if num_workers is None:
             num_workers = self.num_workers
@@ -1787,8 +1928,7 @@ class DeepLatent:
                 # For topic models, sample from prior and use as simplex
                 doc_latents = self.prior.sample(
                     N=n_samples,
-                    M_prevalence_covariates=prevalence_covariates,
-                    epoch=self.steps
+                    M_prevalence_covariates=prevalence_covariates
                 ).to(device)
                 
                 # Apply temperature scaling for topic models
@@ -1799,8 +1939,7 @@ class DeepLatent:
                 # For ideal point models, sample from Gaussian prior
                 doc_latents = self.prior.sample(
                     N=n_samples,
-                    M_prevalence_covariates=prevalence_covariates,
-                    epoch=self.steps
+                    M_prevalence_covariates=prevalence_covariates
                 ).to(device)
                 
                 # Apply temperature scaling
@@ -1910,6 +2049,28 @@ class DeepLatent:
         return generated_samples
 
     def save_model(self, save_name):
+        """
+        Save the complete model state to disk.
+        
+        Saves all model components including encoder, decoders, predictor (if present),
+        optimizer, and all hyperparameters. The saved checkpoint can be loaded later
+        using load_model() to resume training or perform inference.
+        
+        Args:
+            save_name: Path where the checkpoint will be saved (e.g., "checkpoints/model.ckpt")
+        
+        Saves:
+            - Encoder state dict
+            - Decoder state dicts (all modalities)
+            - Predictor state dict (if labels were used)
+            - Optimizer state dict
+            - All model hyperparameters and training state
+            
+        Examples:
+            >>> model.save_model("checkpoints/best_model.ckpt")
+            >>> # Later, load with:
+            >>> model.load_model("checkpoints/best_model.ckpt")
+        """
         encoder_state_dict = self.encoder.state_dict()
         decoders_state_dict = {k: d.state_dict() for k, d in self.decoders.items()}
         predictor_state_dict = self.predictor.state_dict() if self.labels_size != 0 else None
@@ -1932,7 +2093,30 @@ class DeepLatent:
 
     def load_model(self, ckpt):
         """
-        Helper function to load the model.
+        Load a saved model checkpoint from disk.
+        
+        Restores all model components including encoder, decoders, predictor (if present),
+        optimizer, and all hyperparameters from a previously saved checkpoint.
+        
+        If the current model instance doesn't have a predictor but the checkpoint does,
+        a predictor will be created automatically. Similarly, if the optimizer is missing,
+        it will be reconstructed with default parameters.
+        
+        Args:
+            ckpt: Path to the checkpoint file (e.g., "checkpoints/model.ckpt") or
+                 checkpoint dictionary
+        
+        Loads:
+            - Encoder state dict
+            - Decoder state dicts (all modalities)
+            - Predictor state dict (if present in checkpoint)
+            - Optimizer state dict
+            - All model hyperparameters and training state
+            
+        Examples:
+            >>> model = DeepLatent(train_data, **config)
+            >>> model.load_model("checkpoints/best_model.ckpt")
+            >>> # Continue training or run inference
         """
         ckpt = torch.load(ckpt, map_location=self.device, weights_only=False)
 
@@ -2007,7 +2191,23 @@ class DeepLatent:
 
     def to(self, device):
         """
-        Move the model to a different device.
+        Move all model components to the specified device (CPU/GPU).
+        
+        This is a convenience method that moves the encoder, all decoders,
+        predictor (if present), and prior (if present) to the specified device.
+        Updates self.device to track the current device.
+        
+        Args:
+            device: Target device (e.g., torch.device("cuda"), torch.device("cpu"),
+                   or string like "cuda:0", "cpu")
+        
+        Returns:
+            self: Returns the model instance for method chaining
+            
+        Examples:
+            >>> model.to("cuda")  # Move to GPU
+            >>> model.to("cpu")   # Move back to CPU
+            >>> model.to(torch.device("cuda:1"))  # Move to specific GPU
         """
         self.encoder.to(device)
         self.decoders.to(device)
@@ -2060,15 +2260,31 @@ class GTM(DeepLatent):
         return_std: bool = False,
     ):
         """
-        Returns the full K-dimensional document-topic distribution.
-
+        Returns the full K-dimensional document-topic distribution on the simplex.
+        
+        This is a convenience method specific to topic models (GTM). It calls
+        get_latent_factors() with to_simplex=True to ensure the returned values
+        represent valid probability distributions over topics.
+        
         Args:
-            dataset: a Corpus object
-            to_numpy: whether to return as a numpy array.
-            num_workers: number of workers for the data loaders.
-            single_modality: if set, uses only this modality (e.g., "default_bow")
-            num_samples: number of samples from the VAE encoder (only used for VAE).
-            return_std: whether to return standard errors across samples.
+            dataset: A Corpus object containing the documents
+            to_numpy: Whether to return as numpy array (True) or torch tensor (False).
+            num_workers: Number of workers for data loaders. If None, uses self.num_workers.
+            single_modality: If set, uses only this modality (e.g., "default_bow").
+            num_samples: Number of samples from VAE encoder (only used for ae_type="vae").
+            return_std: Whether to return standard errors across samples (only for VAE).
+        
+        Returns:
+            If return_std=True:
+                Tuple of (theta [N, K], std [N, K])
+            Otherwise:
+                Topic distributions theta [N, K] where each row sums to 1
+                
+        Examples:
+            >>> # Get document-topic distributions
+            >>> theta = model.get_doc_topic_distribution(corpus)
+            >>> print(f"Document 0 topic distribution: {theta[0]}")
+            >>> print(f"Sum check: {theta[0].sum()}")  # Should be 1.0
         """
         # Get K dimensional latent factors (these are already on simplex from priors)
         result = self.get_latent_factors(
@@ -2179,6 +2395,29 @@ class GTM(DeepLatent):
 
     def get_covariate_word_distribution(self, to_numpy=True):
         """
+        Get the word distribution associated with each content covariate.
+        
+        For models with content covariates, this method returns the word distributions
+        that are uniquely associated with each covariate (controlling for topics).
+        This helps identify which words are characteristic of different document
+        attributes (e.g., time periods, authors, genres).
+        
+        Args:
+            to_numpy: Whether to return as numpy array (True) or torch tensor (False).
+        
+        Returns:
+            Word distributions [num_covariates, vocab_size] as numpy array or tensor.
+            Each row is a probability distribution over the vocabulary.
+            
+        Raises:
+            ValueError: If no BOW decoder is found in the model.
+            
+        Examples:
+            >>> # Get words associated with each covariate
+            >>> covariate_dists = model.get_covariate_word_distribution()
+            >>> top_words_cov0 = covariate_dists[0].argsort()[-10:]  # Top 10 words
+        """
+        """
         Get the covariate-word distribution of each topic.
 
         Args:
@@ -2200,6 +2439,36 @@ class GTM(DeepLatent):
         return word_dist[self.n_topics:, :].cpu().numpy() if to_numpy else word_dist[self.n_topics:, :]
 
     def get_top_docs(self, dataset, topic_id=None, return_df=False, topK=1, num_samples: int = 1):
+        """
+        Get the top documents for each topic (or a specific topic).
+        
+        Returns documents with the highest probability mass on each topic. This is
+        useful for interpreting topics by examining representative documents.
+        
+        Args:
+            dataset: A Corpus object containing the documents
+            topic_id: If specified, returns top documents only for this topic.
+                     If None, returns top documents for all topics.
+            return_df: Whether to return results as a pandas DataFrame (True) or
+                      dictionary (False).
+            topK: Number of top documents to return per topic.
+            num_samples: Number of samples from VAE encoder (only used for ae_type="vae").
+        
+        Returns:
+            If return_df=True:
+                DataFrame with columns: topic_id, doc_index, topic_weight, ...
+            If return_df=False and topic_id is None:
+                Dict mapping topic_id -> list of (doc_index, topic_weight) tuples
+            If return_df=False and topic_id is specified:
+                List of (doc_index, topic_weight) tuples for that topic
+                
+        Examples:
+            >>> # Get top 5 documents for each topic
+            >>> top_docs = model.get_top_docs(corpus, topK=5, return_df=True)
+            >>> 
+            >>> # Get top 10 documents for topic 3
+            >>> topic3_docs = model.get_top_docs(corpus, topic_id=3, topK=10)
+        """
         """
         Get the most representative documents per topic.
 
@@ -2591,16 +2860,41 @@ class IdealPointNN(DeepLatent):
     ):
         """
         Returns unconstrained latent ideal points (z ∈ ℝⁿ).
-        Equivalent to get_latent_factors(to_simplex=False).
-
+        
+        This is a convenience method specific to ideal point models. It calls
+        get_latent_factors() with to_simplex=False to return real-valued vectors
+        representing positions in policy/attribute space.
+        
+        For 1D ideal points, this represents a left-right political spectrum.
+        For higher dimensions, each dimension can represent a different policy
+        dimension or attribute.
+        
         Args:
-            dataset: a Corpus object
-            to_numpy: whether to return as a numpy array.
-            num_workers: number of workers for the data loaders.
-            single_modality: if set, uses only this modality (e.g., "default_bow")
-            num_samples: number of samples from the VAE encoder (only used for VAE).
-            return_std: whether to return standard errors across samples.
-            return_samples: whether to return all samples instead of mean (and std). If True, returns [B, num_samples, D] tensor.
+            dataset: A Corpus object containing the documents
+            to_numpy: Whether to return as numpy array (True) or torch tensor (False).
+            num_workers: Number of workers for data loaders. If None, uses self.num_workers.
+            single_modality: If set, uses only this modality (e.g., "default_bow").
+            num_samples: Number of samples from VAE encoder (only used for ae_type="vae").
+            return_std: Whether to return standard errors across samples (only for VAE).
+            return_samples: Whether to return all samples instead of mean. If True,
+                          returns [batch_size, num_samples, n_dims] tensor/array.
+        
+        Returns:
+            If return_samples=True:
+                Samples array [N, num_samples, n_ideal_points]
+            If return_std=True:
+                Tuple of (ideal_points [N, n_ideal_points], stds [N, n_ideal_points])
+            Otherwise:
+                Ideal points [N, n_ideal_points] as real-valued vectors
+                
+        Examples:
+            >>> # Get 1D ideal points (political positions)
+            >>> positions = model.get_ideal_points(corpus)
+            >>> liberal = positions < 0
+            >>> conservative = positions > 0
+            >>> 
+            >>> # Get 2D ideal points with uncertainty
+            >>> points, stds = model.get_ideal_points(corpus, num_samples=10, return_std=True)
         """
         return self.get_latent_factors(
             dataset=dataset,
