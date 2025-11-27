@@ -1,6 +1,6 @@
 Metadata-Version: 2.4
 Name: deeplatent
-Version: 0.1.1
+Version: 0.1.2
 Summary: A unified latent variable modeling framework for analyzing large multimodal and multilingual datasets
 Author: Elliott Ash, Hugo Subtil, Philine Widmer
 Author-email: Germain Gauthier <germain.jean.gauthier@gmail.com>

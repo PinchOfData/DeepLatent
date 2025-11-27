@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "deeplatent"
-version = "0.1.1"
+version = "0.1.2"
 description = "A unified latent variable modeling framework for analyzing large multimodal and multilingual datasets"
 readme = "README.md"
 license = {file = "LICENSE"}
