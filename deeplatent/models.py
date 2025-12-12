@@ -2438,7 +2438,7 @@ class GTM(DeepLatent):
 
         return word_dist[self.n_topics:, :].cpu().numpy() if to_numpy else word_dist[self.n_topics:, :]
 
-    def get_top_docs(self, dataset, topic_id=None, return_df=False, topK=1, num_samples: int = 1):
+    def get_top_docs(self, dataset, topic_id=None, l_content_covariates=[], return_df=False, topK=1, num_samples: int = 1):
         """
         Get the top documents for each topic (or a specific topic).
         
@@ -2479,16 +2479,25 @@ class GTM(DeepLatent):
             topK: number of top documents to return per topic.
             num_samples: number of samples to draw for VAE inference (ignored for WAE).
         """
+
+        view_column = list(dataset.modalities_config.values())[0]["column"]
+        
         doc_topic_distribution = self.get_latent_factors(
             dataset, to_simplex=True, num_samples=num_samples
         )
+        if l_content_covariates:
+            idxes = [
+                self.content_colnames.index(c)
+                for c in l_content_covariates
+            ]
+            mask = (dataset.M_content_covariates[:, idxes] > 0).all(axis=1)
+        else:
+            mask = np.ones(doc_topic_distribution.shape[0], dtype=bool)
 
         top_k_indices_df = pd.DataFrame(
             {
-                f"Topic_{col}": top_k_indices_column(
-                    doc_topic_distribution[:, col], topK
-                )
-                for col in range(doc_topic_distribution.shape[1])
+                f"Topic_{k}": np.argsort(doc_topic_distribution[:, k] * mask)[::-1][:topK]
+                for k in range(doc_topic_distribution.shape[1])
             }
         )
 
@@ -2499,14 +2508,14 @@ class GTM(DeepLatent):
                         print(
                             f"Topic: {topic_id} | Document index: {i} | Topic share: {doc_topic_distribution[i, topic_id]:.4f}"
                         )
-                        print(dataset.df["doc"].iloc[i])
+                        print(dataset.df[view_column].iloc[i])
                         print("\n")
             else:
                 for i in top_k_indices_df[f"Topic_{topic_id}"]:
                     print(
                         f"Topic: {topic_id} | Document index: {i} | Topic share: {doc_topic_distribution[i, topic_id]:.4f}"
                     )
-                    print(dataset.df["doc"].iloc[i])
+                    print(dataset.df[view_column].iloc[i])
                     print("\n")
         else:
             records = []
@@ -2516,7 +2525,7 @@ class GTM(DeepLatent):
                         "topic_id": t_id,
                         "doc_id": i,
                         "topic_share": doc_topic_distribution[i, t_id],
-                        "doc": dataset.df["doc"].iloc[i]
+                        view_column: dataset.df[view_column].iloc[i],
                     })
             df = pd.DataFrame.from_records(records)
             if topic_id is not None:

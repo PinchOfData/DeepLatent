@@ -23,7 +23,7 @@ from .utils import (
     compute_dirichlet_likelihood,
     topic_diversity,
     check_max_local_length,
-    bert_embeddings_from_list,
+    get_embeddings_from_list,
     text_processor,
 )
 from .simulations import (
@@ -52,7 +52,7 @@ __all__ = [
     "compute_dirichlet_likelihood",
     "topic_diversity",
     "check_max_local_length",
-    "bert_embeddings_from_list",
+    "get_embeddings_from_list",
     "text_processor",
     "generate_multilingual_docs_vectorized",
     "generate_documents",

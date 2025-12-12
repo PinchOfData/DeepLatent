@@ -161,19 +161,14 @@ def check_max_local_length(max_seq_length, texts):
         )
 
 
-def bert_embeddings_from_list(
-    texts, sbert_model_to_load, batch_size, max_seq_length, device="cpu"
+def get_embeddings_from_list(
+    texts, model_to_load, batch_size, max_seq_length, device="cpu"
 ):
-    """
-    Creates SBERT Embeddings from a list
-    """
 
-    model = SentenceTransformer(sbert_model_to_load, device=device)
+    model = SentenceTransformer(model_to_load, device=device, trust_remote_code=True)
 
     if max_seq_length is not None:
         model.max_seq_length = max_seq_length
-
-    check_max_local_length(max_seq_length, texts)
 
     return np.array(model.encode(texts, show_progress_bar=True, batch_size=batch_size))
 
