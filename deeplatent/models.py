@@ -458,6 +458,16 @@ class DeepLatent:
         self.divergence_loss = np.inf
         self.prediction_loss = np.inf
 
+        # Loss tracking for visualization
+        self.train_losses = []
+        self.val_losses = []
+        self.train_recon_losses = []
+        self.val_recon_losses = []
+        self.train_div_losses = []
+        self.val_div_losses = []
+        self.train_pred_losses = []
+        self.val_pred_losses = []
+
         # Move all model components to the specified device
         self.to(self.device)
 
@@ -508,6 +518,12 @@ class DeepLatent:
 
             # Training step
             training_loss = self.step_batch(train_data_batch, train_data, validation=False)
+            
+            # Record training losses
+            self.train_losses.append(training_loss)
+            self.train_recon_losses.append(self.reconstruction_loss.item() if isinstance(self.reconstruction_loss, torch.Tensor) else self.reconstruction_loss)
+            self.train_div_losses.append(self.divergence_loss.item() if isinstance(self.divergence_loss, torch.Tensor) else self.divergence_loss)
+            self.train_pred_losses.append(self.prediction_loss.item() if isinstance(self.prediction_loss, torch.Tensor) else self.prediction_loss * self.w_pred_loss)
 
             # Validation step (if test data is available)
             if test_data is not None:
@@ -515,6 +531,12 @@ class DeepLatent:
                 test_iter = iter(test_data_loader)
                 test_data_batch = next(test_iter)
                 validation_loss = self.step_batch(test_data_batch, test_data, validation=True)
+                
+                # Record validation losses
+                self.val_losses.append(validation_loss)
+                self.val_recon_losses.append(self.reconstruction_loss.item() if isinstance(self.reconstruction_loss, torch.Tensor) else self.reconstruction_loss)
+                self.val_div_losses.append(self.divergence_loss.item() if isinstance(self.divergence_loss, torch.Tensor) else self.divergence_loss)
+                self.val_pred_losses.append(self.prediction_loss.item() if isinstance(self.prediction_loss, torch.Tensor) else self.prediction_loss * self.w_pred_loss)
 
             # Determine current loss for patience checking
             if test_data is not None:
@@ -985,6 +1007,171 @@ class DeepLatent:
                     )
 
         return loss.item()
+    
+    def plot_training_loss(
+        self,
+        components=None,
+        save_path=None,
+        figsize=None,
+        smoothing_window=None,
+        all_components=None,
+    ):
+        """
+        Plot the training (and validation if available) loss curves.
+        
+        Args:
+            components: List of loss components to plot. Options: 'total', 'reconstruction', 
+                       'divergence', 'prediction'. If None, defaults based on all_components.
+                       Examples: ['total'], ['reconstruction'], ['total', 'reconstruction']
+            save_path: Path to save the plot. If None, the plot is displayed but not saved.
+            figsize: Figure size as (width, height) tuple. Auto-determined if None.
+            smoothing_window: If provided, apply moving average smoothing with this window size.
+            all_components: If True, shows all components.
+        
+        Examples:
+            >>> # Plot only total loss
+            >>> model.plot_training_loss(components=['total'])
+            >>> 
+            >>> # Plot only reconstruction loss
+            >>> model.plot_training_loss(components=['reconstruction'])
+            >>> 
+            >>> # Plot total and reconstruction
+            >>> model.plot_training_loss(components=['total', 'reconstruction'])
+            >>> 
+            >>> # Plot all components
+            >>> model.plot_training_loss(all_components=True)
+            >>>
+            >>> # With smoothing and save
+            >>> model.plot_training_loss(components=['total'], save_path='loss.png', smoothing_window=50)
+        """
+        if len(self.train_losses) == 0:
+            print("No training losses recorded. Train the model first.")
+            return None
+        
+        # Handle backward compatibility with all_components
+        if components is None:
+            if all_components is True:
+                components = ['total', 'reconstruction', 'divergence', 'prediction']
+            elif all_components is False:
+                components = ['total']
+            else:
+                components = ['total'] 
+        
+        # Validate components
+        valid_components = {'total', 'reconstruction', 'divergence', 'prediction'}
+        components = [c.lower() for c in components]
+        invalid = set(components) - valid_components
+        if invalid:
+            raise ValueError(f"Invalid components: {invalid}. Valid options: {valid_components}")
+        
+        def smooth(data, window):
+            """Apply moving average smoothing"""
+            if window is None or window <= 1:
+                return data
+            kernel = np.ones(window) / window
+            return np.convolve(data, kernel, mode='valid')
+        
+        steps = np.arange(1, len(self.train_losses) + 1)
+        
+        # Determine subplot layout
+        n_plots = len(components)
+        if n_plots == 1:
+            nrows, ncols = 1, 1
+            if figsize is None:
+                figsize = (10, 6)
+        elif n_plots == 2:
+            nrows, ncols = 1, 2
+            if figsize is None:
+                figsize = (14, 5)
+        elif n_plots == 3:
+            nrows, ncols = 1, 3
+            if figsize is None:
+                figsize = (16, 5)
+        else:  # 4 components
+            nrows, ncols = 2, 2
+            if figsize is None:
+                figsize = (12, 8)
+        
+        fig, axes = plt.subplots(nrows, ncols, figsize=figsize)
+        if n_plots == 1:
+            axes = [axes]
+        else:
+            axes = axes.flatten() if n_plots > 1 else [axes]
+        
+        if n_plots > 1:
+            fig.suptitle('Training Loss', fontsize=16)
+        
+        # Plot each requested component
+        plot_idx = 0
+        
+        if 'total' in components:
+            ax = axes[plot_idx]
+            train_loss = smooth(self.train_losses, smoothing_window)
+            ax.plot(steps[:len(train_loss)], train_loss, label='Train', linewidth=2, alpha=0.8)
+            if len(self.val_losses) > 0:
+                val_loss = smooth(self.val_losses, smoothing_window)
+                ax.plot(steps[:len(val_loss)], val_loss, label='Validation', linewidth=2, alpha=0.8)
+            ax.set_xlabel('Training Step')
+            ax.set_ylabel('Loss')
+            ax.set_title('Total Loss', fontweight='bold')
+            ax.legend()
+            ax.grid(True, alpha=0.3)
+            plot_idx += 1
+        
+        if 'reconstruction' in components:
+            ax = axes[plot_idx]
+            train_recon = smooth(self.train_recon_losses, smoothing_window)
+            ax.plot(steps[:len(train_recon)], train_recon, label='Train', linewidth=2, alpha=0.8)
+            if len(self.val_recon_losses) > 0:
+                val_recon = smooth(self.val_recon_losses, smoothing_window)
+                ax.plot(steps[:len(val_recon)], val_recon, label='Validation', linewidth=2, alpha=0.8)
+            ax.set_xlabel('Training Step')
+            ax.set_ylabel('Loss')
+            ax.set_title('Reconstruction Loss', fontweight='bold')
+            ax.legend()
+            ax.grid(True, alpha=0.3)
+            plot_idx += 1
+        
+        if 'divergence' in components:
+            ax = axes[plot_idx]
+            train_div = smooth(self.train_div_losses, smoothing_window)
+            ax.plot(steps[:len(train_div)], train_div, label='Train', linewidth=2, alpha=0.8)
+            if len(self.val_div_losses) > 0:
+                val_div = smooth(self.val_div_losses, smoothing_window)
+                ax.plot(steps[:len(val_div)], val_div, label='Validation', linewidth=2, alpha=0.8)
+            ax.set_xlabel('Training Step')
+            ax.set_ylabel('Loss')
+            ax.set_title('Divergence Loss', fontweight='bold')
+            ax.legend()
+            ax.grid(True, alpha=0.3)
+            plot_idx += 1
+        
+        if 'prediction' in components:
+            ax = axes[plot_idx]
+            if len(self.train_pred_losses) > 0 and max(self.train_pred_losses) > 0:
+                train_pred = smooth(self.train_pred_losses, smoothing_window)
+                ax.plot(steps[:len(train_pred)], train_pred, label='Train', linewidth=2, alpha=0.8)
+                if len(self.val_pred_losses) > 0:
+                    val_pred = smooth(self.val_pred_losses, smoothing_window)
+                    ax.plot(steps[:len(val_pred)], val_pred, label='Validation', linewidth=2, alpha=0.8)
+                ax.set_xlabel('Training Step')
+                ax.set_ylabel('Loss')
+                ax.set_title('Prediction Loss', fontweight='bold')
+                ax.legend()
+                ax.grid(True, alpha=0.3)
+            else:
+                ax.text(0.5, 0.5, 'No Prediction Loss', 
+                       horizontalalignment='center',
+                       verticalalignment='center',
+                       transform=ax.transAxes,
+                       fontsize=12)
+                ax.set_title('Prediction Loss', fontweight='bold')
+            plot_idx += 1
+        
+        plt.tight_layout()
+        
+        if save_path is not None:
+            plt.savefig(save_path, dpi=300, bbox_inches='tight')
     
     def get_topic_words(self):
         """
