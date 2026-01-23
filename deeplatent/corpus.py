@@ -4,7 +4,7 @@ from patsy import dmatrix
 import numpy as np
 from sklearn.feature_extraction.text import CountVectorizer
 import scipy
-from typing import Optional, Dict
+from typing import Optional, Dict, Union
 import pandas as pd
 
 class Corpus(Dataset):
@@ -15,7 +15,7 @@ class Corpus(Dataset):
         prevalence: Optional[str] = None,
         content: Optional[str] = None,
         prediction: Optional[str] = None,
-        labels: Optional[str] = None,
+        labels: Optional[Dict[str, Dict]] = None,
     ):
         self.df = df
         self.modalities_config = modalities
@@ -133,8 +133,8 @@ class Corpus(Dataset):
         self.prediction_colnames, self.M_prediction = (
             self._transform_df(prediction) if prediction else ([], None)
         )
-        self.labels_colnames, self.M_labels = (
-            self._transform_df(labels) if labels else ([], None)
+        self.labels_info, self.M_labels = (
+            self._process_labels(labels) if labels else ({}, None)
         )
 
         self.id2token = {}
@@ -149,6 +149,72 @@ class Corpus(Dataset):
     def _transform_df(self, formula):
         M = dmatrix(formula, self.df)
         return M.design_info.column_names, np.asarray(M, dtype=np.float32)
+
+    def _process_labels(self, labels_config: Dict[str, Dict]):
+        """
+        Process dict-based labels configuration.
+
+        Args:
+            labels_config: Dict mapping label names to their config, e.g.:
+                {
+                    "sentiment": {"column": "sentiment_score", "type": "regression"},
+                    "category": {"column": "category_id", "type": "multiclass", "num_classes": 5},
+                    "is_spam": {"column": "spam_flag", "type": "binary"}
+                }
+
+        Returns:
+            labels_info: Dict with metadata per label (type, num_classes, start_idx, end_idx, column)
+            M_labels: np.ndarray with all label values concatenated
+        """
+        labels_info = {}
+        label_arrays = []
+        current_idx = 0
+
+        for label_name, config in labels_config.items():
+            column = config["column"]
+            label_type = config["type"]
+
+            if label_type not in {"regression", "binary", "multiclass"}:
+                raise ValueError(f"Invalid label type '{label_type}' for label '{label_name}'. "
+                               f"Must be 'regression', 'binary', or 'multiclass'.")
+
+            values = self.df[column].values
+
+            if label_type == "regression":
+                # Continuous values
+                arr = values.astype(np.float32).reshape(-1, 1)
+                num_classes = None
+                end_idx = current_idx + 1
+            elif label_type == "binary":
+                # Binary 0/1 values
+                arr = values.astype(np.float32).reshape(-1, 1)
+                num_classes = None
+                end_idx = current_idx + 1
+            elif label_type == "multiclass":
+                # Integer class indices
+                num_classes = config.get("num_classes")
+                if num_classes is None:
+                    num_classes = int(values.max()) + 1
+                arr = values.astype(np.int64).reshape(-1, 1)
+                end_idx = current_idx + 1
+
+            labels_info[label_name] = {
+                "type": label_type,
+                "num_classes": num_classes,
+                "start_idx": current_idx,
+                "end_idx": end_idx,
+                "column": column
+            }
+
+            label_arrays.append(arr)
+            current_idx = end_idx
+
+        if label_arrays:
+            M_labels = np.concatenate(label_arrays, axis=1).astype(np.float32)
+        else:
+            M_labels = None
+
+        return labels_info, M_labels
 
     def __len__(self):
         return len(self.df)
@@ -202,7 +268,7 @@ class Corpus(Dataset):
             d["M_content_covariates"] = self.M_content_covariates[i]
         if self.prediction:
             d["M_prediction"] = self.M_prediction[i]
-        if self.labels:
+        if self.labels_info:
             d["M_labels"] = self.M_labels[i]
 
         return d

@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from typing import List, Optional, Union
+from typing import List, Optional, Union, Dict
 
 class Predictor(nn.Module):
     """
@@ -75,3 +75,100 @@ class Predictor(nn.Module):
                 hid = self.encoder_nonlin(hid)
 
         return hid
+
+
+class MultiLabelPredictor(nn.Module):
+    """
+    Multi-label predictor that creates independent MLP networks per label.
+
+    Supports three label types:
+    - regression: continuous output, 1 output unit
+    - binary: binary classification, 1 output unit (logits)
+    - multiclass: multi-class classification, num_classes output units (logits)
+    """
+
+    def __init__(
+        self,
+        input_dim: int,
+        labels_info: Dict[str, Dict],
+        predictor_configs: Dict[str, Dict],
+    ):
+        """
+        Initialize the MultiLabelPredictor.
+
+        Args:
+            input_dim: Dimension of input features (n_factors + prediction_covariate_size)
+            labels_info: Dict mapping label names to their metadata:
+                {
+                    "label_name": {
+                        "type": "regression|binary|multiclass",
+                        "num_classes": int or None,
+                        "start_idx": int,
+                        "end_idx": int,
+                        "column": str
+                    }
+                }
+            predictor_configs: Dict mapping label names to their predictor config:
+                {
+                    "label_name": {
+                        "hidden_dims": [64, 32],
+                        "dropout": 0.1,
+                        "loss_weight": 1.0
+                    }
+                }
+        """
+        super(MultiLabelPredictor, self).__init__()
+
+        self.labels_info = labels_info
+        self.predictor_configs = predictor_configs
+        self.predictors = nn.ModuleDict()
+
+        for label_name, label_info in labels_info.items():
+            config = predictor_configs.get(label_name, {})
+            hidden_dims = config.get("hidden_dims", [])
+            dropout = config.get("dropout", 0.0)
+            activation = config.get("activation", "relu")
+            bias = config.get("bias", True)
+
+            # Determine output dimension based on label type
+            label_type = label_info["type"]
+            if label_type in {"regression", "binary"}:
+                output_dim = 1
+            elif label_type == "multiclass":
+                output_dim = label_info["num_classes"]
+            else:
+                raise ValueError(f"Unknown label type: {label_type}")
+
+            # Build predictor dims: input -> hidden layers -> output
+            predictor_dims = [input_dim] + hidden_dims + [output_dim]
+
+            # Create MLP for this label
+            self.predictors[label_name] = Predictor(
+                predictor_dims=predictor_dims,
+                predictor_non_linear_activation=activation,
+                predictor_bias=bias,
+                dropout=dropout,
+            )
+
+    def forward(
+        self,
+        x: torch.Tensor,
+        M_prediction: Optional[torch.Tensor] = None
+    ) -> Dict[str, torch.Tensor]:
+        """
+        Forward pass through all label predictors.
+
+        Args:
+            x: Input tensor of shape (batch_size, n_factors)
+            M_prediction: Optional prediction covariates of shape (batch_size, prediction_covariate_size)
+
+        Returns:
+            Dict mapping label names to prediction tensors.
+            Output shapes depend on label type:
+            - regression/binary: (batch_size, 1)
+            - multiclass: (batch_size, num_classes)
+        """
+        predictions = {}
+        for label_name, predictor in self.predictors.items():
+            predictions[label_name] = predictor(x, M_prediction)
+        return predictions

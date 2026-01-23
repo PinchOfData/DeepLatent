@@ -16,7 +16,7 @@ from sklearn.decomposition import PCA
 from sklearn.manifold import TSNE
 from umap import UMAP
 from .autoencoders import EncoderMLP, DecoderMLP, MultiModalEncoder, ImageEncoder, ImageDecoder
-from .predictors import Predictor
+from .predictors import Predictor, MultiLabelPredictor
 from .priors import DirichletPrior, LogisticNormalPrior, GaussianPrior, FixedDirichletPrior, FixedGaussianPrior, FixedLogisticNormalPrior
 from .utils import compute_mmd_loss, top_k_indices_column, parse_modality_view
 from typing import Optional, List
@@ -36,7 +36,6 @@ class DeepLatent:
         encoder_args={},
         decoder_args={},
         predictor_args={},
-        predictor_type="classifier",
         include_labels_in_encoder: bool = True,
         fusion: str = "moe_average",  
         gating_hidden_dim=None,
@@ -74,8 +73,10 @@ class DeepLatent:
             alpha: concentration parameter of the Dirichlet prior (only used when latent_factor_prior='dirichlet' and update_prior=False).
             encoder_args: dictionary with the parameters for the encoder.
             decoder_args: dictionary with the parameters for the decoder.
-            predictor_args: dictionary with the parameters for the predictor.
-            predictor_type: type of predictor model. Either 'classifier' or 'regressor'.
+            predictor_args: dictionary mapping label names to their predictor config.
+                Each config can include: hidden_dims (list), dropout (float), activation (str),
+                bias (bool), loss_weight (float). Example:
+                {"sentiment": {"hidden_dims": [64], "loss_weight": 1.0}}
             include_labels_in_encoder: whether to include labels in the encoder input.
             fusion: type of fusion method to use. Options: 'moe_average' (equal weights), 'moe_gating' (learned gating), 'moe_learned' (learned fixed weights), 'poe' (uncorrected Product of Experts), 'corrected_poe' (corrected PoE matching true posterior p(z|x₁,...,xₘ) ∝ p(z) × ∏ₘ p(xₘ|z)).
             gating_hidden_dim: hidden dimension for gating mechanism (if used).
@@ -140,7 +141,6 @@ class DeepLatent:
         self.return_best_model = return_best_model
         self.print_topics = print_topics
         self.print_covariates = print_covariates
-        self.predictor_type = predictor_type
         self.fusion = fusion
         self.gating_hidden_dim = gating_hidden_dim
         self.num_flows = num_flows
@@ -160,8 +160,10 @@ class DeepLatent:
         self.prediction_covariate_size = (
             train_data.M_prediction.shape[1] if train_data.prediction else 0
         )
+        self.labels_info = train_data.labels_info if train_data.labels_info else {}
+        self.predictor_args = predictor_args
         self.labels_size = (
-            train_data.M_labels.shape[1] if train_data.labels else 0
+            train_data.M_labels.shape[1] if train_data.labels_info else 0
         )
 
         self.content_colnames = train_data.content_colnames or []
@@ -364,17 +366,12 @@ class DeepLatent:
             moe_type=moe_type
         ).to(self.device)
 
-        # PREDICTOR
-        if self.labels_size != 0:
-            if not predictor_args:
-                raise ValueError("predictor_args is empty. You must specify at least one predictor configuration.")
-            config = predictor_args.get("label", {})
-            predictor_dims = [n_factors + self.prediction_covariate_size] + config.get("hidden_dims", []) + [1]
-            self.predictor = Predictor(
-                predictor_dims=predictor_dims,
-                predictor_non_linear_activation=config.get("activation", "relu"),
-                predictor_bias=config.get("bias", True),
-                dropout=config.get("dropout", 0.0)
+        # PREDICTOR (multi-label)
+        if self.labels_info:
+            self.predictor = MultiLabelPredictor(
+                input_dim=n_factors + self.prediction_covariate_size,
+                labels_info=self.labels_info,
+                predictor_configs=predictor_args,
             ).to(self.device)
         else:
             self.predictor = None
@@ -565,7 +562,7 @@ class DeepLatent:
 
             # Logging
             if (step + 1) % self.log_every_n_steps == 0:
-                save_name = f'{self.ckpt_folder}/M_K{self.n_factors}_{self.latent_factor_prior}_{self.predictor_type}_{time.strftime("%Y-%m-%d-%H-%M", time.localtime())}_{step+1}.ckpt'
+                save_name = f'{self.ckpt_folder}/M_K{self.n_factors}_{self.latent_factor_prior}_{time.strftime("%Y-%m-%d-%H-%M", time.localtime())}_{step+1}.ckpt'
                 self.save_model(save_name)
 
             self.steps = step + 1
@@ -577,14 +574,14 @@ class DeepLatent:
         if validation:
             self.encoder.eval()
             self.decoders.eval()
-            if self.labels_size != 0:
+            if self.labels_info:
                 self.predictor.eval()
             if self.prior is not None:
                 self.prior.eval()
         else:
             self.encoder.train()
             self.decoders.train()
-            if self.labels_size != 0:
+            if self.labels_info:
                 self.predictor.train()
             if self.prior is not None:
                 self.prior.train()
@@ -948,16 +945,40 @@ class DeepLatent:
             elif self.ae_type == "wae":
                 divergence_loss = mmd_loss * self.w_prior
 
-            # -------------------- PREDICTION --------------------
-            if target_labels is not None:
+            # -------------------- PREDICTION (multi-label) --------------------
+            if target_labels is not None and self.labels_info:
                 predictions = self.predictor(doc_latents, prediction_covariates)
-                if self.predictor_type == "classifier":
-                    target_labels = target_labels.squeeze().to(torch.int64)
-                    prediction_loss = F.cross_entropy(predictions, target_labels)
-                elif self.predictor_type == "regressor":
-                    prediction_loss = F.mse_loss(predictions, target_labels)
+                prediction_loss = 0.0
+                self.per_label_losses = {}
+
+                for label_name, label_info in self.labels_info.items():
+                    pred = predictions[label_name]
+                    label_type = label_info["type"]
+                    start_idx = label_info["start_idx"]
+
+                    # Extract target for this label
+                    target = target_labels[:, start_idx]
+
+                    # Compute loss based on label type
+                    if label_type == "regression":
+                        label_loss = F.mse_loss(pred.squeeze(), target)
+                    elif label_type == "binary":
+                        label_loss = F.binary_cross_entropy_with_logits(pred.squeeze(), target)
+                    elif label_type == "multiclass":
+                        label_loss = F.cross_entropy(pred, target.long())
+                    else:
+                        raise ValueError(f"Unknown label type: {label_type}")
+
+                    # Apply per-label loss weight
+                    config = self.predictor_args.get(label_name, {})
+                    loss_weight = config.get("loss_weight", 1.0)
+                    weighted_loss = label_loss * loss_weight
+
+                    self.per_label_losses[label_name] = label_loss.item()
+                    prediction_loss = prediction_loss + weighted_loss
             else:
                 prediction_loss = 0.0
+                self.per_label_losses = {}
 
             # -------------------- TOTAL LOSS --------------------
             loss = (
@@ -1419,11 +1440,11 @@ class DeepLatent:
     def get_predictions(self, dataset, to_simplex=True, num_workers=None, to_numpy=True, num_samples: int = 1):
         """
         Predict labels for documents based on learned latent representations.
-        
+
         Uses the predictor network to generate predictions from document latent factors.
-        For classification tasks, returns class probabilities (after softmax). For
-        regression tasks, returns continuous predictions.
-        
+        For binary classification, applies sigmoid. For multi-class classification,
+        applies softmax. For regression, returns raw values.
+
         Args:
             dataset: A Corpus object containing the documents to predict
             to_simplex: Whether to map latent factors to simplex before prediction.
@@ -1433,21 +1454,27 @@ class DeepLatent:
             to_numpy: Whether to return as numpy array (True) or torch tensor (False).
             num_samples: Number of samples for VAE (only used if ae_type="vae").
                         Predictions are averaged across samples.
-        
+
         Returns:
-            Predictions [N, num_classes] for classification or [N, 1] for regression.
-            For classification, values are class probabilities summing to 1.
-            
+            Dict mapping label names to predictions:
+            - regression: array of shape [N, 1]
+            - binary: array of shape [N, 1] with probabilities (after sigmoid)
+            - multiclass: array of shape [N, num_classes] with probabilities (after softmax)
+
         Raises:
             AttributeError: If model was not trained with labels (predictor is None)
-            
+
         Examples:
+            >>> predictions = model.get_predictions(test_corpus)
+            >>> # Returns: {"sentiment": array, "category": array, "is_spam": array}
+            >>>
             >>> # Binary classification
-            >>> probs = model.get_predictions(test_corpus)
-            >>> predictions = (probs[:, 1] > 0.5).astype(int)
-            >>> 
-            >>> # Regression
-            >>> values = model.get_predictions(test_corpus)
+            >>> spam_probs = predictions["is_spam"]
+            >>> spam_predictions = (spam_probs > 0.5).astype(int)
+            >>>
+            >>> # Multi-class classification
+            >>> category_probs = predictions["category"]
+            >>> category_predictions = category_probs.argmax(axis=1)
         """
         if num_workers is None:
             num_workers = self.num_workers
@@ -1462,7 +1489,9 @@ class DeepLatent:
                 shuffle=False,
                 num_workers=num_workers,
             )
-            final_predictions = []
+            # Initialize dict to collect predictions per label
+            final_predictions = {label_name: [] for label_name in self.labels_info.keys()}
+
             for data in data_loader:
                 for key, value in data.items():
                     if isinstance(value, torch.Tensor):
@@ -1477,7 +1506,7 @@ class DeepLatent:
                     mod, view = parse_modality_view(key)
                     view_type = dataset.processed_modalities[mod][view]["type"]
                     view_data = data["modalities"][mod][view]
-                    
+
                     if view_type == "image":
                         # Images are handled separately - don't concatenate covariates
                         x = view_data.to(self.device)
@@ -1494,7 +1523,7 @@ class DeepLatent:
                         x = torch.cat(question_tensors, dim=-1)
                     else:
                         raise ValueError(f"Unsupported view type: {view_type}")
-                    
+
                     # For non-image modalities, concatenate covariates
                     if view_type != "image":
                         if prevalence_covariates is not None:
@@ -1528,17 +1557,27 @@ class DeepLatent:
                     )
                     features = theta_q if to_simplex else z
 
-                predictions = self.predictor(features, prediction_covariates)
-                if self.predictor_type == "classifier":
-                    predictions = torch.softmax(predictions, dim=1)
+                # Get predictions dict from multi-label predictor
+                batch_predictions = self.predictor(features, prediction_covariates)
 
-                final_predictions.append(predictions)
+                # Apply appropriate activation and collect predictions
+                for label_name, pred in batch_predictions.items():
+                    label_type = self.labels_info[label_name]["type"]
+                    if label_type == "binary":
+                        pred = torch.sigmoid(pred)
+                    elif label_type == "multiclass":
+                        pred = torch.softmax(pred, dim=1)
+                    # regression: no activation needed
+                    final_predictions[label_name].append(pred)
 
-            if to_numpy:
-                final_predictions = [p.cpu().numpy() for p in final_predictions]
-                final_predictions = np.concatenate(final_predictions, axis=0)
-            else:
-                final_predictions = torch.cat(final_predictions, dim=0)
+            # Concatenate batches for each label
+            for label_name in final_predictions.keys():
+                if to_numpy:
+                    final_predictions[label_name] = np.concatenate(
+                        [p.cpu().numpy() for p in final_predictions[label_name]], axis=0
+                    )
+                else:
+                    final_predictions[label_name] = torch.cat(final_predictions[label_name], dim=0)
 
         return final_predictions
 
@@ -2260,7 +2299,7 @@ class DeepLatent:
         """
         encoder_state_dict = self.encoder.state_dict()
         decoders_state_dict = {k: d.state_dict() for k, d in self.decoders.items()}
-        predictor_state_dict = self.predictor.state_dict() if self.labels_size != 0 else None
+        predictor_state_dict = self.predictor.state_dict() if self.labels_info else None
         optimizer_state_dict = self.optimizer.state_dict()
 
         all_vars = vars(self)
@@ -2272,7 +2311,7 @@ class DeepLatent:
 
         checkpoint["encoder"] = encoder_state_dict
         checkpoint["decoders"] = decoders_state_dict
-        if self.labels_size != 0:
+        if self.labels_info:
             checkpoint["predictor"] = predictor_state_dict
         checkpoint["optimizer"] = optimizer_state_dict
 
@@ -2316,16 +2355,13 @@ class DeepLatent:
         for key, state_dict in ckpt["decoders"].items():
             self.decoders[key].load_state_dict(state_dict)
 
-        if self.labels_size != 0 and "predictor" in ckpt:
-            if not hasattr(self, "predictor"):
-                # Create a basic predictor with default parameters if it doesn't exist
-                # The exact architecture will be determined from the checkpoint state_dict
-                predictor_dims = [self.n_factors + self.prediction_covariate_size, self.labels_size]
-                self.predictor = Predictor(
-                    predictor_dims=predictor_dims,
-                    predictor_non_linear_activation="relu",
-                    predictor_bias=True,
-                    dropout=0.0,
+        if self.labels_info and "predictor" in ckpt:
+            if not hasattr(self, "predictor") or self.predictor is None:
+                # Create MultiLabelPredictor from loaded labels_info and predictor_args
+                self.predictor = MultiLabelPredictor(
+                    input_dim=self.n_factors + self.prediction_covariate_size,
+                    labels_info=self.labels_info,
+                    predictor_configs=self.predictor_args,
                 ).to(self.device)
             self.predictor.load_state_dict(ckpt["predictor"])
 
@@ -2333,7 +2369,7 @@ class DeepLatent:
             # Create parameter groups with different parameter groups as in __init__
             main_params = list(self.encoder.parameters()) + list(self.decoders.parameters())
             predictor_params = []
-            if self.labels_size != 0 and hasattr(self, "predictor"):
+            if self.labels_info and hasattr(self, "predictor") and self.predictor is not None:
                 predictor_params = list(self.predictor.parameters())
             
             # Use default optimizer configuration
@@ -2400,7 +2436,7 @@ class DeepLatent:
         self.decoders.to(device)
         if self.prior is not None:
             self.prior.to(device)
-        if self.labels_size != 0:
+        if self.labels_info:
             self.predictor.to(device)
         self.device = device
 

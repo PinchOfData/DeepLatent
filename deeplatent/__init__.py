@@ -7,14 +7,14 @@ large multimodal and multilingual datasets using variational inference
 with deep neural networks.
 """
 
-__version__ = "0.1.2"
+__version__ = "0.1.3"
 __author__ = "Germain Gauthier, Elliott Ash, Hugo Subtil, Philine Widmer"
 __email__ = "germain.jean.gauthier@gmail.com"  
 
 from .models import GTM, IdealPointNN, DeepLatent
 from .corpus import Corpus
 from .autoencoders import EncoderMLP, DecoderMLP, MultiModalEncoder, ImageEncoder, ImageDecoder
-from .predictors import Predictor
+from .predictors import Predictor, MultiLabelPredictor
 from .priors import DirichletPrior, LogisticNormalPrior, GaussianPrior
 from .utils import (
     compute_mmd_loss,
@@ -43,6 +43,7 @@ __all__ = [
     "ImageEncoder",
     "ImageDecoder",
     "Predictor",
+    "MultiLabelPredictor",
     "DirichletPrior",
     "LogisticNormalPrior", 
     "GaussianPrior",
