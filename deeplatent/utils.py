@@ -173,7 +173,7 @@ def get_embeddings_from_list(
     return np.array(model.encode(texts, show_progress_bar=True, batch_size=batch_size))
 
 
-def compute_mmd_loss(x, y, device, kernel = 'multiscale'):
+def compute_mmd_loss(x, y, device, kernel='multiscale', bandwidth_range=None, t_values=None):
     """Emprical maximum mean discrepancy. The lower the result
        the more evidence that distributions are the same.
 
@@ -197,7 +197,8 @@ def compute_mmd_loss(x, y, device, kernel = 'multiscale'):
                     torch.zeros(xx.shape).to(device),
                     torch.zeros(xx.shape).to(device))
 
-        bandwidth_range = [0.01, 0.1, 0.3, 0.5, 0.7, 1]
+        if bandwidth_range is None:
+            bandwidth_range = [0.01, 0.1, 0.3, 0.5, 0.7, 1]
         for a in bandwidth_range:
             XX += a**2 * (a**2 + dxx)**-1
             YY += a**2 * (a**2 + dyy)**-1
@@ -209,7 +210,8 @@ def compute_mmd_loss(x, y, device, kernel = 'multiscale'):
 
         eps=1e-6
         n, d = x.shape
-        t_values = [0.05,0.1,0.2]
+        if t_values is None:
+            t_values = [0.05, 0.1, 0.2]
         
         qx = torch.sqrt(torch.clamp(x, eps, 1))
         qy = torch.sqrt(torch.clamp(y, eps, 1))
