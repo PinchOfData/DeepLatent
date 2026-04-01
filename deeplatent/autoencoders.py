@@ -9,12 +9,12 @@ from .priors import FixedGaussianPrior, FixedLogisticNormalPrior, FixedDirichlet
 class FiLMLayer(nn.Module):
     """Feature-wise Linear Modulation layer for conditioning CNNs on covariates."""
     
-    def __init__(self, num_features: int, covariate_dim: int):
+    def __init__(self, num_features: int, covariate_dim: int, film_hidden_dim: int = 128):
         super().__init__()
         self.film_net = nn.Sequential(
-            nn.Linear(covariate_dim, 128),
+            nn.Linear(covariate_dim, film_hidden_dim),
             nn.ReLU(),
-            nn.Linear(128, 2 * num_features)  # gamma and beta
+            nn.Linear(film_hidden_dim, 2 * num_features)  # gamma and beta
         )
     
     def forward(self, x: torch.Tensor, covariates: torch.Tensor) -> torch.Tensor:
@@ -58,10 +58,14 @@ class ImageEncoder(nn.Module):
         fc_hidden_dims: List[int] = [512],
         dropout: float = 0.1,
         activation: str = "relu",
-        use_batch_norm: bool = True
+        use_batch_norm: bool = True,
+        kernel_size: int = 3,
+        padding: Optional[int] = None,
+        pool_size: int = 2,
+        film_hidden_dim: int = 128
     ):
         super().__init__()
-        
+
         self.input_channels = input_channels
         self.latent_dim = latent_dim
         self.prevalence_covariate_size = prevalence_covariate_size
@@ -69,6 +73,10 @@ class ImageEncoder(nn.Module):
         self.include_labels = include_labels
         self.dropout = nn.Dropout(p=dropout)
         self.input_size = input_size
+        self.kernel_size = kernel_size
+        self.padding = padding if padding is not None else kernel_size // 2
+        self.pool_size = pool_size
+        self.film_hidden_dim = film_hidden_dim
         
         # Total covariate size
         self.covariate_size = self.prevalence_covariate_size + self.labels_size
@@ -90,15 +98,15 @@ class ImageEncoder(nn.Module):
         for i, out_channels in enumerate(hidden_dims):
             # Convolution
             conv_layers.extend([
-                nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1),
+                nn.Conv2d(in_channels, out_channels, kernel_size=self.kernel_size, padding=self.padding),
                 nn.BatchNorm2d(out_channels) if use_batch_norm else nn.Identity(),
                 self.activation,
-                nn.MaxPool2d(2)
+                nn.MaxPool2d(self.pool_size)
             ])
-            
+
             # FiLM layer for covariate conditioning
             if self.use_covariates:
-                film_layers.append(FiLMLayer(out_channels, self.covariate_size))
+                film_layers.append(FiLMLayer(out_channels, self.covariate_size, self.film_hidden_dim))
             
             in_channels = out_channels
         
@@ -219,16 +227,22 @@ class ImageDecoder(nn.Module):
         fc_hidden_dims: List[int] = [512],
         dropout: float = 0.1,
         activation: str = "relu",
-        use_batch_norm: bool = True
+        use_batch_norm: bool = True,
+        deconv_kernel_size: int = 4,
+        deconv_stride: int = 2,
+        deconv_padding: int = 1
     ):
         super().__init__()
-        
+
         self.latent_dim = latent_dim
         self.content_covariate_size = content_covariate_size
         self.output_channels = output_channels
         self.output_size = output_size
         self.hidden_dims = hidden_dims  # Store for use in calculation method
         self.dropout = nn.Dropout(p=dropout)
+        self.deconv_kernel_size = deconv_kernel_size
+        self.deconv_stride = deconv_stride
+        self.deconv_padding = deconv_padding
         
         # Activation function
         if activation == "relu":
@@ -268,15 +282,21 @@ class ImageDecoder(nn.Module):
         
         for i, out_channels in enumerate(hidden_dims[1:]):
             deconv_layers.extend([
-                nn.ConvTranspose2d(in_channels, out_channels, kernel_size=4, stride=2, padding=1),
+                nn.ConvTranspose2d(in_channels, out_channels,
+                                   kernel_size=self.deconv_kernel_size,
+                                   stride=self.deconv_stride,
+                                   padding=self.deconv_padding),
                 nn.BatchNorm2d(out_channels) if use_batch_norm else nn.Identity(),
                 self.activation
             ])
             in_channels = out_channels
-        
+
         # Final layer to get desired output channels
         deconv_layers.extend([
-            nn.ConvTranspose2d(in_channels, output_channels, kernel_size=4, stride=2, padding=1),
+            nn.ConvTranspose2d(in_channels, output_channels,
+                               kernel_size=self.deconv_kernel_size,
+                               stride=self.deconv_stride,
+                               padding=self.deconv_padding),
             nn.Sigmoid()  # Normalize output to [0, 1]
         ])
         
@@ -295,19 +315,15 @@ class ImageDecoder(nn.Module):
         # Formula: output_size = (input_size - 1) * stride - 2 * padding + kernel_size
         # Rearranged: input_size = (output_size + 2 * padding - kernel_size) / stride + 1
         
-        kernel_size = 4
-        stride = 2
-        padding = 1
-        
-        # Count deconv layers (excluding the final output layer)
-        num_layers = len(self.hidden_dims) - 1 + 1  # hidden_dims[1:] + final layer
-        
+        # Count deconv layers (hidden_dims[1:] + final output layer)
+        num_layers = len(self.hidden_dims) - 1 + 1
+
         current_h, current_w = h, w
-        
+
         for _ in range(num_layers):
             # Reverse the deconv operation
-            current_h = (current_h + 2 * padding - kernel_size) // stride + 1
-            current_w = (current_w + 2 * padding - kernel_size) // stride + 1
+            current_h = (current_h + 2 * self.deconv_padding - self.deconv_kernel_size) // self.deconv_stride + 1
+            current_w = (current_w + 2 * self.deconv_padding - self.deconv_kernel_size) // self.deconv_stride + 1
         
         # Ensure minimum size of 1
         current_h = max(1, current_h)

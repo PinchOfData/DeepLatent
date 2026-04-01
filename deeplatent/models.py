@@ -206,9 +206,12 @@ class DeepLatent:
                     fc_hidden_dims=config.get("fc_hidden_dims", [512]),
                     dropout=config.get("dropout", 0.1),
                     activation=config.get("activation", "relu"),
-                    use_batch_norm=config.get("use_batch_norm", True)
+                    use_batch_norm=config.get("use_batch_norm", True),
+                    kernel_size=config.get("kernel_size", 3),
+                    pool_size=config.get("pool_size", 2),
+                    film_hidden_dim=config.get("film_hidden_dim", 128)
                 )
-                
+
             elif view_type in {"bow", "embedding", "vote"}:
                 input_dim = view_data["matrix"].shape[1]
             elif view_type == "discrete_choice":
@@ -279,7 +282,10 @@ class DeepLatent:
                     fc_hidden_dims=config.get("fc_hidden_dims", [512]),
                     dropout=config.get("dropout", 0.1),
                     activation=config.get("activation", "relu"),
-                    use_batch_norm=config.get("use_batch_norm", True)
+                    use_batch_norm=config.get("use_batch_norm", True),
+                    deconv_kernel_size=config.get("deconv_kernel_size", 4),
+                    deconv_stride=config.get("deconv_stride", 2),
+                    deconv_padding=config.get("deconv_padding", 1)
                 ).to(self.device)
                 
             elif view_type == "discrete_choice":
