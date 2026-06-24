@@ -52,8 +52,6 @@ class ImageEncoder(nn.Module):
         input_channels: int = 3,
         latent_dim: int = 20,
         prevalence_covariate_size: int = 0,
-        labels_size: int = 0,
-        include_labels: bool = True,
         hidden_dims: List[int] = [32, 64, 128, 256],
         fc_hidden_dims: List[int] = [512],
         dropout: float = 0.1,
@@ -61,17 +59,15 @@ class ImageEncoder(nn.Module):
         use_batch_norm: bool = True
     ):
         super().__init__()
-        
+
         self.input_channels = input_channels
         self.latent_dim = latent_dim
         self.prevalence_covariate_size = prevalence_covariate_size
-        self.labels_size = labels_size if include_labels else 0
-        self.include_labels = include_labels
         self.dropout = nn.Dropout(p=dropout)
         self.input_size = input_size
-        
+
         # Total covariate size
-        self.covariate_size = self.prevalence_covariate_size + self.labels_size
+        self.covariate_size = self.prevalence_covariate_size
         self.use_covariates = self.covariate_size > 0
         
         # Activation function
@@ -154,33 +150,22 @@ class ImageEncoder(nn.Module):
         return x
     
     def forward(
-        self, 
-        x: torch.Tensor, 
-        prevalence_covariates: Optional[torch.Tensor] = None,
-        labels: Optional[torch.Tensor] = None
+        self,
+        x: torch.Tensor,
+        prevalence_covariates: Optional[torch.Tensor] = None
     ) -> torch.Tensor:
         """
         Forward pass through the image encoder.
-        
+
         Args:
             x: Input images [batch_size, channels, height, width]
             prevalence_covariates: Prevalence covariates [batch_size, prevalence_dim]
-            labels: Label covariates [batch_size, labels_dim]
-            
+
         Returns:
             Encoded representation [batch_size, latent_dim]
         """
         # Prepare covariates
-        covariates = None
-        if self.use_covariates:
-            covariate_list = []
-            if prevalence_covariates is not None:
-                covariate_list.append(prevalence_covariates)
-            if labels is not None and self.include_labels:
-                covariate_list.append(labels)
-            
-            if covariate_list:
-                covariates = torch.cat(covariate_list, dim=1)
+        covariates = prevalence_covariates
         
         # CNN feature extraction with FiLM conditioning
         layer_idx = 0
@@ -411,13 +396,16 @@ class EncoderMLP(nn.Module):
             torch.Tensor: Encoded representation.
         """
         hid = x
+        n_layers = len(self.encoder)
         for i, (_, layer) in enumerate(self.encoder.items()):
-            hid = self.dropout(layer(hid))
-            if (
-                i < len(self.encoder) - 1
-                and self.encoder_non_linear_activation is not None
-            ):
-                hid = self.encoder_nonlin(hid)
+            hid = layer(hid)
+            # Dropout + activation apply to hidden layers only. The final layer
+            # produces the distribution parameters (mu, logvar / Cholesky / latent
+            # code) and must never be dropped out or non-linearly squashed.
+            if i < n_layers - 1:
+                hid = self.dropout(hid)
+                if self.encoder_non_linear_activation is not None:
+                    hid = self.encoder_nonlin(hid)
         return hid
 
 
@@ -500,14 +488,16 @@ class MADE(nn.Module):
     Masked Autoencoder for Distribution Estimation (MADE).
     Implements proper autoregressive masking using degrees.
     """
-    def __init__(self, dim: int, hidden_dim: int = None, num_hidden: int = 1):
+    def __init__(self, dim: int, hidden_dim: int = None, num_hidden: int = 1,
+                 logscale_bound: float = 2.0):
         super().__init__()
         if hidden_dim is None:
             hidden_dim = max(dim, 16)
-            
+
         self.dim = dim
         self.hidden_dim = hidden_dim
         self.num_hidden = num_hidden
+        self.logscale_bound = logscale_bound
             
         # Create layer dimensions
         layer_dims = [dim] + [hidden_dim] * num_hidden + [2 * dim]  # 2*dim for mu and log_sigma
@@ -574,11 +564,14 @@ class MADE(nn.Module):
         """
         out = self.net(x)
         mu, s = torch.chunk(out, 2, dim=-1)
-        
-        # Use sigmoid-based parameterization for better stability
-        # Maps s to a bounded range for log_sigma
-        log_sigma = -2.0 + 4.0 * torch.sigmoid(s)  # Range approximately [-2, 2]
-        
+
+        # Smooth, bounded log-scale: log_sigma in [-b, b] (sigma in [e^-b, e^b]).
+        # A larger b lets each flow step contract/expand the posterior more (e.g. sharpen
+        # a peaked topic posterior); too large risks unstable training. Tunable via
+        # flow_logscale_bound on the model.
+        b = self.logscale_bound
+        log_sigma = -b + 2.0 * b * torch.sigmoid(s)
+
         return mu, log_sigma
 
 
@@ -586,16 +579,16 @@ class IAF(nn.Module):
     """
     Inverse Autoregressive Flow (IAF) with proper MADE implementation.
     """
-    def __init__(self, dim: int, num_flows: int = 4, hidden_dim: int = None, num_hidden: int = 1, 
-                 use_permutations: bool = True):
+    def __init__(self, dim: int, num_flows: int = 4, hidden_dim: int = None, num_hidden: int = 1,
+                 use_permutations: bool = True, logscale_bound: float = 2.0):
         super().__init__()
         self.dim = dim
         self.num_flows = num_flows
         self.use_permutations = use_permutations
-        
+
         # Create MADE networks for each flow
         self.mades = nn.ModuleList([
-            MADE(dim, hidden_dim, num_hidden) 
+            MADE(dim, hidden_dim, num_hidden, logscale_bound=logscale_bound)
             for k in range(num_flows)
         ])
         
@@ -649,16 +642,18 @@ class MultiModalEncoder(nn.Module):
         gating_hidden_dim: Optional[int] = None,
         ae_type: str = "wae",
         poe: Union[bool, str] = False,  # False, "uncorrected", or "corrected"
-        vi_type: str = "mean_field",  # "mean_field", "full_rank", "iaf"
+        vi_type: str = "mean_field",  # "mean_field", "full_rank", "iaf", "mixture_of_gaussians"
         num_flows: int = 4,
         flow_hidden_dim: Optional[int] = None,  # Hidden dimension for IAF
         flow_use_permutations: bool = True,  # Whether to use permutations in IAF
-        moe_type: str = "average"  # "average", "gating", "learned_weights"
+        flow_logscale_bound: float = 2.0,  # |log sigma| bound per IAF step (now configurable)
+        moe_type: str = "average",  # "average", "gating", "learned_weights"
+        mixture_components: int = 10  # number of Gaussian components when vi_type="mixture_of_gaussians"
     ):
         super().__init__()
 
         assert ae_type in {"wae", "vae", "ae"}, f"Invalid ae_type: {ae_type}"
-        assert vi_type in {"mean_field", "full_rank", "iaf"}, f"Invalid vi_type: {vi_type}"
+        assert vi_type in {"mean_field", "full_rank", "iaf", "mixture_of_gaussians"}, f"Invalid vi_type: {vi_type}"
         assert moe_type in {"average", "gating", "learned_weights"}, f"Invalid moe_type: {moe_type}"
         assert poe in {False, "uncorrected", "corrected"}, f"Invalid poe: {poe}"
 
@@ -670,10 +665,22 @@ class MultiModalEncoder(nn.Module):
         self.poe = poe
         self.vi_type = vi_type
         self.moe_type = moe_type
+        self.mixture_components = mixture_components
         self.num_modalities = len(encoders)
 
         if self.gating and self.poe:
             raise ValueError("Cannot use both gating and PoE. Choose one fusion method.")
+
+        # A mixture-of-Gaussians posterior is not a Gaussian, so a Product-of-Experts
+        # fusion (which multiplies Gaussian densities) does not apply: the product of
+        # M C-component mixtures is a mixture with C^M components. Use Mixture-of-Experts
+        # fusion (which keeps the result a mixture) with vi_type="mixture_of_gaussians".
+        if self.vi_type == "mixture_of_gaussians" and self.poe:
+            raise ValueError(
+                "vi_type='mixture_of_gaussians' is incompatible with Product-of-Experts "
+                "fusion (the product of mixtures is not a tractable mixture). Use a "
+                "Mixture-of-Experts fusion: fusion in {'moe_average','moe_gating','moe_learned'}."
+            )
 
         # Initialize IAF flow if needed (single shared flow for all modalities)
         if self.ae_type == "vae" and self.vi_type == "iaf":
@@ -681,7 +688,8 @@ class MultiModalEncoder(nn.Module):
                 dim=topic_dim,
                 num_flows=num_flows,
                 hidden_dim=flow_hidden_dim if flow_hidden_dim else max(topic_dim, 16),
-                use_permutations=flow_use_permutations
+                use_permutations=flow_use_permutations,
+                logscale_bound=flow_logscale_bound
             )
         else:
             self.shared_flow = None
@@ -696,6 +704,9 @@ class MultiModalEncoder(nn.Module):
                     input_dim = len(encoders) * (topic_dim + L_flat_dim)
                 elif vi_type == "iaf":
                     input_dim = len(encoders) * topic_dim * 2  # mu + logvar before flow
+                elif vi_type == "mixture_of_gaussians":
+                    # per modality: C means + C logvars (over K dims) + C mixing logits
+                    input_dim = len(encoders) * (self.mixture_components * (2 * topic_dim + 1))
             else:
                 input_dim = len(encoders) * topic_dim
                 
@@ -908,13 +919,53 @@ class MultiModalEncoder(nn.Module):
         
         return mu_S, L_S
 
+    def _mog_unpack(self, z_raw: torch.Tensor):
+        """Split a raw encoder output into mixture-of-Gaussians parameters.
+
+        Args:
+            z_raw: [B, C*(2K+1)] encoder output.
+        Returns:
+            means   [B, C, K]
+            logvars [B, C, K]
+            pi      [B, C]  (mixing weights, softmax of the last C logits)
+        """
+        B = z_raw.size(0)
+        C, K = self.mixture_components, self.topic_dim
+        means = z_raw[:, : C * K].view(B, C, K)
+        # Clamp log-variances to a numerically safe band. Without this, the pairwise
+        # (z - mu)^2 / exp(logvar) terms in the mixture log-density can overflow to inf
+        # early in training, poisoning the gradients (NaN mixing logits -> multinomial
+        # device assert). exp([-8,8]) keeps std in ~[0.018, 55].
+        logvars = torch.clamp(z_raw[:, C * K : 2 * C * K].view(B, C, K), min=-8.0, max=8.0)
+        pi_logits = z_raw[:, 2 * C * K :]  # [B, C]
+        pi = F.softmax(pi_logits, dim=1)
+        return means, logvars, pi
+
+    def _mog_sample(self, means: torch.Tensor, logvars: torch.Tensor, pi: torch.Tensor) -> torch.Tensor:
+        """Draw one reparameterized sample from the mixture q(z) = sum_c pi_c N(mu_c, diag).
+
+        The component index is sampled from pi (non-differentiable), then the Gaussian
+        draw is reparameterized, so gradients reach the selected component's (mu, logvar).
+        """
+        B = means.size(0)
+        std = torch.exp(0.5 * logvars)
+        eps = torch.randn_like(std)
+        z_all = means + eps * std  # [B, C, K]
+        # Defensive: guarantee a valid categorical for torch.multinomial even if an
+        # upstream non-finite value slips through (it raises a hard device-side assert
+        # on inf/nan/negative weights otherwise).
+        pi_safe = torch.nan_to_num(pi, nan=0.0, posinf=0.0, neginf=0.0).clamp_min(0.0)
+        pi_safe = pi_safe / pi_safe.sum(dim=1, keepdim=True).clamp_min(1e-8)
+        comp = torch.multinomial(pi_safe, num_samples=1).squeeze(1)  # [B]
+        z_sample = z_all[torch.arange(B, device=means.device), comp]  # [B, K]
+        return z_sample
+
     def forward(
         self,
         modality_inputs: Dict[str, torch.Tensor],
         single_modality: Optional[str] = None,
         active_modalities: Optional[List[str]] = None,
-        prevalence_covariates: Optional[torch.Tensor] = None,
-        labels: Optional[torch.Tensor] = None
+        prevalence_covariates: Optional[torch.Tensor] = None
     ) -> Tuple[torch.Tensor, torch.Tensor, List[Tuple]]:
         
         # If single_modality is specified, only process that modality
@@ -928,7 +979,7 @@ class MultiModalEncoder(nn.Module):
             
             # Handle different encoder types for single modality
             if isinstance(encoder, ImageEncoder):
-                z_raw = encoder(x, prevalence_covariates=prevalence_covariates, labels=labels)
+                z_raw = encoder(x, prevalence_covariates=prevalence_covariates)
             else:
                 z_raw = encoder(x)
             
@@ -977,14 +1028,19 @@ class MultiModalEncoder(nn.Module):
                     
                     mu_logvar_info = [(mu, logvar, z0, zk, log_det_j)]
                     z_sample = zk
-                    
+
+                elif self.vi_type == "mixture_of_gaussians":
+                    means, logvars, pi = self._mog_unpack(z_raw)
+                    mu_logvar_info = [("mog", means, logvars, pi)]
+                    z_sample = self._mog_sample(means, logvars, pi)
+
             else:  # WAE or plain AE
                 mu_logvar_info = [(z_raw,)]
                 z_sample = z_raw
-            
+
             # Convert to simplex for topic models
             theta = F.softmax(z_sample, dim=1)
-            
+
             return theta, z_sample, mu_logvar_info
         
         # Original multimodal processing code follows...
@@ -1005,8 +1061,8 @@ class MultiModalEncoder(nn.Module):
            
             # Handle different encoder types
             if isinstance(encoder, ImageEncoder):
-                # ImageEncoder expects separate prevalence_covariates and labels
-                z_raw = encoder(x, prevalence_covariates=prevalence_covariates, labels=labels)
+                # ImageEncoder expects separate prevalence_covariates
+                z_raw = encoder(x, prevalence_covariates=prevalence_covariates)
             else:
                 # Standard MLP encoder - covariates already concatenated in models.py
                 z_raw = encoder(x)
@@ -1083,11 +1139,17 @@ class MultiModalEncoder(nn.Module):
                     
                 elif self.vi_type == "iaf":
                     mu, logvar = torch.chunk(z_raw, 2, dim=1)
-                    
+
                     # Store base parameters only - will apply shared flow after PoE fusion
                     mu_logvar_info.append((mu, logvar))
                     modality_outputs.append((mu, logvar))
-                    
+
+                elif self.vi_type == "mixture_of_gaussians":
+                    means, logvars, pi = self._mog_unpack(z_raw)
+                    # Keep the per-modality mixture; fused into a bigger mixture below.
+                    mu_logvar_info.append(("mog", means, logvars, pi))
+                    modality_outputs.append((means, logvars, pi))
+
             else:  # WAE or plain AE
                 mu_logvar_info.append((z_raw,))  # Wrap in tuple for consistency
                 modality_outputs.append(z_raw)
@@ -1156,7 +1218,33 @@ class MultiModalEncoder(nn.Module):
         
         else:
             # Mixture of Experts fusion
-            if self.moe_type == "average":
+            if self.vi_type == "mixture_of_gaussians":
+                # Fuse the M per-modality mixtures into one mixture with sum_m C components
+                # by concatenating components and reweighting the mixing weights by the
+                # modality weights (average / learned / gated). The product-of-mixtures
+                # blow-up is avoided precisely because MoE keeps a mixture a mixture.
+                comp_means = torch.cat([o[0] for o in modality_outputs], dim=1)    # [B, M*C, K]
+                comp_logvars = torch.cat([o[1] for o in modality_outputs], dim=1)  # [B, M*C, K]
+                M = len(modality_outputs)
+                if self.moe_type == "learned_weights":
+                    w = F.softmax(self.mixture_weights, dim=0)                     # [M]
+                elif self.moe_type == "gating" or self.gating:
+                    gate_in = torch.cat([
+                        torch.cat((o[0].reshape(o[0].size(0), -1),
+                                   o[1].reshape(o[1].size(0), -1), o[2]), dim=1)
+                        for o in modality_outputs], dim=1)
+                    w = self.gate_net(gate_in)                                     # [B, M]
+                else:  # average
+                    w = torch.full((M,), 1.0 / M, device=comp_means.device)       # [M]
+                if w.dim() == 1:
+                    pis = [o[2] * w[m] for m, o in enumerate(modality_outputs)]
+                else:
+                    pis = [o[2] * w[:, m:m + 1] for m, o in enumerate(modality_outputs)]
+                comp_pi = torch.cat(pis, dim=1)                                    # [B, M*C]
+                comp_pi = comp_pi / comp_pi.sum(dim=1, keepdim=True).clamp_min(1e-8)
+                mu_logvar_info = [("mog", comp_means, comp_logvars, comp_pi)]
+                z_final = self._mog_sample(comp_means, comp_logvars, comp_pi)
+            elif self.moe_type == "average":
                 # Fuse base distributions first, then apply flow
                 if self.ae_type == "vae" and self.vi_type == "iaf":
                     # Average base distribution parameters (fusion)

@@ -104,10 +104,12 @@ class LogisticNormalPrior(Prior):
             # Learnable global mean parameters (K dimensions)
             self.global_mean = nn.Parameter(torch.zeros(self.n_latent))
             
-        # Learnable Cholesky factor for covariance matrix (K x K)
-        # Initialize as identity matrix (flattened lower triangular)
-        self.L_flat = nn.Parameter(torch.eye(self.n_latent)[torch.tril_indices(self.n_latent, self.n_latent)[0], 
-                                                             torch.tril_indices(self.n_latent, self.n_latent)[1]])
+        # Learnable Cholesky factor for covariance matrix (K x K).
+        # `sigma` exponentiates the diagonal (L_ii = exp(L_flat_ii) + 1e-4), so a
+        # zero-initialized L_flat yields L_ii = 1 + 1e-4 and off-diagonals 0, i.e.
+        # Sigma = L L^T ~= I at initialization (the intended identity init).
+        tril_count = self.n_latent * (self.n_latent + 1) // 2
+        self.L_flat = nn.Parameter(torch.zeros(tril_count))
 
     @property
     def sigma(self):
@@ -395,10 +397,12 @@ class GaussianPrior(Prior):
             # Learnable global mean
             self.global_mean = nn.Parameter(torch.zeros(n_dims))
 
-        # Learnable Cholesky factor for covariance matrix
-        # Initialize as identity matrix (flattened lower triangular)
-        self.L_flat = nn.Parameter(torch.eye(n_dims)[torch.tril_indices(n_dims, n_dims)[0], 
-                                                      torch.tril_indices(n_dims, n_dims)[1]])
+        # Learnable Cholesky factor for covariance matrix.
+        # `sigma` exponentiates the diagonal (L_ii = exp(L_flat_ii) + 1e-4), so a
+        # zero-initialized L_flat yields L_ii = 1 + 1e-4 and off-diagonals 0, i.e.
+        # Sigma = L L^T ~= I at initialization (the intended identity init).
+        tril_count = n_dims * (n_dims + 1) // 2
+        self.L_flat = nn.Parameter(torch.zeros(tril_count))
 
     @property
     def sigma(self):

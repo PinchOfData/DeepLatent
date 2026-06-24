@@ -36,12 +36,13 @@ class DeepLatent:
         encoder_args={},
         decoder_args={},
         predictor_args={},
-        include_labels_in_encoder: bool = True,
         fusion: str = "moe_average",  
         gating_hidden_dim=None,
         num_flows=4,
-        flow_hidden_dim=None,  
-        flow_use_permutations=True,  
+        flow_hidden_dim=None,
+        flow_use_permutations=True,
+        flow_logscale_bound=2.0,
+        mixture_components=10,
         num_steps=10000,
         batch_size=64,
         num_workers=4,
@@ -77,12 +78,15 @@ class DeepLatent:
                 Each config can include: hidden_dims (list), dropout (float), activation (str),
                 bias (bool), loss_weight (float). Example:
                 {"sentiment": {"hidden_dims": [64], "loss_weight": 1.0}}
-            include_labels_in_encoder: whether to include labels in the encoder input.
             fusion: type of fusion method to use. Options: 'moe_average' (equal weights), 'moe_gating' (learned gating), 'moe_learned' (learned fixed weights), 'poe' (uncorrected Product of Experts), 'corrected_poe' (corrected PoE matching true posterior p(z|x₁,...,xₘ) ∝ p(z) × ∏ₘ p(xₘ|z)).
             gating_hidden_dim: hidden dimension for gating mechanism (if used).
             num_flows: number of flows for IAF (if used).
             flow_hidden_dim: hidden dimension for IAF flows (if None, defaults to max(n_factors, 16)).
             flow_use_permutations: whether to use permutations between IAF flows for better expressivity.
+            flow_logscale_bound: per-step bound b on the IAF affine log-scale, log_sigma in [-b, b]
+                (sigma in [e^-b, e^b]). Larger b lets each flow step sharpen/spread the posterior more,
+                but on US-congress data widening it did not improve held-out likelihood and b>=6
+                diverged (NaN) without gradient clipping. Default 2.0 (stable); tune with care.
             num_steps: number of training steps to train the model.
             num_workers: number of workers for the data loaders.
             batch_size: batch size for training.
@@ -120,11 +124,24 @@ class DeepLatent:
         self.ae_type = ae_type
         assert ae_type in {"wae", "vae", "ae"}, f"Invalid ae_type: {ae_type}"
         self.vi_type = vi_type
-        assert self.vi_type in {"mean_field", "full_rank", "iaf"}, f"Invalid vi_type: {vi_type}"
+        assert self.vi_type in {"mean_field", "full_rank", "iaf", "mixture_of_gaussians"}, f"Invalid vi_type: {vi_type}"
 
         self.latent_factor_prior = latent_factor_prior
         self.update_prior = update_prior
         self.alpha = alpha
+
+        # A Dirichlet prior has no closed-form KL in the encoder's logit space
+        # (the posterior q(z|x) is Gaussian over logits, the Dirichlet lives on the
+        # simplex). The VAE path would otherwise compare incommensurable quantities.
+        # Use the Dirichlet prior with the WAE objective (MMD on simplex samples),
+        # or use the 'logistic_normal' prior for a VAE topic model.
+        if ae_type == "vae" and latent_factor_prior == "dirichlet":
+            raise ValueError(
+                "ae_type='vae' is not supported with a Dirichlet prior: the Dirichlet "
+                "has no closed-form KL in the encoder's logit space. Use ae_type='wae' "
+                "with latent_factor_prior='dirichlet', or latent_factor_prior="
+                "'logistic_normal' with ae_type='vae'."
+            )
         self.num_steps = num_steps
         self.batch_size = batch_size
         self.num_workers = num_workers
@@ -146,7 +163,8 @@ class DeepLatent:
         self.num_flows = num_flows
         self.flow_hidden_dim = flow_hidden_dim
         self.flow_use_permutations = flow_use_permutations
-        self.include_labels_in_encoder = include_labels_in_encoder
+        self.flow_logscale_bound = flow_logscale_bound
+        self.mixture_components = mixture_components
 
         if not os.path.exists(ckpt_folder):
             os.makedirs(ckpt_folder)
@@ -162,9 +180,6 @@ class DeepLatent:
         )
         self.labels_info = train_data.labels_info if train_data.labels_info else {}
         self.predictor_args = predictor_args
-        self.labels_size = (
-            train_data.M_labels.shape[1] if train_data.labels_info else 0
-        )
 
         self.content_colnames = train_data.content_colnames or []
         self.id2token = train_data.id2token
@@ -188,11 +203,13 @@ class DeepLatent:
                         final_dim = n_factors + (n_factors * (n_factors + 1)) // 2
                     elif self.vi_type == "iaf":
                         final_dim = n_factors * 2
+                    elif self.vi_type == "mixture_of_gaussians":
+                        final_dim = self.mixture_components * (2 * n_factors + 1)
                     else:
                         raise ValueError(f"Invalid vi_type: {self.vi_type}")
                 else:  # wae or ae
                     final_dim = n_factors
-                
+
                 # input_size is now required in config
                 if "input_size" not in config:
                     raise ValueError(f"input_size must be specified in encoder_args for image modality '{key}'")
@@ -202,8 +219,6 @@ class DeepLatent:
                     input_channels=config.get("input_channels", 3),
                     latent_dim=final_dim,
                     prevalence_covariate_size=self.prevalence_covariate_size,
-                    labels_size=self.labels_size,
-                    include_labels=self.include_labels_in_encoder,
                     hidden_dims=config.get("hidden_dims", [32, 64, 128, 256]),
                     fc_hidden_dims=config.get("fc_hidden_dims", [512]),
                     dropout=config.get("dropout", 0.1),
@@ -228,12 +243,14 @@ class DeepLatent:
                         final_dim = n_factors + (n_factors * (n_factors + 1)) // 2
                     elif self.vi_type == "iaf":
                         final_dim = n_factors * 2  # base params, flows in encoder
+                    elif self.vi_type == "mixture_of_gaussians":
+                        final_dim = self.mixture_components * (2 * n_factors + 1)
                     else:
                         raise ValueError(f"Invalid vi_type: {self.vi_type}")
                 else:  # wae or ae
                     final_dim = n_factors
 
-                extra_in = self.prevalence_covariate_size + (self.labels_size if self.include_labels_in_encoder else 0)
+                extra_in = self.prevalence_covariate_size
                 dims = [input_dim + extra_in] + config.get("hidden_dims", []) + [final_dim]
 
                 encoders[key] = EncoderMLP(
@@ -363,7 +380,9 @@ class DeepLatent:
             num_flows=num_flows,
             flow_hidden_dim=self.flow_hidden_dim,
             flow_use_permutations=self.flow_use_permutations,
-            moe_type=moe_type
+            flow_logscale_bound=self.flow_logscale_bound,
+            moe_type=moe_type,
+            mixture_components=self.mixture_components
         ).to(self.device)
 
         # PREDICTOR (multi-label)
@@ -395,7 +414,15 @@ class DeepLatent:
         if optim_args is None:
             optim_args = {
                 "main": {"lr": 1e-3, "weight_decay": 0.0},
-                "prior": {"lr": 1e-4, "weight_decay": 0.01}
+                # Prior is trained on a SLOWER timescale than the encoder/decoder on purpose:
+                # the topics must form first (driven by reconstruction), then mean_net catches
+                # up to the true covariate->prevalence map. Verified empirically that raising
+                # the prior lr to 1e-3 plateaus covariate-coefficient recovery at ~0.35, while
+                # lr=1e-4 climbs to ~0.95 (N=10k, 80 words). Keep the slow prior lr.
+                # No weight_decay on the prior: it shrinks mean_net's covariate coefficients
+                # toward zero, biasing prevalence-effect estimates. Slow lr alone gives the
+                # two-timescale benefit without that bias.
+                "prior": {"lr": 1e-4, "weight_decay": 0.0}
             }
         
         # Extract configurations for each parameter group
@@ -649,20 +676,13 @@ class DeepLatent:
                 if view_type != "image":
                     if prevalence_covariates is not None:
                         x = torch.cat([x, prevalence_covariates], dim=1)
-                    if self.include_labels_in_encoder and target_labels is not None:
-                        # ensure labels are 2D; if class ids, one-hot encode to match self.labels_size
-                        lab = target_labels
-                        if lab.dim() == 1:  # class ids -> one-hot
-                            lab = F.one_hot(lab.to(torch.int64), num_classes=self.labels_size).float()
-                        x = torch.cat([x, lab], dim=1)
 
                     modality_inputs[key] = x
 
             theta_q, z, mu_logvar = self.encoder(
                 modality_inputs,
                 active_modalities=active_modalities,
-                prevalence_covariates=prevalence_covariates.to(self.device) if prevalence_covariates is not None else None,
-                labels=target_labels.to(self.device) if target_labels is not None and self.include_labels_in_encoder else None
+                prevalence_covariates=prevalence_covariates.to(self.device) if prevalence_covariates is not None else None
             )
 
             if self.latent_factor_prior in {"dirichlet", "logistic_normal"}:
@@ -671,6 +691,12 @@ class DeepLatent:
                 doc_latents = z      # real-valued (deterministic for ae_type="ae")
 
             # -------------------- DECODERS --------------------
+            # Reconstruction is the per-document negative log-likelihood (summed over
+            # the tokens/votes/features within a document, averaged over the batch).
+            # This matches the per-document KL below, so the total loss is exactly the
+            # (negative) ELBO at w_prior=1 -- a valid lower bound on the log-likelihood.
+            # Per-token averaging would down-weight the likelihood by ~document length
+            # relative to the KL and cause posterior collapse at w_prior=1.
             reconstruction_loss = 0.0
             theta_input = torch.cat([doc_latents, content_covariates], dim=1) if content_covariates is not None else doc_latents
 
@@ -690,8 +716,8 @@ class DeepLatent:
                     # For image decoder, we need to pass content covariates separately
                     reconstructed_images = decoder(doc_latents, content_covariates)
                     
-                    # Use MSE loss for image reconstruction (could also use perceptual loss)
-                    recon_loss = F.mse_loss(reconstructed_images, target_images)
+                    # Per-document Gaussian NLL: summed over pixels, averaged over the batch.
+                    recon_loss = F.mse_loss(reconstructed_images, target_images, reduction="sum") / target_images.shape[0]
                     reconstruction_loss += recon_loss
                     
                 elif view_type == "discrete_choice":
@@ -709,16 +735,20 @@ class DeepLatent:
 
                     if view_type == "bow":
                         log_probs = F.log_softmax(recon, dim=1)
-                        recon_loss = -torch.sum(target * log_probs) / torch.sum(target)
+                        # Per-document multinomial NLL: summed over the vocabulary,
+                        # averaged over the batch.
+                        recon_loss = -torch.sum(target * log_probs) / target.shape[0]
 
                     elif view_type == "embedding":
-                        recon_loss = F.mse_loss(recon, target)
+                        # Per-document Gaussian NLL: summed over feature dims, averaged over batch.
+                        recon_loss = F.mse_loss(recon, target, reduction="sum") / target.shape[0]
 
                     elif view_type == "vote":
                         mask = ~modality_data["mask"].to(self.device)
                         loss_fn = nn.BCEWithLogitsLoss(reduction='none')
                         losses = loss_fn(recon, target)
-                        recon_loss = torch.sum(losses * mask) / torch.sum(mask)
+                        # Per-document Bernoulli NLL: summed over observed votes, averaged over batch.
+                        recon_loss = torch.sum(losses * mask) / target.shape[0]
 
                     else:
                         raise ValueError(f"Unsupported view type: {view_type}")
@@ -926,7 +956,41 @@ class DeepLatent:
                             kl_raw = kl_per_dim_approx  # [B, D] for free_bits processing
                         else:
                             kl_raw = kl_raw_total  # [B] for regular processing
-                    
+
+                    elif self.vi_type == "mixture_of_gaussians":
+                        # MC estimate of KL( sum_c pi_c N(mu_c, diag) || p(z) ), Rao-Blackwellized
+                        # over the component index: one reparameterized draw per component,
+                        # weighted by pi. log q is the full mixture density (logsumexp over c').
+                        _, means, logvars, pi = mu_logvar_fused      # [B,C,K],[B,C,K],[B,C]
+                        B_, C_, D_ = means.shape
+                        std = torch.exp(0.5 * logvars)
+                        z_c = means + torch.randn_like(std) * std    # [B,C,K]
+
+                        # log q(z_c) = logsumexp_{c'} [ log pi_c' + sum_k log N(z_c; mu_c', var_c') ]
+                        z_e = z_c.unsqueeze(2)                       # [B,C,1,K]
+                        m_e = means.unsqueeze(1)                     # [B,1,C,K]
+                        lv_e = logvars.unsqueeze(1)                  # [B,1,C,K]
+                        log_N = -0.5 * ((z_e - m_e) ** 2 / torch.exp(lv_e) + lv_e + np.log(2 * np.pi))
+                        log_N = log_N.sum(-1)                        # [B,C,C]
+                        log_pi = torch.log(pi + 1e-12).unsqueeze(1)  # [B,1,C]
+                        log_q = torch.logsumexp(log_pi + log_N, dim=2)  # [B,C]
+
+                        # log p(z_c) under the prior
+                        if has_full_cov:
+                            mu_p, Sigma_p = self.prior.get_prior_params(prevalence_covariates, return_full_cov=True)
+                            Sigma_p_inv = torch.inverse(Sigma_p)         # [K,K]
+                            logdet_p = torch.logdet(Sigma_p)             # scalar
+                            diff = z_c - mu_p.unsqueeze(1)               # [B,C,K]
+                            quad = torch.einsum('bck,kj,bcj->bc', diff, Sigma_p_inv, diff)
+                            log_p = -0.5 * (quad + logdet_p + D_ * np.log(2 * np.pi))  # [B,C]
+                        else:
+                            mu_p, logvar_p = self.prior.get_prior_params(prevalence_covariates)
+                            var_p = torch.exp(logvar_p).unsqueeze(1)     # [B,1,K]
+                            log_p = -0.5 * ((z_c - mu_p.unsqueeze(1)) ** 2 / var_p
+                                            + logvar_p.unsqueeze(1) + np.log(2 * np.pi)).sum(-1)  # [B,C]
+
+                        kl_raw = (pi * (log_q - log_p)).sum(dim=1)   # [B]
+
                     # Apply free_bits if specified (now truly per dimension for all vi_types)
                     if self.free_bits > 0.0:
                         if kl_raw.dim() == 2:  # [B, D] case - per dimension KL available
@@ -1327,13 +1391,6 @@ class DeepLatent:
                         if prevalence_covariates is not None:
                             x = torch.cat([x, prevalence_covariates], dim=1)
 
-                        labels = data.get("M_labels", None)
-                        if self.include_labels_in_encoder and labels is not None:
-                            lab = labels
-                            if lab.dim() == 1:
-                                lab = F.one_hot(lab.to(torch.int64), num_classes=self.labels_size).float()
-                            x = torch.cat([x, lab], dim=1)
-
                         modality_inputs = {single_modality: x}
                 else:
                     # Multimodal path - prepare all modality inputs
@@ -1365,13 +1422,6 @@ class DeepLatent:
                             if prevalence_covariates is not None:
                                 x = torch.cat([x, prevalence_covariates], dim=1)
 
-                            labels = data.get("M_labels", None)
-                            if self.include_labels_in_encoder and labels is not None:
-                                lab = labels
-                                if lab.dim() == 1:
-                                    lab = F.one_hot(lab.to(torch.int64), num_classes=self.labels_size).float()
-                                x = torch.cat([x, lab], dim=1)
-
                             modality_inputs[key] = x
 
                 # Use the MultiModalEncoder.forward() method with single_modality parameter
@@ -1379,15 +1429,14 @@ class DeepLatent:
                     thetas = []
                     for _ in range(num_samples):
                         theta_q, z, _ = self.encoder(
-                            modality_inputs, 
+                            modality_inputs,
                             single_modality=single_modality,
-                            prevalence_covariates=prevalence_covariates,
-                            labels=data.get("M_labels", None) if self.include_labels_in_encoder else None
+                            prevalence_covariates=prevalence_covariates
                         )
                         thetas.append(theta_q if to_simplex else z)
-                    
+
                     samples = torch.stack(thetas, dim=1)  # [B, num_samples, D]
-                    
+
                     if return_samples:
                         # Return all samples instead of mean/std
                         theta_q = samples
@@ -1397,10 +1446,9 @@ class DeepLatent:
                             theta_std = samples.std(dim=1)
                 else:
                     theta_q, z, _ = self.encoder(
-                        modality_inputs, 
+                        modality_inputs,
                         single_modality=single_modality,
-                        prevalence_covariates=prevalence_covariates,
-                        labels=data.get("M_labels", None) if self.include_labels_in_encoder else None
+                        prevalence_covariates=prevalence_covariates
                     )
                     theta_q = theta_q if to_simplex else z
                     if return_samples:
@@ -1529,13 +1577,6 @@ class DeepLatent:
                         if prevalence_covariates is not None:
                             x = torch.cat([x, prevalence_covariates], dim=1)
 
-                        labels = data.get("M_labels", None)
-                        if self.include_labels_in_encoder and labels is not None:
-                            lab = labels
-                            if lab.dim() == 1:
-                                lab = F.one_hot(lab.to(torch.int64), num_classes=self.labels_size).float()
-                            x = torch.cat([x, lab], dim=1)
-
                         modality_inputs[key] = x
 
                 if self.ae_type == "vae":
@@ -1543,8 +1584,7 @@ class DeepLatent:
                     for _ in range(num_samples):
                         theta_q, z, _ = self.encoder(
                             modality_inputs,
-                            prevalence_covariates=prevalence_covariates,
-                            labels=data.get("M_labels", None) if self.include_labels_in_encoder else None
+                            prevalence_covariates=prevalence_covariates
                         )
                         theta_q = theta_q if to_simplex else z
                         thetas.append(theta_q)
@@ -1552,8 +1592,7 @@ class DeepLatent:
                 else:
                     theta_q, z, _ = self.encoder(
                         modality_inputs,
-                        prevalence_covariates=prevalence_covariates,
-                        labels=data.get("M_labels", None) if self.include_labels_in_encoder else None
+                        prevalence_covariates=prevalence_covariates
                     )
                     features = theta_q if to_simplex else z
 
@@ -1622,6 +1661,14 @@ class DeepLatent:
         if num_workers is None:
             num_workers = self.num_workers
 
+        # Mixture-of-Gaussians posteriors are fused as a concatenated mixture (MoE),
+        # not via per-modality precision weighting, so the precision-based modality
+        # weights are not defined. Report the (equal) MoE-average weights.
+        if self.vi_type == "mixture_of_gaussians":
+            N = len(dataset); M = len(self.encoder.encoders)
+            w = np.full((N, M), 1.0 / M, dtype=np.float32)
+            return w if to_numpy else torch.tensor(w, device=self.device)
+
         self.encoder.eval()
         data_loader = DataLoader(
             dataset,
@@ -1666,19 +1713,13 @@ class DeepLatent:
                     if view_type != "image":
                         if prevalence_covariates is not None:
                             x = torch.cat((x, prevalence_covariates), dim=1)
-                        labels = data.get("M_labels", None)
-                        if self.include_labels_in_encoder and labels is not None:
-                            lab = labels
-                            if lab.dim() == 1:
-                                lab = F.one_hot(lab.to(torch.int64), num_classes=self.labels_size).float()
-                            x = torch.cat([x, lab], dim=1)
-                        
+
                         modality_inputs[name] = x
 
                     # Encode each modality separately for weight computation
                     encoder = self.encoder.encoders[name]
                     if isinstance(encoder, ImageEncoder):
-                        z = encoder(modality_inputs[name], prevalence_covariates=prevalence_covariates, labels=data.get("M_labels", None))
+                        z = encoder(modality_inputs[name], prevalence_covariates=prevalence_covariates)
                     else:
                         z = encoder(modality_inputs[name])
 
@@ -1879,6 +1920,13 @@ class DeepLatent:
                 f"Current ae_type is '{self.ae_type}'."
             )
 
+        if self.vi_type == "mixture_of_gaussians":
+            raise NotImplementedError(
+                "get_mutual_information is not implemented for vi_type="
+                "'mixture_of_gaussians' (the per-modality KL has no closed form). "
+                "Use estimate_marginal_log_likelihood for held-out-likelihood diagnostics."
+            )
+
         self.encoder.eval()
         data_loader = DataLoader(
             dataset,
@@ -1925,17 +1973,12 @@ class DeepLatent:
                     if view_type != "image":
                         if prevalence_covariates is not None:
                             x = torch.cat((x, prevalence_covariates), dim=1)
-                        if self.include_labels_in_encoder and labels is not None:
-                            lab = labels
-                            if lab.dim() == 1:
-                                lab = F.one_hot(lab.to(torch.int64), num_classes=self.labels_size).float()
-                            x = torch.cat([x, lab], dim=1)
                         modality_inputs[name] = x
 
                     # Encode each modality separately to get individual posterior parameters
                     encoder = self.encoder.encoders[name]
                     if isinstance(encoder, ImageEncoder):
-                        z = encoder(modality_inputs[name], prevalence_covariates=prevalence_covariates, labels=labels)
+                        z = encoder(modality_inputs[name], prevalence_covariates=prevalence_covariates)
                     else:
                         z = encoder(modality_inputs[name])
 
@@ -2076,6 +2119,165 @@ class DeepLatent:
 
         mi_all = torch.cat(mi_list, dim=0)  # (N, M)
         return mi_all.cpu().numpy() if to_numpy else mi_all
+
+    def _posterior_loglik(self, info, z):
+        """log q(z|x) for one drawn sample z, dispatched by variational family."""
+        from torch.distributions import Normal, MultivariateNormal
+        if self.vi_type == "mean_field":
+            mu, logvar = info
+            return Normal(mu, torch.exp(0.5 * logvar)).log_prob(z).sum(1)
+        elif self.vi_type == "full_rank":
+            mu, L = info
+            return MultivariateNormal(mu, scale_tril=L).log_prob(z)
+        elif self.vi_type == "iaf":
+            mu, logvar, z0, zk, log_det_j = info
+            log_q0 = Normal(mu, torch.exp(0.5 * logvar)).log_prob(z0).sum(1)
+            return log_q0 - log_det_j  # change-of-variables density of the flow output
+        elif self.vi_type == "mixture_of_gaussians":
+            _, means, logvars, pi = info
+            z_e = z.unsqueeze(1)  # [B,1,K]
+            logN = -0.5 * ((z_e - means) ** 2 / torch.exp(logvars)
+                           + logvars + np.log(2 * np.pi)).sum(-1)  # [B,C]
+            return torch.logsumexp(torch.log(pi + 1e-12) + logN, dim=1)  # [B]
+        else:
+            raise ValueError(f"Unsupported vi_type: {self.vi_type}")
+
+    def _recon_loglik(self, doc_latents, data, dataset, content_covariates):
+        """Per-document log p(x|z) summed over modalities (NOT averaged over the batch)."""
+        theta_input = (torch.cat([doc_latents, content_covariates], dim=1)
+                       if content_covariates is not None else doc_latents)
+        total = None
+        for key, decoder in self.decoders.items():
+            mod, view = parse_modality_view(key)
+            vt = dataset.processed_modalities[mod][view]["type"]
+            md = data["modalities"][mod][view]
+            if vt == "image":
+                target = md.to(self.device)
+                recon = decoder(doc_latents, content_covariates)
+                ll = -((recon - target) ** 2).flatten(1).sum(1)
+            elif vt == "discrete_choice":
+                ll = 0
+                for q, qdec in decoder.items():
+                    if q == "type":
+                        continue
+                    x_out = md[q].to(self.device)
+                    logits = qdec(theta_input)
+                    ll = ll - F.cross_entropy(logits, x_out.argmax(-1), reduction="none")
+            else:
+                target = md.to(self.device) if vt in {"bow", "embedding"} else md["matrix"].to(self.device)
+                recon = decoder(theta_input)
+                if vt == "bow":
+                    ll = (target * F.log_softmax(recon, dim=1)).sum(1)
+                elif vt == "embedding":
+                    ll = -((recon - target) ** 2).sum(1)
+                elif vt == "vote":
+                    mask = ~md["mask"].to(self.device)
+                    bce = F.binary_cross_entropy_with_logits(recon, target, reduction="none")
+                    ll = -(bce * mask).sum(1)
+                else:
+                    raise ValueError(f"Unsupported view type: {vt}")
+            total = ll if total is None else total + ll
+        return total
+
+    def estimate_marginal_log_likelihood(
+        self,
+        dataset,
+        n_samples: int = 50,
+        num_workers: Optional[int] = None,
+        to_numpy: bool = True,
+        reduce: str = "mean",
+    ):
+        """Importance-weighted (IWAE) estimate of the per-document marginal log-likelihood.
+
+        For S samples z_s ~ q(z|x):
+            log p(x) >= IWAE_S = logsumexp_s [ log p(x|z_s) + log p(z_s) - log q(z_s|x) ] - log S
+                      >= ELBO  = mean_s   [ log p(x|z_s) + log p(z_s) - log q(z_s|x) ]
+        IWAE_S is monotone increasing in S and converges to log p(x); the gap IWAE - ELBO
+        and the gap of either to the true log p(x) measure how tightly the variational
+        family approximates the marginal likelihood. Supports all four vi_types.
+
+        Args:
+            dataset: a Corpus object.
+            n_samples: number of importance samples S.
+            reduce: "mean" returns scalar corpus averages; "none" returns per-document arrays.
+
+        Returns:
+            (iwae, elbo) — scalars if reduce="mean", else arrays of shape [N].
+        """
+        from torch.distributions import Normal, MultivariateNormal
+        if self.ae_type != "vae":
+            raise ValueError("estimate_marginal_log_likelihood requires ae_type='vae'.")
+        if num_workers is None:
+            num_workers = self.num_workers
+
+        self.encoder.eval()
+        self.decoders.eval()
+        if self.prior is not None:
+            self.prior.eval()
+
+        has_full_cov = hasattr(self.prior, 'sigma') and not isinstance(
+            self.prior, (FixedGaussianPrior, FixedLogisticNormalPrior, FixedDirichletPrior))
+
+        loader = DataLoader(dataset, batch_size=self.batch_size, shuffle=False, num_workers=num_workers)
+        iwae_all, elbo_all = [], []
+
+        with torch.no_grad():
+            for data in loader:
+                for k, v in data.items():
+                    if isinstance(v, torch.Tensor):
+                        data[k] = v.to(self.device)
+                prevalence = data.get("M_prevalence_covariates", None)
+                content = data.get("M_content_covariates", None)
+
+                modality_inputs = {}
+                for key in self.encoder.encoders.keys():
+                    mod, view = parse_modality_view(key)
+                    vt = dataset.processed_modalities[mod][view]["type"]
+                    vd = data["modalities"][mod][view]
+                    if vt == "image":
+                        modality_inputs[key] = vd.to(self.device)
+                        continue
+                    elif vt in {"bow", "embedding"}:
+                        x = vd.to(self.device)
+                    elif vt == "vote":
+                        x = vd["matrix"].to(self.device)
+                    elif vt == "discrete_choice":
+                        x = torch.cat([vd[q].to(self.device) for q in vd if q != "type"], dim=-1)
+                    else:
+                        raise ValueError(f"Unsupported view type: {vt}")
+                    if prevalence is not None:
+                        x = torch.cat([x, prevalence], dim=1)
+                    modality_inputs[key] = x
+
+                B = (prevalence.shape[0] if prevalence is not None
+                     else next(iter(modality_inputs.values())).shape[0])
+                if has_full_cov:
+                    mu_p, Sigma_p = self.prior.get_prior_params(prevalence, return_full_cov=True)
+                    prior_dist = MultivariateNormal(mu_p, covariance_matrix=Sigma_p.unsqueeze(0).expand(B, -1, -1))
+                else:
+                    mu_p, logvar_p = self.prior.get_prior_params(prevalence)
+                    prior_dist = Normal(mu_p, torch.exp(0.5 * logvar_p))
+
+                lw = []
+                for _ in range(n_samples):
+                    theta, z, info = self.encoder(modality_inputs, prevalence_covariates=prevalence)
+                    doc_latents = theta if self.latent_factor_prior in {"dirichlet", "logistic_normal"} else z
+                    logpx = self._recon_loglik(doc_latents, data, dataset, content)
+                    logpz = prior_dist.log_prob(z) if has_full_cov else prior_dist.log_prob(z).sum(1)
+                    logqz = self._posterior_loglik(info[-1], z)
+                    lw.append(logpx + logpz - logqz)
+
+                lw = torch.stack(lw, dim=1)  # [B, S]
+                iwae_all.append(torch.logsumexp(lw, dim=1) - np.log(n_samples))
+                elbo_all.append(lw.mean(dim=1))
+
+        iwae = torch.cat(iwae_all)
+        elbo = torch.cat(elbo_all)
+        if reduce == "mean":
+            iwae, elbo = iwae.mean(), elbo.mean()
+        if to_numpy:
+            return (iwae.cpu().numpy(), elbo.cpu().numpy())
+        return iwae, elbo
 
     def generate_samples(
         self,
@@ -2375,7 +2577,9 @@ class DeepLatent:
             # Use default optimizer configuration
             default_optim_args = {
                 "main": {"lr": 1e-3, "weight_decay": 0.0},
-                "prior": {"lr": 1e-4, "weight_decay": 0.01},
+                # Slow prior lr (two-timescale) but NO weight_decay: decay biases the
+                # mean_net covariate coefficients toward zero. See __init__ for rationale.
+                "prior": {"lr": 1e-4, "weight_decay": 0.0},
                 "betas": (0.9, 0.999),
                 "eps": 1e-8
             }
@@ -2849,10 +3053,15 @@ class GTM(DeepLatent):
 
         if dimension_reduction == "umap":
             ModelLowDim = UMAP(n_components=2, **dimension_reduction_args)
-        if dimension_reduction == "tsne":
+        elif dimension_reduction == "tsne":
             ModelLowDim = TSNE(n_components=2, **dimension_reduction_args)
-        else:
+        elif dimension_reduction == "pca":
             ModelLowDim = PCA(n_components=2, **dimension_reduction_args)
+        else:
+            raise ValueError(
+                f"Unsupported dimension_reduction '{dimension_reduction}'. "
+                "Choose 'umap', 'tsne', or 'pca'."
+            )
 
         EmbeddingsLowDim = ModelLowDim.fit_transform(matrix)
 
@@ -2934,10 +3143,15 @@ class GTM(DeepLatent):
 
         if dimension_reduction == "umap":
             ModelLowDim = UMAP(n_components=2, **dimension_reduction_args)
-        if dimension_reduction == "tsne":
+        elif dimension_reduction == "tsne":
             ModelLowDim = TSNE(n_components=2, **dimension_reduction_args)
-        else:
+        elif dimension_reduction == "pca":
             ModelLowDim = PCA(n_components=2, **dimension_reduction_args)
+        else:
+            raise ValueError(
+                f"Unsupported dimension_reduction '{dimension_reduction}'. "
+                "Choose 'umap', 'tsne', or 'pca'."
+            )
 
         EmbeddingsLowDim = ModelLowDim.fit_transform(matrix)
 
