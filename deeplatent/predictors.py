@@ -123,6 +123,18 @@ class MultiLabelPredictor(nn.Module):
         self.predictor_configs = predictor_configs
         self.predictors = nn.ModuleDict()
 
+        # Learned observation-noise variance (as log sigma^2) per regression label. This makes
+        # the regression term in the ELBO a proper Gaussian log-likelihood log p(y | theta)
+        # = -0.5[(y-yhat)^2 / sigma^2 + log sigma^2 + log 2pi] instead of bare MSE, which is the
+        # same NLL with sigma^2 pinned at 0.5. Pinning under-weights an informative (low-noise) y
+        # and attenuates the recovered topic->y coefficients; learning sigma^2 self-calibrates the
+        # weight so that, at loss_weight=1, we maximize the true joint likelihood. Init sigma^2 = 1.
+        self.noise_log_var = nn.ParameterDict({
+            name: nn.Parameter(torch.zeros(()))
+            for name, info in labels_info.items()
+            if info["type"] == "regression"
+        })
+
         for label_name, label_info in labels_info.items():
             config = predictor_configs.get(label_name, {})
             hidden_dims = config.get("hidden_dims", [])

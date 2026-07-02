@@ -51,6 +51,8 @@ def generate_documents(
     random_seed: int = 42,
     label_type: Optional[str] = None,  # 'classification' or 'regression'
     label_coeffs: Optional[np.ndarray] = None,
+    anchor_words: int = 0,           # per-topic exclusive anchor words (0 = plain Dirichlet topics)
+    anchor_mass: float = 0.6,        # prob mass placed on a topic's anchor words
 ) -> Tuple[
     pd.DataFrame,                 # df_topic_dist
     pd.DataFrame,                 # df
@@ -133,10 +135,22 @@ def generate_documents(
         true_doc_topic_matrix /= true_doc_topic_matrix.sum(axis=1, keepdims=True)
 
     # Topic-word matrices per language
-    topic_word_matrices = {
-        lang: np.random.dirichlet([0.1] * vocab_size, num_topics)
-        for lang in languages
-    }
+    def _make_topic_words():
+        if anchor_words <= 0:
+            return np.random.dirichlet([0.1] * vocab_size, num_topics)
+        if num_topics * anchor_words > vocab_size:
+            raise ValueError(f"num_topics*anchor_words ({num_topics*anchor_words}) > vocab_size ({vocab_size})")
+        # each topic k owns exclusive anchor words [k*a:(k+1)*a] carrying `anchor_mass`; the rest of the
+        # mass is a Dirichlet over the NON-anchor tail (shared across topics) -> topics are separable.
+        tw = np.zeros((num_topics, vocab_size))
+        n_anchor = num_topics * anchor_words
+        tail_idx = np.arange(n_anchor, vocab_size)
+        for k in range(num_topics):
+            tw[k, k * anchor_words:(k + 1) * anchor_words] = anchor_mass / anchor_words
+            if len(tail_idx) > 0:
+                tw[k, tail_idx] = (1.0 - anchor_mass) * np.random.dirichlet([0.1] * len(tail_idx))
+        return tw
+    topic_word_matrices = {lang: _make_topic_words() for lang in languages}
 
     # Generate multilingual documents
     doc_data = {f"doc_clean_{i}": [] for i in range(num_languages)}
