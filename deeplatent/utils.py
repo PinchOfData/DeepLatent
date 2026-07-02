@@ -12,7 +12,7 @@ from tqdm import tqdm
 import spacy
 from spacy.cli import download as spacy_download
 import torch
-import re 
+import re
 
 
 class text_processor:
@@ -66,9 +66,9 @@ class text_processor:
             s = [t for t in s if t.is_punct == False]
 
         if self.remove_digits:
-            #s = [t for t in s if t.is_digit == False]
-            s = [t for t in s if not re.search(r'\d', t.text)]
-        
+            # s = [t for t in s if t.is_digit == False]
+            s = [t for t in s if not re.search(r"\d", t.text)]
+
         if self.pos_tags_to_keep is not None:
             temp = []
             for t in s:
@@ -173,7 +173,7 @@ def get_embeddings_from_list(
     return np.array(model.encode(texts, show_progress_bar=True, batch_size=batch_size))
 
 
-def compute_mmd_loss(x, y, device, kernel = 'multiscale'):
+def compute_mmd_loss(x, y, device, kernel="multiscale"):
     """Emprical maximum mean discrepancy. The lower the result
        the more evidence that distributions are the same.
 
@@ -186,58 +186,60 @@ def compute_mmd_loss(x, y, device, kernel = 'multiscale'):
     if kernel == "multiscale":
 
         xx, yy, zz = torch.mm(x, x.t()), torch.mm(y, y.t()), torch.mm(x, y.t())
-        rx = (xx.diag().unsqueeze(0).expand_as(xx))
-        ry = (yy.diag().unsqueeze(0).expand_as(yy))
-        
-        dxx = rx.t() + rx - 2. * xx # Used for A in (1)
-        dyy = ry.t() + ry - 2. * yy # Used for B in (1)
-        dxy = rx.t() + ry - 2. * zz # Used for C in (1)
-        
-        XX, YY, XY = (torch.zeros(xx.shape).to(device),
-                    torch.zeros(xx.shape).to(device),
-                    torch.zeros(xx.shape).to(device))
+        rx = xx.diag().unsqueeze(0).expand_as(xx)
+        ry = yy.diag().unsqueeze(0).expand_as(yy)
+
+        dxx = rx.t() + rx - 2.0 * xx  # Used for A in (1)
+        dyy = ry.t() + ry - 2.0 * yy  # Used for B in (1)
+        dxy = rx.t() + ry - 2.0 * zz  # Used for C in (1)
+
+        XX, YY, XY = (
+            torch.zeros(xx.shape).to(device),
+            torch.zeros(xx.shape).to(device),
+            torch.zeros(xx.shape).to(device),
+        )
 
         bandwidth_range = [0.01, 0.1, 0.3, 0.5, 0.7, 1]
         for a in bandwidth_range:
-            XX += a**2 * (a**2 + dxx)**-1
-            YY += a**2 * (a**2 + dyy)**-1
-            XY += a**2 * (a**2 + dxy)**-1
-        
-        mmd_loss = torch.mean(XX + YY - 2. * XY)
-            
+            XX += a**2 * (a**2 + dxx) ** -1
+            YY += a**2 * (a**2 + dyy) ** -1
+            XY += a**2 * (a**2 + dxy) ** -1
+
+        mmd_loss = torch.mean(XX + YY - 2.0 * XY)
+
     if kernel == "diffusion":
 
-        eps=1e-6
+        eps = 1e-6
         n, d = x.shape
-        t_values = [0.05,0.1,0.2]
-        
+        t_values = [0.05, 0.1, 0.2]
+
         qx = torch.sqrt(torch.clamp(x, eps, 1))
         qy = torch.sqrt(torch.clamp(y, eps, 1))
-        
+
         xx = torch.matmul(qx, qx.t())
         yy = torch.matmul(qy, qy.t())
         xy = torch.matmul(qx, qy.t())
-        
+
         off_diag = 1 - torch.eye(n).to(device)
-        
+
         def diffusion_kernel(a, tmpt, dim):
             return torch.exp(-torch.acos(torch.clamp(a, 0, 1 - eps)).pow(2)) / tmpt
 
         sum_xx_total, sum_yy_total, sum_xy_total = 0, 0, 0
-        
+
         for t in t_values:
             k_xx = diffusion_kernel(xx, t, d - 1)
             k_yy = diffusion_kernel(yy, t, d - 1)
             k_xy = diffusion_kernel(xy, t, d - 1)
-            
+
             sum_xx = (k_xx * off_diag).sum() / (n * (n - 1))
             sum_yy = (k_yy * off_diag).sum() / (n * (n - 1))
             sum_xy = 2 * k_xy.sum() / (n * n)
-            
+
             sum_xx_total += sum_xx
             sum_yy_total += sum_yy
             sum_xy_total += sum_xy
-        
+
         mmd_loss = (sum_xx_total + sum_yy_total - sum_xy_total) / len(t_values)
 
     return mmd_loss
@@ -277,7 +279,28 @@ def topic_diversity(topic_words, topK=10):
     return td
 
 
+def contrast_basis(n_topics: int) -> torch.Tensor:
+    """
+    Orthonormal Helmert-style basis of the zero-sum subspace of R^K.
+
+    Returns V of shape [n_topics, n_topics - 1] with V.T @ V = I and every
+    column orthogonal to the all-ones vector. Since softmax is invariant to
+    shifts along the all-ones direction, theta = softmax(eta @ V.T) with
+    eta in R^{K-1} parameterizes exactly the same logistic-normal family on
+    the simplex as a K-dimensional latent, without the K unidentified
+    softmax gauge directions. Deterministic in n_topics.
+    """
+    if n_topics < 2:
+        raise ValueError(f"contrast_basis requires n_topics >= 2, got {n_topics}")
+    V = np.zeros((n_topics, n_topics - 1), dtype=np.float64)
+    for j in range(1, n_topics):
+        V[:j, j - 1] = 1.0
+        V[j, j - 1] = -j
+        V[:, j - 1] /= np.sqrt(j * (j + 1))
+    return torch.tensor(V, dtype=torch.float32)
+
+
 def parse_modality_view(key: str):
-    if '_' not in key:
+    if "_" not in key:
         raise ValueError(f"Expected 'modality.view', got '{key}'")
-    return key.split('_', 1)
+    return key.split("_", 1)

@@ -2,22 +2,29 @@
 # -*- encoding: utf-8 -*-
 
 """
-DeepLatent - A unified latent variable modeling framework for analyzing 
-large multimodal and multilingual datasets using variational inference 
+DeepLatent - A unified latent variable modeling framework for analyzing
+large multimodal and multilingual datasets using variational inference
 with deep neural networks.
 """
 
-__version__ = "0.1.3"
+__version__ = "0.2.0"
 __author__ = "Germain Gauthier, Elliott Ash, Hugo Subtil, Philine Widmer"
-__email__ = "germain.jean.gauthier@gmail.com"  
+__email__ = "germain.jean.gauthier@gmail.com"
 
 from .models import GTM, IdealPointNN, DeepLatent
 from .corpus import Corpus
-from .autoencoders import EncoderMLP, DecoderMLP, MultiModalEncoder, ImageEncoder, ImageDecoder
+from .autoencoders import (
+    EncoderMLP,
+    DecoderMLP,
+    MultiModalEncoder,
+    ImageEncoder,
+    ImageDecoder,
+)
 from .predictors import Predictor, MultiLabelPredictor
 from .priors import DirichletPrior, LogisticNormalPrior, GaussianPrior
 from .utils import (
     compute_mmd_loss,
+    contrast_basis,
     top_k_indices_column,
     parse_modality_view,
     compute_dirichlet_likelihood,
@@ -34,20 +41,21 @@ from .simulations import (
 
 __all__ = [
     "GTM",
-    "IdealPointNN", 
+    "IdealPointNN",
     "DeepLatent",
     "Corpus",
     "EncoderMLP",
-    "DecoderMLP", 
+    "DecoderMLP",
     "MultiModalEncoder",
     "ImageEncoder",
     "ImageDecoder",
     "Predictor",
     "MultiLabelPredictor",
     "DirichletPrior",
-    "LogisticNormalPrior", 
+    "LogisticNormalPrior",
     "GaussianPrior",
     "compute_mmd_loss",
+    "contrast_basis",
     "top_k_indices_column",
     "parse_modality_view",
     "compute_dirichlet_likelihood",
@@ -57,5 +65,5 @@ __all__ = [
     "text_processor",
     "generate_multilingual_docs_vectorized",
     "generate_documents",
-    "generate_ideal_points"
+    "generate_ideal_points",
 ]
