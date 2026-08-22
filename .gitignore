@@ -18,3 +18,15 @@ figs/*
 data/*
 src2/*
 tests/*
+__pycache__/
+*.ckpt
+*.mem
+*.done
+*.log
+audit/hpc_results*/
+papers/*.pdf
+papers/1705.03439v3.txt
+papers/2302.13183v1.txt
+papers/2307.11018v4.txt
+papers/rybkin21a.txt
+papers/NeurIPS-*.txt

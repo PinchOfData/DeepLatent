@@ -1,0 +1,14 @@
+[
+  {
+    "flow_logscale_bound": 2.0,
+    "test_IWAE": -775.7764892578125,
+    "test_ELBO": -776.0086669921875,
+    "train_KL": 4.509652805328369
+  },
+  {
+    "flow_logscale_bound": 4.0,
+    "test_IWAE": -776.34765625,
+    "test_ELBO": -776.6355590820312,
+    "train_KL": 5.045856599807739
+  }
+]

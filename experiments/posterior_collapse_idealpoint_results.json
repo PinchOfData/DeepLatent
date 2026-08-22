@@ -1,0 +1,32 @@
+[
+  {
+    "label": "w_prior=1 (true ELBO)",
+    "w_prior": 1.0,
+    "steps": 5000,
+    "time_s": 82.6,
+    "raw_kl_per_doc": 1.7379,
+    "recon_term": 509.9966,
+    "ideal_pt_std_est": 1.2768,
+    "idealpoint_corr": 0.99
+  },
+  {
+    "label": "w_prior=300 (KL over-weighted)",
+    "w_prior": 300.0,
+    "steps": 5000,
+    "time_s": 65.3,
+    "raw_kl_per_doc": 0.0003,
+    "recon_term": 527.3118,
+    "ideal_pt_std_est": 0.1426,
+    "idealpoint_corr": 0.003
+  },
+  {
+    "label": "w_prior=0.01 (works, not a bound)",
+    "w_prior": 0.01,
+    "steps": 5000,
+    "time_s": 75.0,
+    "raw_kl_per_doc": 4.2334,
+    "recon_term": 509.424,
+    "ideal_pt_std_est": 1.485,
+    "idealpoint_corr": 0.991
+  }
+]

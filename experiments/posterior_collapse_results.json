@@ -1,0 +1,44 @@
+[
+  {
+    "label": "w_prior=1 (true ELBO)",
+    "w_prior": 1.0,
+    "steps": 6000,
+    "time_s": 93.0,
+    "raw_kl_per_doc": 6.7007,
+    "recon_term": 1076.1595,
+    "theta_std_est": 0.1402,
+    "theta_std_true": 0.1444,
+    "collapse_ratio": 0.971,
+    "topic_corr_mean": 0.973,
+    "topic_corr_min": 0.971,
+    "ci_coverage_mean": 0.913
+  },
+  {
+    "label": "w_prior=L=200 (KL over-weighted)",
+    "w_prior": 200.0,
+    "steps": 6000,
+    "time_s": 91.1,
+    "raw_kl_per_doc": 0.0035,
+    "recon_term": 1117.2968,
+    "theta_std_est": 0.0261,
+    "theta_std_true": 0.1444,
+    "collapse_ratio": 0.181,
+    "topic_corr_mean": 0.017,
+    "topic_corr_min": 0.004,
+    "ci_coverage_mean": 0.931
+  },
+  {
+    "label": "w_prior=0.01 (works, not a bound)",
+    "w_prior": 0.01,
+    "steps": 6000,
+    "time_s": 105.7,
+    "raw_kl_per_doc": 23.5553,
+    "recon_term": 1073.0586,
+    "theta_std_est": 0.0825,
+    "theta_std_true": 0.1444,
+    "collapse_ratio": 0.571,
+    "topic_corr_mean": 0.917,
+    "topic_corr_min": 0.894,
+    "ci_coverage_mean": 0.041
+  }
+]

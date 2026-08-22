@@ -1,0 +1,24 @@
+{
+  "10": [
+    {
+      "step": 10000,
+      "naive_theta_corr": 0.5560560902452131,
+      "twostep_mean_abs_bias": 0.3137025476617911
+    },
+    {
+      "step": 20000,
+      "naive_theta_corr": 0.4954597220910418,
+      "twostep_mean_abs_bias": 0.3025021267100005
+    },
+    {
+      "step": 30000,
+      "naive_theta_corr": 0.5483315673157203,
+      "twostep_mean_abs_bias": 0.297688360202262
+    },
+    {
+      "step": 40000,
+      "naive_theta_corr": 0.5812650987230457,
+      "twostep_mean_abs_bias": 0.28833215009372826
+    }
+  ]
+}
