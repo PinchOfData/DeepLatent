@@ -1,0 +1,1218 @@
+\subsection{Statistical guarantees}
+\label{subsec:elbo_tight2}
+
+This subsection separates three questions that are sometimes conflated.  The
+first is an inference question: for fixed generative parameters, how far is
+the encoder distribution from the exact posterior?  The second is an
+estimation question: does maximizing an approximate likelihood recover the
+generative parameter?  The third is an algorithmic question: does the
+numerical procedure find a sufficiently accurate maximizer?  Tightness of the
+ELBO answers the first question.  Consistency and asymptotic normality require
+additional identification, empirical-process, and optimization conditions.
+
+To include random modality subsampling without confusing it with sampling of
+units, let the full observed record be
+\[
+ U_i:=(O_i,w_{i,O_i},y_{i,1:K},x_i).
+\]
+For $S\subseteq O_i$, define
+\[
+ u_{i,S}:=(w_{i,S},y_{i,1:K}),\qquad
+ V_i(S):=(S,u_{i,S},x_i),
+\]
+and write
+\[
+ \ell_\vartheta(V_i(S)):=\log p_\vartheta(u_{i,S}\mid x_i,S),
+ \qquad
+ \pi_\vartheta(z\mid V_i(S))
+ :=p_\vartheta(z\mid u_{i,S},x_i,S).
+\]
+Here $\vartheta=(\theta,\psi)$.  The exact expected-subset per-unit version
+of the training objective is the composite contribution
+\begin{equation}
+ \bar\ell_\vartheta(U_i)
+ :=\E_{S\sim r(\cdot\mid O_i)}[\ell_\vartheta(V_i(S))].
+ \label{eq:composite_subset_criterion}
+\end{equation}
+All statements apply to a fixed subset by taking $S$ degenerate.  Nothing in
+the theory distinguishes $w$ from $y$: their separate notation is
+expositional, and both are components of $u_{i,S}$.  As written, the results
+require ignorability of $O_i$, or directly require correct specification of
+the selected subset marginals.  With informative missingness one must replace
+$\ell_\vartheta$ by a correctly specified selection or observed-data
+likelihood and recheck the identification and regularity conditions.
+Tightness for the posterior conditional on
+$u_{i,S}$ also requires the encoder to receive $u_{i,S}$ (or a sufficient
+statistic).  An encoder intentionally denied $y_i$ cannot generally equal
+$p_\vartheta(z_i\mid w_{i,S},y_i,x_i)$.
+
+\subsubsection{The inference gap}
+
+The following identity is the starting point for all of the results.
+
+\begin{proposition}[ELBO identity and gap decomposition]
+\label{prop:elbo_identity_decomposition}
+For every $\vartheta$, every realization $V$, and every density $q(\cdot\mid
+V)$ for which the displayed quantities are finite,
+\begin{equation}
+ \ell_\vartheta(V)-\mathcal L(\vartheta,q;V)
+ =\mathrm{KL}\!\left(q(\cdot\mid V)\,\middle\|\,
+ \pi_\vartheta(\cdot\mid V)\right)\geq 0.
+ \label{eq:elbo_gap_identity_profile}
+\end{equation}
+Let $\mathcal Q$ be a per-observation variational family and define
+\[
+ \Delta_{\mathcal Q}(\vartheta,V)
+ :=\inf_{q\in\mathcal Q}\mathrm{KL}
+ \!\left(q\,\middle\|\,\pi_\vartheta(\cdot\mid V)\right).
+\]
+For an amortized encoder $q_\phi(\cdot\mid V)\in\mathcal Q$, the total gap
+has the exact decomposition
+\begin{align}
+ \ell_\vartheta(V)-\mathcal L(\vartheta,q_\phi;V)
+ &=\underbrace{\Delta_{\mathcal Q}(\vartheta,V)}_{
+ \mathrm{variational\ gap}}
+ \nonumber\\
+ &\quad+
+ \underbrace{\left\{
+ \mathrm{KL}(q_\phi\|\pi_\vartheta)-
+ \Delta_{\mathcal Q}(\vartheta,V)\right\}}_{
+ \mathrm{amortization\ gap}}.
+ \label{eq:gap_decomposition}
+\end{align}
+Both terms are nonnegative.  The ELBO is tight at $V$ if and only if
+$q_\phi(\cdot\mid V)=\pi_\vartheta(\cdot\mid V)$ almost everywhere.
+\end{proposition}
+
+This decomposition follows \citet{cremer2018inference}.  It is pointwise:
+small average reconstruction error, or a flexible encoder in isolation, does
+not imply a small inference gap.
+
+\subsubsection{One-sided comparison with the exact criterion}
+\label{subsubsec:one_sided_comparison}
+
+The most direct consistency argument uses only the lower-bound identity and
+one good encoder comparator.  It does not require a uniform law over the
+neural-network class.  Put
+\begin{align}
+ \ell_n(\vartheta)&:=P_n\bar\ell_\vartheta,\\
+ L_n(\vartheta,q)&:=P_n\bar m(\vartheta,q),\\
+ D_n(\vartheta,q)&:=\ell_n(\vartheta)-L_n(\vartheta,q)\\
+ &=P_n\E_{S\mid O}\mathrm{KL}\{q(\cdot\mid V(S))\|\pi_\vartheta(\cdot\mid V(S))\}\geq0.
+ \label{eq:normalized_elbo_comparison}
+\end{align}
+All optimization and gap rates below are on this per-unit scale.
+
+\begin{theorem}[One-comparator consistency and aggressive comparison]
+\label{thm:one_comparator}
+Suppose that, for every fixed $\epsilon>0$, with probability tending to one,
+\[
+ \sup_{\operatorname{dist}(\vartheta,\vartheta_0)\geq\epsilon}
+ \ell_n(\vartheta)
+ \leq \ell_n(\vartheta_0)-c_\epsilon
+\]
+for some $c_\epsilon>0$.  If one deterministic $q_n^0\in\mathcal Q_n$
+satisfies $D_n(\vartheta_0,q_n^0)=o_p(1)$ and the computed pair obeys
+\[
+ L_n(\widehat\vartheta_n,\widehat q_n)
+ \geq\sup_{\vartheta,q\in\mathcal Q_n}L_n(\vartheta,q)-o_p(1),
+\]
+then $\operatorname{dist}(\widehat\vartheta_n,\vartheta_0)\to_p0$.  If also
+$\ell_n(\widehat\vartheta_n)-\ell_n(\vartheta_0)=o_p(1)$, then
+$D_n(\widehat\vartheta_n,\widehat q_n)=o_p(1)$.
+
+For the sharper comparison, let $\widetilde\vartheta_n$ maximize $\ell_n$.
+Suppose both estimators lie in a common identified neighborhood on which
+\begin{equation}
+ \ell_n(\widetilde\vartheta_n)-\ell_n(\vartheta)
+ \geq c\|\vartheta-\widetilde\vartheta_n\|^2,
+ \label{eq:exact_local_quadratic_separation}
+\end{equation}
+one (possibly data-dependent) $q_n^\dagger\in\mathcal Q_n$ satisfies
+$D_n(\widetilde\vartheta_n,q_n^\dagger)\leq\rho_n$, and the global per-unit
+ELBO optimization loss is at most $\epsilon_n$.  Then
+\begin{align}
+ \|\widehat\vartheta_n-\widetilde\vartheta_n\|
+ &\leq c^{-1/2}(\rho_n+\epsilon_n)^{1/2},
+ \label{eq:aggressive_parameter_comparison}\\
+ D_n(\widehat\vartheta_n,\widehat q_n)
+ &\leq\rho_n+\epsilon_n.
+ \label{eq:aggressive_fitted_gap}
+\end{align}
+Consequently, $\rho_n+\epsilon_n=o_p(n^{-1})$ makes the raw ELBO estimator
+root-$n$ equivalent to the exact extremum estimator.  The weaker order
+$o_p(n^{-1/2})$ makes it an $o_p(n^{-1/4})$ preliminary estimator when the
+exact estimator is root-$n$ regular.
+\end{theorem}
+
+The extra fitted exact-criterion premise in the first part follows, for
+example, from consistency together with local stochastic continuity of
+$\ell_n$, or from a uniform law of large numbers together with continuity of
+the population criterion.  It is not a consequence of one-sided separation
+alone and remains an explicit premise.
+
+The fitted-gap conclusion is in-sample.  Without encoder complexity or
+stability control, a network can fit training posteriors and behave
+arbitrarily at unseen inputs.  Qualitative mixture closure can select a
+diagonal sequence of ideal architectures at any prescribed gap order, but
+this is existential undersmoothing: it gives neither an implementable growth
+schedule nor a guarantee that stochastic optimization attains the required
+$\epsilon_n$.
+
+\subsubsection{A tractable special case: linear--Gaussian measurements}
+\label{subsubsec:linear_gaussian_case}
+
+We first give a case in which a fixed encoder architecture is sufficient.
+Let $f_p(x^p)$, $f_c(x^c)$, and $f_s(x^s)$ be fixed finite-dimensional
+feature maps and consider
+\begin{equation}
+\label{eq:lg_dgp_main}
+\begin{aligned}
+ z_i\mid x_i^p
+ &\sim\mathcal N(Bf_p(x_i^p),\Sigma_0),\\
+ w_{im}\mid z_i,x_i^c
+ &\sim\mathcal N(a_m+D_mf_c(x_i^c)+A_mz_i,\Omega_m),\\
+ y_i\mid z_i,x_i^s
+ &\sim\mathcal N(a_y+D_yf_s(x_i^s)+Cz_i,\Omega_y).
+\end{aligned}
+\end{equation}
+Here $\Omega_y$ is diagonal under the conditional independence assumption in
+Eq.~\eqref{eq:dgp_deeplatent2}; allowing it to be unrestricted is a harmless
+Gaussian relaxation.  The loading matrices $A_m$ and $C$ do not vary with
+covariates.  This
+restriction is what makes the exact posterior mean affine in the encoder
+inputs.  Covariate-dependent loadings remain Gaussian, but their posterior
+map involves matrix inversion as a function of the covariates and need not be
+represented exactly by a finite generic neural network.
+
+For a subset $S$, stack the observed measurements and outcomes as
+\[
+ u_{i,S}=a_S+D_Sf(x_i)+G_Sz_i+e_{i,S},
+ \qquad e_{i,S}\sim\mathcal N(0,\Omega_S).
+\]
+Completing the square gives
+\begin{equation}
+\label{eq:lg_posterior_main}
+\begin{aligned}
+ V_S(\vartheta)
+ &=\left(\Sigma_0^{-1}+G_S^\top\Omega_S^{-1}G_S\right)^{-1},\\
+ m_S(\vartheta;V_i(S))
+ &=V_S(\vartheta)\left[
+ \Sigma_0^{-1}Bf_p(x_i^p)
+ +G_S^\top\Omega_S^{-1}
+ \{u_{i,S}-a_S-D_Sf(x_i)\}\right].
+\end{aligned}
+\end{equation}
+Thus $\pi_\vartheta(\cdot\mid V_i(S))=\mathcal
+N(m_S(\vartheta;V_i(S)),V_S(\vartheta))$.  We take $M$, $K$, the response
+dimensions, and the feature dimensions to be fixed as $n$ grows.  There are
+then only finitely many subsets, so an encoder with one affine mean head and
+one unrestricted constant Cholesky head for each $S$ represents this
+posterior exactly.  The architecture is fixed as $n$ grows; its weights are
+estimated.
+
+\begin{assumption}[Regular linear--Gaussian criterion]
+\label{ass:lg_regular}
+The unrestricted model is invariant under affine changes of latent
+coordinates and may have additional confounding between prevalence and
+measurement covariates.  Impose a complete model-specific location, scale,
+shear, rotation, sign, and ordering normalization.  For a constant-zero-mean
+factor model, for example, one can set $\Sigma_0=I_L$ and require a
+nonsingular $L\times L$ loading block to be lower triangular with positive
+diagonal; the
+conditional-mean model may also need exclusion or coefficient restrictions
+that distinguish $Bf_p$ from $D_mf_c$ and $D_yf_s$.  Let $\vartheta_0$ be an
+interior point of the resulting finite-dimensional parameter space
+$\mathcal V$.  Assume: (i) $U_i$ are i.i.d. and all subset marginals are
+correctly specified at $\vartheta_0$; (ii) $\mathcal V$ is compact,
+covariance eigenvalues are uniformly bounded away
+from zero and infinity, and the composite criterion is globally separated at
+$\vartheta_0$; (iii) the subset patterns with positive weight identify
+$\vartheta_0$ under the normalization; (iv) $\bar\ell_\vartheta(U)$ is
+continuous with an integrable global envelope and twice continuously
+differentiable near $\vartheta_0$, with integrable score and Hessian envelopes;
+and (v)
+\[
+ \E_0[\nabla_\vartheta\bar\ell_{\vartheta_0}(U)]=0,\qquad
+ A_0:=-\E_0[\nabla^2_{\vartheta\vartheta}
+ \bar\ell_{\vartheta_0}(U)],\qquad
+ B_0:=\mathrm{Var}_0(\nabla_\vartheta\bar\ell_{\vartheta_0}(U))
+\]
+exist and $A_0$ is nonsingular.  Identification across subset patterns is a
+substantive assumption: it can fail, for example, if no pattern links two
+otherwise unaligned modalities.
+\end{assumption}
+
+\begin{theorem}[Exact profiling and Gaussian-case limit theory]
+\label{thm:lg_profile_mle}
+Let the variational family contain full-covariance Gaussians and let the
+fixed encoder architecture contain the subset-specific affine heads described
+above.  For every $\vartheta\in\mathcal V$,
+\begin{equation}
+ \sup_\phi\frac1n\sum_{i=1}^n
+ \E_{S\mid O_i}[\mathcal L(\vartheta,q_\phi;V_i(S))]
+ =\frac1n\sum_{i=1}^n\bar\ell_\vartheta(U_i).
+ \label{eq:gaussian_profile_identity}
+\end{equation}
+Consequently, the generative component $\widehat\vartheta_n$ of any global
+joint ELBO maximizer is the extremum estimator for the composite criterion in
+Eq.~\eqref{eq:composite_subset_criterion}.  Under
+Assumption~\ref{ass:lg_regular},
+\[
+ \widehat\vartheta_n\xrightarrow{p}\vartheta_0,
+ \qquad
+ \sqrt n(\widehat\vartheta_n-\vartheta_0)
+ \rightsquigarrow\mathcal N(0,A_0^{-1}B_0A_0^{-1}).
+\]
+For a fixed subset this is an ordinary correctly specified likelihood, so
+$A_0=B_0=I_0$ and the covariance reduces to $I_0^{-1}$.  The same likelihood
+conclusion applies to the \emph{alternative} estimator based on one genuinely
+observed random coarsening per unit and its correctly specified ignorable
+design.  That alternative criterion is
+$n^{-1}\sum_i\ell_\vartheta(V_i(S_i))$, not the expected-subset criterion in
+Eq.~\eqref{eq:gaussian_profile_identity}.  Averaging several overlapping
+subset log likelihoods is generally a composite likelihood, so the
+information equality does not apply.
+No identification or asymptotic-normality claim is required for the encoder
+weights, which can be nonunique even when the induced conditional density is
+unique.
+\end{theorem}
+
+The consistency argument is the standard extremum-estimator argument of
+\citet{NeweyMcFadden1994}; the sandwich covariance is the corresponding
+Godambe covariance for a composite criterion
+\citep{VarinReidFirth2011}.
+
+The same calculation proves exactness of corrected product-of-experts fusion
+when every source appears once.  If outcomes form their own expert, the
+fusion contains $|S|+1$ posterior experts and must divide by $|S|$ copies of
+the prior.  The resulting Gaussian natural parameters give
+Eq.~\eqref{eq:lg_posterior_main}.  The subset-head construction is an
+existence benchmark; the corrected Gaussian PoE realizes the same posterior
+with tied source-specific encoders.
+
+\subsubsection{General posteriors: Gaussian-mixture and neural-network sieves}
+\label{subsubsec:general_sieve}
+
+We now keep the generative parameter finite-dimensional and allow the encoder
+and its Gaussian-mixture output to grow with $n$.  This is a sieve estimator:
+the decoder is the identified econometric model, while the encoder is an
+increasingly rich nuisance function.  General results for sieve extremum
+estimators are developed by \citet{Chen2007Sieve}; variational estimators as
+profile $M$-estimators are studied by \citet{WestlingMcCormick2019}.
+
+The next assumption gives primitive conditions under which ordinary finite
+Gaussian mixtures are adequate for the reverse KL divergence used by the
+ELBO.  The tail condition matters: density approximation in $L^1$, or in the
+opposite KL direction, does not by itself imply
+$\mathrm{KL}(q\|\pi)\to0$.  Related conditional-mixture approximation
+results in the opposite KL direction are given by
+\citet{Norets2010Conditional}; the proof below handles the ELBO direction
+directly.
+
+\begin{assumption}[Regular posterior class]
+\label{ass:posterior_regular}
+Let $\mathcal V\subset\mathbb R^{d_\vartheta}$ and the support
+$\mathcal K_V\subset\mathbb R^{d_V}$ of a fixed finite-dimensional encoding
+of $V=(S,u_S,x)$ be compact.  For
+$(\vartheta,V)\in\mathcal V\times\mathcal K_V$, the posterior has a strictly
+positive Lebesgue density $\pi_\vartheta(z\mid V)$ on $\mathbb R^L$ such
+that: (i) $(\vartheta,V,z)\mapsto\pi_\vartheta(z\mid V)$ is continuous and
+the family is equicontinuous in $z$ on compact sets; (ii) the family is
+uniformly tight; and (iii), for constants $C<\infty$ and $r>0$,
+\[
+ \sup_{\vartheta,V}\pi_\vartheta(z\mid V)\le C,
+ \qquad
+ \sup_{\vartheta,V}\{-\log\pi_\vartheta(z\mid V)\}
+ \le C(1+\|z\|^r).
+\]
+The polynomial can be replaced by an envelope integrable against the common
+Gaussian tail envelopes used in the proof.
+\end{assumption}
+
+Gaussian priors combined with continuous linear decoders and Gaussian,
+Bernoulli, categorical, or fixed-count multinomial likelihoods satisfy this
+type of condition on compact parameter and data domains when covariance
+eigenvalues and likelihood scales are uniformly nondegenerate.  For unbounded
+data, the compact-domain statement can be replaced by an integrated version
+plus a uniform-integrability condition.
+
+\begin{proposition}[Constructive closure of both inference gaps]
+\label{prop:mog_encoder_tightness}
+Suppose Assumption~\ref{ass:posterior_regular} holds.  For every
+$\varepsilon>0$ there is a finite number $J$, fixed Gaussian component
+locations and covariances, and, for each $\vartheta$, continuous mixing-weight
+functions $\alpha_{\vartheta,1}(V),\ldots,
+\alpha_{\vartheta,J}(V)$ such that
+\[
+ \sup_{\vartheta\in\mathcal V}\sup_{V\in\mathcal K_V}
+ \mathrm{KL}\!\left(
+ \sum_{j=1}^J\alpha_{\vartheta,j}(V)
+ \mathcal N(\mu_j,\Sigma_j)
+ \,\middle\|\,\pi_\vartheta(\cdot\mid V)\right)<\varepsilon.
+\]
+Let the encoder density be
+\[
+ q_\phi(z\mid V)=\sum_{j=1}^J
+ [\operatorname{softmax}\{g_\phi(V)\}]_j
+ \mathcal N(z;\mu_j,\Sigma_j).
+\]
+If, for every finite $J$, the network sieve is dense in
+$C(\mathcal K,\mathbb R^J)$ for every compact finite-dimensional input domain
+$\mathcal K$ used here, and is closed under fixing auxiliary inputs (as are
+standard fully connected ReLU networks with $J$ outputs and unbounded width),
+then, possibly after increasing its size, there is for every $\vartheta$ an
+encoder parameter $\phi(\vartheta)$ satisfying
+\begin{equation}
+ \sup_{\vartheta\in\mathcal V}\inf_\phi
+ \sup_{V\in\mathcal K_V}
+ \{\ell_\vartheta(V)-\mathcal L(\vartheta,q_\phi;V)\}
+ <2\varepsilon.
+ \label{eq:uniform_mog_tightness}
+\end{equation}
+Hence a Gaussian-mixture variational sieve closes the variational gap and a
+deep encoder sieve closes the amortization gap.  This is an approximation
+result; it does not assert that a finite sample or a particular optimizer
+finds the approximating encoder.
+\end{proposition}
+
+The construction uses a common fine partition of a large latent-space cube.
+The component locations are the cell centers and the mixing weights are
+integrals of the posterior over the cells.  Joint continuity of the posterior
+makes these weights continuous in $V$.  A neural network then approximates
+their logits uniformly.  This direct construction supplies the continuity
+that is needed for amortization.  The simple-hierarchical-model result of
+\citet{MargossianBlei2024} separately ensures existence of an ideal inference
+function in this model class, but does not by itself establish that a chosen
+optimizer is continuous.
+
+\subsubsection{Specialization to the GTM and affine IdealPointNN}
+\label{subsubsec:model_specific_sieves}
+
+For the implemented linear Generalized Topic Model, let
+$H_K\in\mathbb R^{K\times(K-1)}$ satisfy
+$H_K^\top H_K=I$ and $H_K^\top\mathbf1_K=0$, and write
+\begin{equation}
+ \eta_i\mid x_i^p\sim
+ \mathcal N(\Gamma x_i^p+a,\Sigma),\qquad
+ \theta_i=\operatorname{softmax}(H_K\eta_i),\qquad
+ h_i=B\theta_i+D x_i^c+b.
+ \label{eq:gtm_exact_linear_model}
+\end{equation}
+For word counts $w_i$ of length $N_i$, the cross-entropy branch is the
+multinomial log likelihood, up to its data-only coefficient,
+\[
+ \log L_i(\eta)=w_i^\top h_i-N_i\log\sum_v\exp(h_{iv}).
+\]
+For an embedding $y_i$, the summed MSE branch
+$-\|y_i-h_i\|^2$ is a Gaussian log likelihood with covariance
+$\tfrac12I$, up to a parameter-free constant.  An MSE with another scaling is
+likewise likelihood-calibrated only after declaring the corresponding fixed
+Gaussian covariance.  A fixed finite collection of additional affine
+Bernoulli, categorical, or Gaussian outcome heads can be included by adding
+their normalized log likelihoods; the bounds below then use the sum of their
+oscillations.
+
+\begin{proposition}[GTM posterior is a bounded Gaussian tilt]
+\label{prop:gtm_bounded_tilt}
+Suppose the dimensions are fixed, the generative parameters range over a
+compact set, the eigenvalues of $\Sigma$ are bounded away from zero and
+infinity, and the covariates are bounded.  For cross-entropy also suppose
+$N_i\leq\bar N$.  For cross-entropy, constants $0<c<C<\infty$, uniform over
+the displayed sets, satisfy
+\begin{equation}
+ c\,\phi_{\Gamma x_i^p+a,\Sigma}(\eta)
+ \leq\pi_\vartheta(\eta\mid w_i,x_i^p,x_i^c)
+ \leq C\,\phi_{\Gamma x_i^p+a,\Sigma}(\eta).
+ \label{eq:gtm_gaussian_comparison}
+\end{equation}
+The same uniform comparison holds for bounded $y_i$ in the MSE branch.
+Cross-entropy and bounded-$y$ MSE posteriors are therefore positive and
+continuous, have uniform Gaussian tails and moments, and satisfy the
+regular-posterior conditions used by
+Proposition~\ref{prop:mog_encoder_tightness}.  A bounded-perturbation argument
+also gives a uniform log-Sobolev inequality and therefore a uniform $T_2$
+transportation inequality for these two cases \citep{OttoVillani2000}.  For
+unbounded Gaussian $y_i$, the two-sided comparison and perturbation constants
+are record-dependent; under a suitable exponential envelope we claim only the
+integrated tail and moment controls required below, not a uniform log-Sobolev
+or $T_2$ constant.  The posterior need not be log-concave: the softmax
+composition can create separated modes.  Strong log-concavity requires the
+additional prior-dominance condition that the smallest prior precision
+dominate the likelihood's worst negative curvature.
+\end{proposition}
+
+It follows that, under exact-likelihood identification and curvature,
+Theorem~\ref{thm:one_comparator} applies to the GTM.  In particular, gap plus
+optimization order $o_p(n^{-1})$ gives raw-ELBO MLE equivalence, while order
+$o_p(n^{-1/2})$ supplies the preliminary rate for the importance correction
+below.  Qualitative closure supplies those rates only through an existential
+diagonal architecture whose mixture bandwidths can shrink and whose input
+contains every posterior-relevant variable.
+
+For the affine IdealPointNN, let
+\[
+ z_i\mid x_i^p\sim\mathcal N(\Gamma x_i^p+a,\Sigma)
+\]
+and suppose each selected measurement or outcome head has an affine natural
+parameter in $z$.  Allow Bernoulli logits, categorical or fixed-count
+multinomial logits, and Gaussian means with fixed nondegenerate covariance.
+
+\begin{proposition}[Affine IdealPoint posterior shape]
+\label{prop:idealpoint_strong_logconcavity}
+On a compact local parameter set with
+$\lambda_{\max}(\Sigma)\leq\bar\lambda$, the posterior is uniformly strongly
+log-concave.  In schematic block notation its negative log Hessian is
+\begin{align}
+ \nabla_z^2\{-\log\pi_\vartheta(z\mid U)\}
+ &=\Sigma^{-1}
+ +\sum_g A_g^\top\Omega_g^{-1}A_g
+ +\sum_b A_b^\top\operatorname{diag}\{p_b(1-p_b)\}A_b\\
+ &\quad+\sum_c n_c A_c^\top
+   (\operatorname{Diag}p_c-p_cp_c^\top)A_c
+ \succeq\bar\lambda^{-1}I.
+ \label{eq:idealpoint_posterior_hessian}
+\end{align}
+Thus it is positive, unimodal, Gaussian-tailed, and satisfies uniform
+log-Sobolev and $T_2$ inequalities.  Bernoulli and categorical marginal
+likelihoods remain analytically intractable.  With affine Gaussian heads only,
+the posterior is exactly Gaussian.  Hidden nonlinear decoder/predictor layers,
+image decoders, and unnormalized losses are outside this proposition.
+\end{proposition}
+
+Both specializations require an identified chart.  For GTM, topic labels must
+be anchored or the reported functional permutation invariant; multinomial
+output logits need a reference row or sum-zero restriction; only one of a
+prior bias and a prevalence intercept may be free; only one of a decoder bias
+and a content intercept may be free; and, after choosing that baseline, a
+constraint such as $B\mathbf1_K=0$ removes the decoder intercept gauge.  Full
+rank designs, nonsingular information, and exact-criterion separation remain
+substantive assumptions.  The contrast map removes the latent softmax shift,
+but it does not remove topic permutations or prove global identification.
+Scaling $\eta$ is not in general an exact gauge for a decoder affine in
+$\theta$.
+
+For IdealPointNN with learned $\Sigma$ and unrestricted loadings, every
+nonsingular affine change of latent coordinates can be absorbed by the prior,
+loadings, and intercepts.  Fixing $\Sigma=I$ still leaves rotations and
+reflections.  Coordinate-level inference therefore needs, for example, a
+single location convention, fixed covariance (or a quotient-whitened chart),
+a positive discrimination anchor in one dimension or a lower-triangular
+positive-diagonal anchor block in higher dimensions, categorical-logit gauges,
+and exclusions where the same covariates enter both the latent mean and direct
+outcome effects.  Otherwise only smooth invariant functionals are covered.
+
+\begin{proposition}[Omitted conditioning creates an irreducible gap]
+\label{prop:omitted_conditioning_gap}
+Let $U$ be everything supplied to an encoder and let an omitted discrete
+variable $C$, conditional on $U=u$, take values $c$ with probabilities
+$\omega_c>0$.  Write
+$\pi_c(z)=\pi_\vartheta(z\mid U=u,C=c)$.  Even over all densities depending
+on $u$ alone,
+\begin{equation}
+ \inf_q\sum_c\omega_c\mathrm{KL}(q\|\pi_c)
+ =-\log\int\exp\!\left\{\sum_c\omega_c\log\pi_c(z)\right\}\diff z.
+ \label{eq:omitted_conditioning_gap}
+\end{equation}
+The optimizer is the normalized weighted geometric mean of the posteriors.
+The value is strictly positive unless all positive-weight posteriors agree
+almost everywhere.
+\end{proposition}
+
+This is a capacity-independent obstruction.  Content and prediction
+covariates that affect a likelihood must be encoder inputs.  Likewise, an
+outcome included in the joint likelihood must enter the proposal exactly
+once: appending it to each modality expert before multiplying experts counts
+its evidence repeatedly, whereas omitting it targets a different posterior.
+
+For comparison, we retain a stronger traditional joint-sieve theorem that
+also gives an encoder rate.  It is not needed for the one-comparator argument
+and its entropy, curvature, and stochastic-modulus premises must be verified
+for the chosen network class.  Let
+\[
+ m(\vartheta,q;V):=\mathcal L(\vartheta,q;V),\qquad
+ \bar m(\vartheta,q;U):=\E_{S\mid O}[m(\vartheta,q;V(S))],
+ \qquad
+ \bar M(\vartheta,q):=\E_0[\bar m(\vartheta,q;U)],
+\]
+and let $\mathcal Q_n$ contain $J_n$-component mixtures whose parameters are
+outputs of a bounded ReLU network with $P_n$ weights.  Write
+$\mathcal H_n=\mathcal V\times\mathcal Q_n$ and let $\kappa_n$ be an entropy
+index for this class; for bounded finite networks, the canonical order is
+$\kappa_n\asymp P_n\log P_n$.  Let $\rho$ be a metric satisfying locally
+\begin{equation}
+ \rho^2((\vartheta,q),(\vartheta_0,\pi_0))
+ \asymp \|\vartheta-\vartheta_0\|^2
+ +\E_0\E_{S\mid O} h^2\!\left(q(\cdot\mid V(S)),
+ \pi_\vartheta(\cdot\mid V(S))\right),
+ \label{eq:sieve_metric}
+\end{equation}
+where $h$ is Hellinger distance and
+$\pi_0=\pi_{\vartheta_0}$.
+
+\begin{assumption}[Sieve estimation]
+\label{ass:sieve_estimation}
+After an identifying normalization, assume:
+\begin{enumerate}
+\item[(i)] $U_i$ are i.i.d., the subset marginals are correctly specified at
+$\vartheta_0$, and $\vartheta_0$ uniquely maximizes
+$\E_0\bar\ell_\vartheta(U)$.  Thus the collection of subset patterns assigned
+positive probability identifies the normalized generative parameter.
+\item[(ii)] (Quadratic curvature) In a neighborhood of
+$(\vartheta_0,\pi_0)$,
+\[
+ \bar M(\vartheta_0,\pi_0)-\bar M(\vartheta,q)
+ \ge c\rho^2((\vartheta,q),(\vartheta_0,\pi_0)).
+\]
+\item[(iii)] (Sieve approximation) There is
+$(\vartheta_0,q_n^*)\in\mathcal H_n$ with
+$\rho((\vartheta_0,q_n^*),(\vartheta_0,\pi_0))\le a_n$ and population
+criterion loss $O(a_n^2)$, where $a_n\to0$.
+Define $r_n:=a_n+\sqrt{\kappa_n/n}$.
+\item[(iv)] (Local stochastic modulus) For some sufficiently small fixed
+$\bar\delta>0$,
+\[
+ \sup_{\delta\in[r_n,\bar\delta]}
+ \frac{
+ \sup_{\rho((\vartheta,q),(\vartheta_0,q_n^*))\le\delta}
+ \left|\sqrt n(P_n-P_0)
+ \{\bar m(\vartheta,q)-\bar m(\vartheta_0,q_n^*)\}\right|}
+ {\delta\sqrt{\kappa_n}}=O_p(1).
+\]
+\item[(v)] (Global control) $\kappa_n/n\to0$,
+$\sup_{\mathcal H_n}|(P_n-P_0)\bar m|=o_p(1)$, and for every
+$\epsilon>0$,
+\[
+ \liminf_n\inf_{\substack{(\vartheta,q)\in\mathcal H_n:\\
+ \rho((\vartheta,q),(\vartheta_0,\pi_0))\ge\epsilon}}
+ \{\bar M(\vartheta_0,\pi_0)-\bar M(\vartheta,q)\}>0.
+\]
+The computed estimator satisfies
+\[
+ P_n\bar m(\widehat\vartheta_n,\widehat q_n)
+ \ge\sup_{(\vartheta,q)\in\mathcal H_n}P_n\bar m(\vartheta,q)-o_p(r_n^2).
+\]
+\end{enumerate}
+\end{assumption}
+
+\begin{theorem}[Consistency and rate of the general ELBO estimator]
+\label{thm:sieve_consistency_rate}
+Under Assumptions~\ref{ass:posterior_regular} and
+\ref{ass:sieve_estimation},
+\[
+ \rho((\widehat\vartheta_n,\widehat q_n),
+ (\vartheta_0,\pi_0))=O_p(r_n),
+ \qquad
+ \|\widehat\vartheta_n-\vartheta_0\|=O_p(r_n).
+\]
+In particular, the generative parameter and the encoder-induced posterior are
+consistent.  If a known transformation-group ambiguity remains, the same
+conclusion holds in the corresponding quotient metric.
+\end{theorem}
+
+The theorem makes the rate transparent: it is the sum of sieve approximation
+error and sampling error.  The exact value of $a_n$ must be verified for the
+chosen posterior class and parameter bounds.  For illustration, suppose a
+particular Gaussian-mixture construction and ReLU sieve have been shown to
+satisfy
+\begin{equation}
+ a_n\lesssim J_n^{-\beta/L}
+ + (P_n/J_n)^{-\alpha/d_V},
+ \qquad
+ r_n\lesssim J_n^{-\beta/L}
+ +(P_n/J_n)^{-\alpha/d_V}
+ +\sqrt{P_n\log P_n/n}.
+ \label{eq:illustrative_sieve_rate}
+\end{equation}
+Such bounds require control of shrinking mixture variances, component weights
+near the simplex boundary, and network norms; they do not follow from
+qualitative universal approximation.  Gaussian-mixture and ReLU approximation
+results such as \citet{KruijerRousseauVdV2010} and
+\citet{Yarotsky2018Deep} provide tools for verifying model-specific versions.
+Equation~\eqref{eq:illustrative_sieve_rate} is not a dimension-free parametric
+rate for the encoder.  It displays the curse of dimensionality in both latent
+space and encoder-input space.  The abstract rate $a_n$ in
+Theorem~\ref{thm:sieve_consistency_rate} should be used when a different
+mixture construction or network approximation bound is available.
+
+Ignoring logarithms, put $J_n=n^j$ and $P_n=n^p$.  Balancing the three terms
+in Eq.~\eqref{eq:illustrative_sieve_rate} gives the illustrative achievable
+order
+ \[
+ \gamma=\frac{1}{2+L/\beta+d_V/\alpha},\qquad
+ r_n=O(n^{-\gamma})\quad\text{up to logarithmic factors}.
+\]
+All three terms can be $o(n^{-1/4})$ only if
+$L/\beta+d_V/\alpha<2$.  This joint restriction, rather than a condition on
+the encoder smoothness alone, is the relevant implication of the displayed
+rate.
+
+Root-$n$ inference for $\vartheta$ requires more than consistency of the
+encoder.  The unrestricted posterior curve reproduces the exact likelihood,
+but this level identity does not make the score of a restricted ELBO
+orthogonal to encoder error.  For one record write
+\[
+ v(\vartheta,q;V)
+ =\E_q\{\log p_\vartheta(u,Z\mid x,S)-\log q(Z\mid V)\}.
+\]
+Holding $q$ fixed gives
+$\nabla_\vartheta v=\E_q s_c(\vartheta;V,Z)$, where $s_c$ is the complete-data
+score; write $s_o(\vartheta;V)=\nabla_\vartheta\ell_\vartheta(V)$ for the
+observed score.
+
+\begin{proposition}[No automatic ELBO-score orthogonality]
+\label{prop:no_automatic_orthogonality}
+Let
+$q_t(z\mid V)=\pi_\vartheta(z\mid V)\{1+t b(z,V)\}$ with
+$\E_{\pi_\vartheta}(b\mid V)=0$.  Then
+\begin{equation}
+ \left.\frac{\diff}{\diff t}\nabla_\vartheta
+ v(\vartheta,q_t;V)\right|_{t=0}
+ =\E_{\pi_\vartheta}
+ \left[b(Z,V)\{s_c(\vartheta;V,Z)-s_o(\vartheta;V)\}\mid V\right],
+ \label{eq:elbo_score_path_derivative}
+\end{equation}
+which is generally nonzero.  The ELBO \emph{level} is stationary with respect
+to $q$ at the posterior; its generative score generally is not.  Under
+posterior exponential moments, reverse KL alone gives the worst-case order
+\[
+ \|\E_qs_c-\E_\pi s_c\|
+ \lesssim \mathrm{KL}(q\|\pi)^{1/2}+\mathrm{KL}(q\|\pi),
+\]
+and the square-root term is locally sharp.  Hence an $o_p(n^{-1/4})$ nuisance
+rate does not, by itself, establish root-$n$ inference for the raw ELBO
+estimator.
+
+For a Bernoulli decoder with intercept score $s_{c,\alpha}$, take
+$b=c_V\{s_{c,\alpha}-s_{o,\alpha}\}$, where $c_V>0$ is small enough that the
+density path is nonnegative.  The $\alpha$ coordinate of
+Eq.~\eqref{eq:elbo_score_path_derivative} is then
+$c_V\operatorname{Var}_{\pi_\vartheta}(s_{c,\alpha}\mid V)$, which is strictly
+positive whenever the latent variable changes the Bernoulli probability on a
+nondegenerate posterior support.
+\end{proposition}
+
+Indeed, if
+$R_s(\vartheta)=\inf_{q\in\mathcal Q_s}
+\E_0\mathrm{KL}(q\|\pi_\vartheta)$ has a regular minimizing selector, the
+envelope theorem gives
+\[
+ \nabla_\vartheta R_s(\vartheta)
+ =\E_0\{s_o(\vartheta;V)-\E_{q_{s,\vartheta}}s_c(\vartheta;V,Z)\}.
+\]
+Thus confidence-interval centering depends on the derivative of the
+variational gap, not only its level.  A specially structured mixture
+projection could have tangent cancellation, but that requires a separate
+projection theorem; universal approximation does not supply it.
+
+For completeness, the following high-level profile conditions preserve a
+valid but explicitly assumed route for the raw ELBO estimator.  Let
+\[
+ \widehat M_n(\vartheta):=\sup_{q\in\mathcal Q_n}
+ P_n\bar m(\vartheta,q;U).
+\]
+
+\begin{assumption}[Profile expansions]
+\label{ass:profile_clt}
+Work in an identified local chart.  Let
+\[
+ \bar s_0(U):=\nabla_\vartheta\bar\ell_{\vartheta_0}(U),\qquad
+ A_0:=-\E_0\nabla^2_{\vartheta\vartheta}
+ \bar\ell_{\vartheta_0}(U),\qquad
+ B_0:=\mathrm{Var}_0(\bar s_0(U)).
+\]
+Assume $A_0$ is nonsingular, $\E_0\bar s_0=0$,
+$\E_0\|\bar s_0\|^2<\infty$, and the empirical profile has a twice
+differentiable local version.  For some deterministic
+$\delta_n\downarrow0$ such that
+$\Pr(\|\widehat\vartheta_n-\vartheta_0\|\le\delta_n)\to1$, assume
+\begin{align}
+ \nabla_\vartheta\widehat M_n(\vartheta_0)
+ &=P_n\bar s_0+o_p(n^{-1/2}),
+ \label{eq:assumed_profile_score}\\
+ \sup_{\|\vartheta-\vartheta_0\|\le\delta_n}
+ \|\nabla^2_{\vartheta\vartheta}\widehat M_n(\vartheta)+A_0\|
+ &=o_p(1).
+ \label{eq:assumed_profile_hessian}
+\end{align}
+\end{assumption}
+
+A possible route to
+Eqs.~\eqref{eq:assumed_profile_score}--\eqref{eq:assumed_profile_hessian} is
+to work in a nuisance norm in which the ELBO is uniformly three-times
+Fr\'echet differentiable, obtain $r_n=o(n^{-1/4})$ in that norm, impose
+$o_p(n^{-1/2})$ nuisance first-order conditions, approximate each
+least-favorable tangent
+$\partial\pi_\vartheta/\partial\vartheta_j|_{\vartheta_0}$ by a sieve tangent
+with induced score bias $o(n^{-1/2})$, and verify stochastic equicontinuity of
+the derivative classes.  The tangent-bias condition is the needed first-order
+cancellation; the $n^{-1/4}$ rate only controls the remaining quadratic term.
+These are model-specific undersmoothing conditions from sieve profile
+$M$-estimation, not consequences of posterior stationarity or universal
+approximation alone \citep{Chen2007Sieve,WestlingMcCormick2019}.
+
+\begin{theorem}[Root-$n$ rate and asymptotic normality in the general case]
+\label{thm:sieve_clt}
+Under Assumptions~\ref{ass:posterior_regular},
+\ref{ass:sieve_estimation}, and \ref{ass:profile_clt}, if
+$\widehat\vartheta_n$ is an interior approximate maximizer whose profile-score
+residual is $o_p(n^{-1/2})$, then
+\[
+ \sqrt n(\widehat\vartheta_n-\vartheta_0)
+ =A_0^{-1}\frac1{\sqrt n}\sum_{i=1}^n \bar s_0(U_i)+o_p(1)
+ \rightsquigarrow
+ \mathcal N(0,A_0^{-1}B_0A_0^{-1}).
+\]
+For the random-subset composite criterion, $A_0$ and $B_0$ need not coincide.
+For an ordinary correctly specified observed-data likelihood, the information
+identity gives $A_0=B_0=I_0$.  On a quotient space the statement applies to
+any smooth identified representative or smooth invariant functional.
+\end{theorem}
+
+Theorem~\ref{thm:sieve_clt} therefore does not claim automatic Neyman
+orthogonality.  Its profile-score expansion directly assumes away any
+first-order variational bias.  The transparent alternative
+$\rho_n+\epsilon_n=o_p(n^{-1})$ in
+Theorem~\ref{thm:one_comparator} avoids that assumption by making the entire
+raw estimator MLE-equivalent.  The next construction instead removes the
+first-order score bias by evaluating the exact likelihood score with defensive
+importance sampling.
+
+\subsubsection{Defensive likelihood correction and confidence intervals}
+\label{subsubsec:defensive_one_step}
+
+Choose one exact target.  For the full-record likelihood, let
+$s_i^\star(\vartheta)=\nabla_\vartheta\log p_\vartheta(U_i)$; for the
+expected-subset composite criterion, let
+\[
+ s_i^\star(\vartheta)
+ =\E_{S\mid O_i}\nabla_\vartheta\ell_\vartheta(V_i(S)).
+\]
+Write $S_n^\star=P_ns_i^\star$,
+$A_0=-\E_0\nabla_\vartheta s_i^\star(\vartheta_0)$, and
+$B_0=\operatorname{Var}_0\{s_i^\star(\vartheta_0)\}$.  These two targets need
+not have the same influence function; for the composite target, each subset
+posterior ratio below must be normalized separately before averaging over
+$S$.
+
+Freeze the trained encoder $\widehat q_{i,S}$ and, at the parameter value at
+which a score is evaluated, use the defensive proposal
+\begin{equation}
+ g_{i,S,\vartheta}(z)
+ =(1-\delta)\widehat q_{i,S}(z)
+  +\delta p_\vartheta(z\mid x_i^p),\qquad0<\delta\leq1.
+ \label{eq:defensive_proposal}
+\end{equation}
+With
+\[
+ f_{i,S,\vartheta}(z)
+ =p_\vartheta(z\mid x_i^p)L_{i,S,\vartheta}(z),\qquad
+ W_{i,S,\vartheta}(z)=f_{i,S,\vartheta}(z)/g_{i,S,\vartheta}(z),
+\]
+every integrable complete-data quantity obeys the exact identity
+\begin{equation}
+ \E_{\pi_{i,S,\vartheta}}h(Z)
+ =\frac{\E_g\{W_{i,S,\vartheta}(Z)h(Z)\}}
+        {\E_g W_{i,S,\vartheta}(Z)}.
+ \label{eq:defensive_posterior_identity}
+\end{equation}
+Taking $h=s_c$ gives Fisher's identity.  If
+$H_c=\nabla_{\vartheta\vartheta}^2\log p_\vartheta(U_i,Z)$, Louis' identity
+gives the observed information contribution
+\begin{equation}
+ I_{o,i}(\vartheta)
+ =\E_\pi(-H_c\mid U_i)-\operatorname{Var}_\pi(s_c\mid U_i)
+ \label{eq:louis_identity_defensive}
+\end{equation}
+\citep{Louis1982}.  The proposal has support regardless of encoder quality and
+$W\leq\delta^{-1}L$.  It must use the prior at the current score-evaluation
+parameter; Gaussian priors at two different parameter values need not have a
+bounded ratio.  The proposal and samples are held fixed when differentiating
+the target joint density.
+
+For $R$ fresh draws, use the self-normalized ratio estimator
+\[
+ \widehat T_{i,R}(h)
+ =\frac{\sum_{r=1}^R W_{ir}h(Z_{ir})}{\sum_{r=1}^R W_{ir}}.
+\]
+Conditionally on the complete training sample and the frozen encoder, suppose
+its record-level error $e_{i,R}$ satisfies
+\[
+ \|\E(e_{i,R}\mid\mathcal F_n)\|\leq b_i/R,
+ \qquad
+ \E\{\|e_{i,R}-\E(e_{i,R}\mid\mathcal F_n)\|^2\mid\mathcal F_n\}
+ \leq v_i/R,
+\]
+with independent streams across records.  Then
+\begin{equation}
+ P_ne_{i,R}
+ =O_p\!\left(\frac{\bar b_n}{R}
+       +\sqrt{\frac{\bar v_n}{nR}}\right).
+ \label{eq:snis_average_rate}
+\end{equation}
+Under bounded averaged envelopes, raw self-normalization therefore requires
+\begin{equation}
+ R_n/\sqrt n\longrightarrow\infty
+ \label{eq:raw_snis_rate}
+\end{equation}
+for root-$n$-negligible score error.  The ratio bias of order $R^{-1}$ does not
+average away.  A bounded normalized posterior/proposal ratio, adequate
+complete-score moments, and an inverse-denominator moment bound are sufficient
+primitive conditions.  Bounded unnormalized weights alone are not.
+
+\begin{theorem}[Defensive one-step correction]
+\label{thm:defensive_one_step}
+Suppose $\widehat\vartheta_n$ is in the identified interior and
+$\|\widehat\vartheta_n-\vartheta_0\|=o_p(n^{-1/4})$.  Assume the exact target
+score satisfies the uniform local expansion
+\begin{equation}
+ S_n^\star(\vartheta)
+ =S_n^\star(\vartheta_0)-A_0(\vartheta-\vartheta_0)
+ +o_p(n^{-1/2})+O_p(\|\vartheta-\vartheta_0\|^2),
+ \label{eq:exact_score_local_expansion}
+\end{equation}
+$A_0$ is nonsingular, and the score CLT holds.  At the random preliminary
+estimate, suppose the defensive estimates obey
+\begin{align}
+ \widehat S_{n,R}(\widehat\vartheta_n)
+  -S_n^\star(\widehat\vartheta_n)&=o_p(n^{-1/2}),
+ \label{eq:defensive_score_accuracy}\\
+ \widehat A_{n,R}(\widehat\vartheta_n)&\to_p A_0,
+ \label{eq:defensive_info_consistency}\\
+ \|\{\widehat A_{n,R}(\widehat\vartheta_n)-A_0\}
+ (\widehat\vartheta_n-\vartheta_0)\|&=o_p(n^{-1/2}).
+ \label{eq:critical_information_product}
+\end{align}
+The last product condition is essential; consistency of $\widehat A$ alone is
+not sufficient for a one-step update from an $o_p(n^{-1/4})$ preliminary
+estimate.  Suppose also that correction streams are fresh and independent
+across records, Eq.~\eqref{eq:snis_average_rate} holds at the random evaluation
+point, and any outer subset Monte Carlo error is $o_p(n^{-1/2})$.  Then
+\begin{equation}
+ \check\vartheta_n
+ =\widehat\vartheta_n
+  +\widehat A_{n,R}(\widehat\vartheta_n)^{-1}
+   \widehat S_{n,R}(\widehat\vartheta_n)
+ \label{eq:defensive_one_step_update}
+\end{equation}
+satisfies
+\[
+ \sqrt n(\check\vartheta_n-\vartheta_0)
+ =A_0^{-1}\frac1{\sqrt n}\sum_{i=1}^n
+ s_i^\star(\vartheta_0)+o_p(1)
+ \rightsquigarrow\mathcal N(0,A_0^{-1}B_0A_0^{-1}).
+\]
+The preliminary-rate premise follows from
+Theorem~\ref{thm:one_comparator} if
+$\rho_n+\epsilon_n=o_p(n^{-1/2})$ and the exact estimator is root-$n$
+regular.
+\end{theorem}
+
+\begin{theorem}[Fixed unbiased randomized-score corollary]
+\label{thm:fixed_unbiased_randomized_score}
+Let a randomized unit score be
+\[
+ \psi_i(\vartheta)=s_i^\star(\vartheta)+\xi_i(\vartheta),
+ \qquad
+ \E\{\xi_i(\vartheta_0)\mid U_i\}=0,
+\]
+with simulation streams independent across units.  Suppose the conditional
+triangular-array CLT holds for the randomized unit scores and, at the
+preliminary estimator, local stochastic continuity gives
+\[
+ P_n\{\xi_i(\widehat\vartheta_n)-\xi_i(\vartheta_0)\}
+ =o_p(n^{-1/2}).
+\]
+If the exact-score expansion and preliminary-rate premises of
+Theorem~\ref{thm:defensive_one_step} hold, and the information estimator is
+consistent for $A_0$ and obeys the product condition
+Eq.~\eqref{eq:critical_information_product}, then the one-step estimator based
+on $P_n\psi_i(\widehat\vartheta_n)$ satisfies
+\[
+ \sqrt n(\check\vartheta_n-\vartheta_0)
+ =A_0^{-1}\frac1{\sqrt n}\sum_{i=1}^n
+ \{s_i^\star(\vartheta_0)+\xi_i(\vartheta_0)\}+o_p(1),
+\]
+with covariance
+\begin{equation}
+ A_0^{-1}(B_0+C_{\rm MC})A_0^{-1},\qquad
+ C_{\rm MC}:=\E\{\operatorname{Var}(\xi_i\mid U_i)\}.
+ \label{eq:fixed_unbiased_mc_covariance}
+\end{equation}
+For $K$ exact posterior draws used to average the complete-data Fisher score
+for a full record,
+\begin{equation}
+ C_{\rm MC}=K^{-1}\E\{\operatorname{Var}_{\pi_i}
+ (s_{c,i}\mid U_i)\}.
+ \label{eq:exact_posterior_mc_covariance}
+\end{equation}
+For $K_S$ independent exact subset-score draws used to average the
+expected-subset score,
+\begin{equation}
+ C_{\rm MC}=K_S^{-1}\E\{\operatorname{Var}_{S}
+ (s_{i,S}\mid U_i)\}.
+ \label{eq:exact_subset_mc_covariance}
+\end{equation}
+If posterior and subset simulation are both present, define $\xi_i$ as their
+aggregate error in Eq.~\eqref{eq:fixed_unbiased_mc_covariance}.  Its conditional
+variance includes both cross-covariance matrices dictated by the simulation
+design.  When the two errors are conditionally independent, their conditional
+variance contributions add.  This corollary applies only to an unbiased
+randomized score; it explicitly excludes biased fixed-$R$ self-normalized
+importance ratios.
+\end{theorem}
+
+A local Lipschitz law for the exact observed information, together with
+root-$n$ stochastic fluctuation and sufficiently accurate importance moments,
+is one primitive route to
+$\widehat A-A_0=O_p(\|\widehat\vartheta-\vartheta_0\|+n^{-1/2})$ and hence
+Eq.~\eqref{eq:critical_information_product}.  For intervals, recompute
+$\widehat A$ at $\check\vartheta_n$ with fresh draws.  If estimated exact unit
+scores $\widehat s_i^\star$ are used to estimate $B_0$, require the stronger
+unit-level condition
+\begin{equation}
+ P_n\|\widehat s_i^\star-s_i^\star\|^2=o_p(1).
+ \label{eq:unit_score_l2_covariance_condition}
+\end{equation}
+Then their empirical covariance consistently estimates $B_0$.  With a fixed
+unbiased noisy unit score from
+Theorem~\ref{thm:fixed_unbiased_randomized_score}, its empirical covariance
+instead targets $B_0+C_{\rm MC}$.  For an ordinary correctly specified full
+likelihood, $A_0=B_0$; for the expected-subset target, $B_0$ is the covariance
+of the \emph{subset-averaged score}, not the average of subset score outer
+products.
+
+The defensive conditions are especially transparent here.  For bounded
+document length, GTM cross-entropy has a uniformly bounded likelihood
+oscillation and therefore a bounded normalized ratio.  Affine IdealPoint
+Bernoulli/categorical models with a fixed number of responses and compact
+parameters have a positive lower bound for the finite-pattern marginal
+probabilities.  GTM MSE needs integrated residual envelopes.  Pure affine
+IdealPoint MSE should use its analytic Gaussian posterior; in a mixed model,
+the Gaussian-channel posterior can be the defensive base and only the bounded
+discrete likelihood need be importance corrected.  Growing document or item
+counts make the envelopes grow and must be reflected in $R_n$.
+
+\begin{theorem}[Iterated defensive correction]
+\label{thm:iterated_defensive_correction}
+Let $\widetilde\vartheta_n$ solve $S_n^\star(\vartheta)=0$, let
+$A_n(\vartheta)=-\nabla_\vartheta S_n^\star(\vartheta)$, and suppose on a
+fixed basin containing $\widetilde\vartheta_n$ that $A_n$ is uniformly
+nonsingular, bounded, and Lipschitz.  Then the exact Newton map
+$\mathcal N_n(\vartheta)=\vartheta+A_n(\vartheta)^{-1}S_n^\star(\vartheta)$
+obeys
+\[
+ \|\mathcal N_n(\vartheta)-\widetilde\vartheta_n\|
+ \leq C\|\vartheta-\widetilde\vartheta_n\|^2.
+\]
+Starting from a consistent ELBO estimator inside a radius $r$ with
+$q:=2Cr<1$, use fresh defensive draws at each iteration.  If the approximate
+Newton maps have maximal error
+\[
+ \max_{k<K_n}\|\widehat{\mathcal N}_{n,k}(\vartheta_n^{(k)})
+ -\mathcal N_n(\vartheta_n^{(k)})\|\leq\xi_n,
+ \qquad \xi_n=o_p(n^{-1/2}),
+\]
+and all iterates stay in the basin, then, writing
+$e_{n,0}=\|\vartheta_n^{(0)}-\widetilde\vartheta_n\|$,
+\begin{equation}
+ \|\vartheta_n^{(K_n)}-\widetilde\vartheta_n\|
+ \leq C^{-1}(Ce_{n,0})^{2^{K_n}}+\frac{\xi_n}{1-q}.
+ \label{eq:iterated_newton_bound}
+\end{equation}
+Thus if the first term is $o_p(n^{-1/2})$, the iterated estimator is
+root-$n$ equivalent to the exact estimator.  A growing or data-dependent
+$K_n$ requires a maximal inequality or union bound for every attempted
+importance stream; freshness alone does not prove the displayed maximum.
+\end{theorem}
+
+If $e_{n,0}=O_p(n^{-a})$ for any $a>0$, a fixed number of iterations with
+$2^{K}a>1/2$ suffices.  With an unknown slower rate, a stopping rule based on
+an independently accurate exact-score residual can be used, but the threshold
+must be $o(n^{-1/2})$ and importance error must be controlled uniformly over
+all inspected iterates.  A raw ELBO gradient is not such a residual.
+
+\subsubsection{Louis moments and what reverse KL does not control}
+\label{subsubsec:louis_moments}
+
+Reverse KL plus Gaussian posterior tails controls expectations of quantities
+with at most quadratic growth under suitable exponential-moment bounds; it
+does not control unrestricted fourth moments.  To see this, take
+$P=\mathcal N(0,1)$ and
+\[
+ Q_\delta=(1-2\delta^3)P+2\delta^3\mathcal N(\delta^{-1},1).
+\]
+Convexity gives
+$\mathrm{KL}(Q_\delta\|P)\leq\delta$, while
+$\E_{Q_\delta}Z^4=3+2\delta^{-1}+O(\delta)\to\infty$.  Thus fitted reverse KL
+alone does not justify untruncated Louis terms involving learned covariance
+and loading scores.
+
+One remedy is an integrated uniform-integrability or common tail condition on
+the fitted sieve.  A second is componentwise truncation
+$T_\tau(g)=\max(-\tau,\min(g,\tau))$.  If
+$\bar\delta_n=P_n\mathrm{KL}(\widehat q_i\|\pi_i)$, Pinsker's inequality and
+Jensen's inequality give
+\begin{equation}
+ P_n|\E_{\widehat q_i}T_{\tau_n}(g_i)
+       -\E_{\pi_i}T_{\tau_n}(g_i)|
+ \leq\sqrt2\,\tau_n\bar\delta_n^{1/2}.
+ \label{eq:truncated_louis_bound}
+\end{equation}
+If $\bar\delta_n=o_p(n^{-1})$, choose
+$\tau_n\to\infty$ and $\tau_n=o(\sqrt n)$; exact-posterior uniform
+integrability removes the target truncation bias and
+Eq.~\eqref{eq:truncated_louis_bound} vanishes.  Defensive importance-weighted
+Louis estimation instead controls these polynomial moments through the
+proposal envelopes and does not rely on fitted-encoder tail behavior.
+
+\begin{proposition}[Posterior recovery and the limit of latent-factor claims]
+\label{prop:posterior_recovery}
+Under Theorem~\ref{thm:sieve_consistency_rate},
+\[
+ \E_0\E_{S\mid O} h^2\!\left(\widehat q_n(\cdot\mid V(S)),
+ \pi_{\widehat\vartheta_n}(\cdot\mid V(S))\right)\xrightarrow{p}0.
+\]
+If the posterior family is continuous in $\vartheta$ in integrated Hellinger
+distance, then $\widehat q_n$ also converges to $\pi_{\vartheta_0}$.  Posterior
+functionals of bounded $g$ converge in the integrated sense
+\[
+ \E_0\E_{S\mid O}\left|
+ \E_{\widehat q_n}[g(z)]-\E_{\pi_{\vartheta_0}}[g(z)]\right|
+ \xrightarrow{p}0.
+\]
+For an unbounded $g$, the same conclusion holds under the explicit integrated
+uniform-integrability conditions that, for every $\epsilon>0$,
+\begin{align*}
+ \lim_{M\to\infty}\limsup_{n\to\infty}
+ \Pr\!\left(\E_0\E_{S\mid O}
+ \E_{\widehat q_n}[|g|\mathbf 1\{|g|>M\}]>\epsilon\right)&=0,\\
+ \lim_{M\to\infty}\E_0\E_{S\mid O}
+ \E_{\pi_{\vartheta_0}}[|g|\mathbf 1\{|g|>M\}]&=0.
+\end{align*}
+These are integrated, not pointwise-in-$V$, conclusions.  If
+the integrated exact posterior variance remains bounded away from zero with a
+fixed amount of information per unit, no estimator can have vanishing
+mean-squared error for the realized $z_i$; under posterior
+anti-concentration, convergence in probability also fails.  Thus the results
+do not imply $\widehat z_i\to z_i$.  Point recovery needs a within-unit
+asymptotic regime under which the exact posterior itself concentrates.
+\end{proposition}
+
+\subsubsection{Optimization and Monte Carlo error}
+
+The preceding theorems concern the exact expected-subset ELBO and a
+sufficiently accurate extremum estimator.  Let
+\[
+ C_n(\vartheta,q):=P_n\bar m(\vartheta,q),\qquad
+ \widetilde C_n(\vartheta,q):=C_n(\vartheta,q)+R_n(\vartheta,q).
+\]
+For first-order inference define the \emph{profiled} perturbation
+\[
+ R_n^p(\vartheta):=
+ \sup_{q\in\mathcal Q_n}\widetilde C_n(\vartheta,q)
+ -\sup_{q\in\mathcal Q_n}C_n(\vartheta,q).
+\]
+Let $\widetilde\eta_n=(\widetilde\vartheta_n,\widetilde q_n)$ satisfy
+\[
+ \widetilde C_n(\widetilde\eta_n)
+ \ge \sup_{\eta\in\mathcal H_n}\widetilde C_n(\eta)-\epsilon_n,
+ \qquad \epsilon_n\ge0.
+\]
+
+\begin{proposition}[Remainders required of the training procedure]
+\label{prop:algorithmic_remainders}
+If $\sup_{\mathcal H_n}|R_n|=o_p(1)$ and $\epsilon_n=o_p(1)$, then
+$\widetilde\eta_n$ is consistent.  Let
+$\eta_n^*:=(\vartheta_0,q_n^*)$ be the sieve approximant in
+Assumption~\ref{ass:sieve_estimation}.  If, additionally,
+$R_n(\widetilde\eta_n)-R_n(\eta_n^*)=o_p(r_n^2)$ and
+$\epsilon_n=o_p(r_n^2)$, then
+$\rho(\widetilde\eta_n,\eta_0)=O_p(r_n)$.  If, additionally,
+$\widetilde\vartheta_n$ is interior and lies in the profile neighborhood
+$\|\widetilde\vartheta_n-\vartheta_0\|\le\delta_n$ with probability tending
+to one, the perturbed nuisance/profile score equations have
+$o_p(n^{-1/2})$ residuals, and
+\[
+ \sup_{\|\vartheta-\vartheta_0\|\le\delta_n}
+ \|\nabla_\vartheta R_n^p(\vartheta)\|=o_p(n^{-1/2}),
+ \qquad
+ \sup_{\|\vartheta-\vartheta_0\|\le\delta_n}
+ \|\nabla^2_{\vartheta\vartheta}R_n^p(\vartheta)\|=o_p(1),
+\]
+then Theorem~\ref{thm:sieve_clt} holds with
+$\widetilde\vartheta_n$ in place of $\widehat\vartheta_n$.
+
+For a simulated extremum criterion, suppose all preceding consistency and
+profile-expansion conditions hold for the simulated criterion.  If $R$
+conditionally i.i.d.\ draws per observation give score noise $\xi_r$ that is
+conditionally mean zero given $U$ and has finite second moments, the fixed-$R$
+covariance is
+\[
+ A_0^{-1}B_RA_0^{-1},\qquad
+ B_R:=B_0+\frac1R\E_0[\mathrm{Var}(\xi_1\mid U)].
+\]
+Letting $R\to\infty$, or evaluating an analytic Gaussian ELBO, removes this
+first-order simulation term under the corresponding triangular-array
+conditions.  An objective gap of $o_p(r_n^2)$ alone does not imply the score
+accuracy needed for the CLT; under smooth strong concavity, an
+$o_p(n^{-1})$ objective gap is a typical sufficient order.  Generic
+stochastic-gradient convergence to a global maximizer is not implied by the
+statistical assumptions above.
+\end{proposition}
+
+\subsubsection{Objective and implementation scope}
+\label{subsubsec:theory_code_scope}
+
+The ELBO identity, and therefore every comparison theorem above, applies to
+the implemented objective only in the genuine-VAE configuration: the
+reconstruction and outcome terms are normalized log likelihoods, their
+weights are one, the KL weight is one at the reported optimizer, free bits are
+zero, annealing has terminated at one, and there is no unmodeled stochastic
+decoder dropout.  WAE/MMD, deterministic AE, beta-VAE, active free bits,
+powered prediction losses, and arbitrary MSE risks define different
+population objectives and need their own estimating-equation and sandwich
+theory.
+
+Proposition~\ref{prop:mog_encoder_tightness} is an ideal-sieve existence
+result, not a theorem about the stock finite network.  In the current
+implementation, the component log variances are clamped below at $-8$, the
+component and network widths do not grow with $n$, and a hard categorical
+component draw omits the reconstruction/prediction gradient with respect to
+mixture logits.  In addition, mixture-of-experts fusion is not a universal
+joint multimodal encoder, and a fixed training budget and noisy checkpoint
+criterion do not verify the global optimization remainder.  Instantiating the
+theorem requires, at minimum, shrinkable component bandwidths, an explicit
+$n$-indexed architecture, a valid mixture-component gradient (for example
+Rao--Blackwellization), and optimization diagnostics at the required
+per-record scale.
+
+The current non-image encoder paths append prevalence covariates and optional
+labels but omit content and prediction covariates.  By
+Proposition~\ref{prop:omitted_conditioning_gap}, this generally prevents the
+amortization gap from vanishing when those covariates affect the likelihood.
+Under product fusion, appending the same optional labels to every modality
+expert also repeats their evidence.  The repair is to omit outcomes from the
+proposal or introduce one separate outcome expert exactly once.
+The present Gaussian-prior switch also couples learning the prevalence mean
+to learning a full covariance; an option that learns the mean with fixed
+covariance is needed for the simplest normalized IdealPoint chart.
+
+The stock subset routine draws one common active modality subset for a whole
+minibatch and decodes only those active modalities.  It is therefore a
+stochastic approximation to the expected-subset composite criterion in
+Eq.~\eqref{eq:composite_subset_criterion}; the common draw correlates gradient
+noise within the minibatch.  It is not the alternative likelihood based on one
+independently realized coarsening per unit.  Per-unit subset draws are a
+possible algorithmic refinement, not the behavior audited here.
+
+Finally, model-matched simulations are essential.  The existing arithmetic
+topic generator uses $p(w\mid\theta)=\theta^\top\Phi$, whereas the linear GTM
+in Eq.~\eqref{eq:gtm_exact_linear_model} uses
+$p(w\mid\theta)=\operatorname{softmax}(B\theta+Dx^c+b)$.  These are distinct
+data-generating processes.  Likewise, posterior standard deviations of
+unit-specific latent variables are not frequentist standard errors for global
+generative parameters, and fixed within-unit information does not imply
+pointwise consistency for realized latent positions.
+
+Proofs are collected in Appendix~\ref{app:statistical_proofs}.

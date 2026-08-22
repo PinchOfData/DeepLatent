@@ -1,0 +1,17 @@
+\begin{tabular}{lrrrrrrrrr}
+\toprule
+ & \multicolumn{3}{c}{Two-step} & \multicolumn{3}{c}{Joint} & \multicolumn{3}{c}{Post-fit OLS} \\
+\cmidrule(lr){2-4}\cmidrule(lr){5-7}\cmidrule(lr){8-10}
+$n$ & Bias & SD & RMSE & Bias & SD & RMSE & Bias & SD & RMSE \\
+\midrule
+\multicolumn{10}{l}{\emph{Panel: Roll-call votes (2PL IRT) ($J=25$, 1000 replications)}} \\
+1,000 & -0.088 & 0.042 & 0.097 & 0.000 & 0.043 & 0.043 & -0.004 & 0.044 & 0.044 \\
+4,000 & -0.086 & 0.020 & 0.089 & 0.002 & 0.021 & 0.021 & -0.003 & 0.021 & 0.021 \\
+16,000 & -0.087 & 0.010 & 0.088 & 0.000 & 0.011 & 0.011 & -0.004 & 0.011 & 0.011 \\
+\midrule
+\multicolumn{10}{l}{\emph{Panel: Linear--Gaussian ($J=25$, 1000 replications)}} \\
+1,000 & -0.092 & 0.043 & 0.102 & -0.003 & 0.044 & 0.044 & -0.003 & 0.044 & 0.044 \\
+4,000 & -0.091 & 0.021 & 0.093 & -0.002 & 0.022 & 0.022 & -0.002 & 0.022 & 0.022 \\
+16,000 & -0.089 & 0.010 & 0.090 & -0.001 & 0.011 & 0.011 & -0.000 & 0.011 & 0.011 \\
+\bottomrule
+\end{tabular}

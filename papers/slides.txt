@@ -1,0 +1,1270 @@
+\documentclass[9pt,english,dvipsnames]{beamer}
+
+% --------------------------------------------------------------------
+% Encoding & language
+% --------------------------------------------------------------------
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc} % if you compile with pdfLaTeX; remove for LuaLaTeX/XeLaTeX
+\usepackage[english]{babel}
+
+% --------------------------------------------------------------------
+% Fonts
+% --------------------------------------------------------------------
+\usepackage[scaled=0.92]{helvet} % Helvetica-like, slightly condensed
+\renewcommand{\familydefault}{\sfdefault}
+
+\usefonttheme{professionalfonts} % prevent beamer from overriding fonts
+
+% --------------------------------------------------------------------
+% Tables and Figures
+% --------------------------------------------------------------------
+\usepackage{booktabs}
+\usepackage{caption}
+
+% --------------------------------------------------------------------
+% Math
+% --------------------------------------------------------------------
+\usepackage{amsmath,amssymb,mathtools}
+\DeclareMathOperator{\E}{\mathbb{E}}
+
+% --------------------------------------------------------------------
+% Bibliography
+% --------------------------------------------------------------------
+\usepackage[authoryear]{natbib}
+
+% --------------------------------------------------------------------
+% Appendix
+% --------------------------------------------------------------------
+\usepackage{appendixnumberbeamer}
+\usepackage[title,titletoc]{appendix}
+
+% --------------------------------------------------------------------
+% Colors
+% --------------------------------------------------------------------
+\definecolor{darkgreen}{rgb}{0.20,0.43,0.09}
+\definecolor{colhigh}{RGB}{50,80,200}
+
+% --------------------------------------------------------------------
+% Beamer color & caption setup
+% --------------------------------------------------------------------
+\setbeamercolor{section in toc}{fg=black}
+\setbeamercolor{frametitle}{fg=black,bg=white}
+\setbeamercolor{section in head/foot}{fg=black}
+
+\setbeamertemplate{caption}[numbered]
+\setbeamerfont{caption}{size=\normalsize}
+
+\beamertemplatenavigationsymbolsempty
+
+% --------------------------------------------------------------------
+% Itemize / enumerate style and spacing
+% --------------------------------------------------------------------
+\setbeamertemplate{itemize item}[circle]
+\setbeamertemplate{itemize subitem}{\tiny\raise1.5pt\hbox{--}}
+\setbeamertemplate{itemize/enumerate body begin}{\normalsize}
+\setbeamertemplate{itemize/enumerate subbody begin}{\small}
+
+\setbeamercolor{itemize item}{fg=black}
+\setbeamercolor{itemize subitem}{fg=black}
+\setbeamercolor{enumerate item}{fg=black}
+\setbeamercolor{enumerate subitem}{fg=black}
+
+\usepackage{setspace}
+\onehalfspacing
+
+\usepackage{xpatch}
+\makeatletter
+\xpatchcmd{\itemize}
+  {\def\makelabel}
+  {%
+    \ifnum\@itemdepth=1\relax
+      \setlength\topsep{1.5ex}%
+      \setlength\itemsep{1.5ex}% first level
+    \else
+      \ifnum\@itemdepth=2\relax
+        \setlength\topsep{1.5ex}%
+        \setlength\itemsep{0.5ex}% second level
+      \else
+        \ifnum\@itemdepth=3\relax
+          \setlength\itemsep{0.5ex}% third level
+        \fi
+      \fi
+    \fi
+    \def\makelabel
+  }
+  {}{}
+\makeatother
+
+
+\setbeamertemplate{footline}[text line]{%
+  \parbox{\linewidth}{\vspace*{-8pt}Gauthier, Widmer, Ash (2025)\hfill\insertshorttitle\hfill\insertframenumber/\inserttotalframenumber}}
+\setbeamertemplate{navigation symbols}{}
+
+\title[Deep Latent Factor Models]{\color{black} \textbf{Deep Latent Factor Models}}
+\date{LMU-NYU Workshop \\ \vspace{0.5cm} December 2025}
+\author[Germain Gauthier]{Germain Gauthier, Philine Widmer, Elliott Ash} 
+
+\makeatletter
+\setbeamertemplate{headline}{%
+  \begin{beamercolorbox}[colsep=1.5pt]{}
+  \end{beamercolorbox}
+  \begin{beamercolorbox}{}
+    \vskip2pt\insertsectionnavigationhorizontal{\paperwidth}{}{}\vskip2pt
+  \end{beamercolorbox}%
+}
+\makeatother
+
+\makeatletter
+\setbeamertemplate{button}{%
+    \setbox\beamer@tempbox=\hbox{{\insertbuttontext}}%
+    \ht\beamer@tempbox=6pt%
+    \dp\beamer@tempbox=0pt%
+    \setbox\beamer@tempbox=\vbox{\box\beamer@tempbox\vskip2pt}%
+    \beamer@tempdim=\wd\beamer@tempbox%
+    \beamer@dima=\beamer@tempdim\advance\beamer@dima by2.2pt
+    \beamer@dimb=\beamer@tempdim\advance\beamer@dimb by4pt
+    \begin{pgfpicture}{-2pt}{0pt}{\the\beamer@tempdim}{8pt}
+        \usebeamercolor[bg]{button frame}
+        \pgfpathrectangle{\pgfpointorigin}{\pgfpoint{\beamer@dimb}{8pt}}
+        \pgfusepath{fill}
+    \end{pgfpicture}%
+    \hskip2pt
+    \hskip-\beamer@tempdim%
+    \box\beamer@tempbox%
+    \kern4pt%
+}
+\makeatother
+
+\AtBeginSection[]
+{
+    \begin{frame}
+        \frametitle{Table of Contents}
+        \tableofcontents[currentsection]
+    \end{frame}
+}
+
+\usepackage{newunicodechar}
+
+\newcommand\Warning{%
+ \makebox[1.4em][c]{%
+ \makebox[0.3pt][c]{\color{Mahogany}\raisebox{.15em}{\footnotesize!}}%
+ \makebox[0pt][c]{\color{Mahogany}\LARGE$\bigtriangleup$}}}%
+
+\newunicodechar{⚠}{\Warning}
+
+\setbeamercolor{button}{bg=lightgray,fg=black}
+
+\setbeamercovered{transparent}
+
+
+\onehalfspacing
+
+\begin{document}
+
+\frame[plain]{\titlepage}
+
+\section*{Introduction}
+
+\begin{frame}{Latent Factor Models: New Data, New Challenges}
+
+\begin{itemize}
+
+    \item Many latent factor models in the social sciences (e.g., ideal point models based on voting records, topic models for texts). 
+
+    \item Unstructured data is plentiful and offers new research opportunities (e.g., texts, but also images, audio, and video recordings).
+
+    \item But unstructured data often means:
+    \begin{itemize}
+        \item Large number of observations (\textbf{\textit{large n}}) 
+        \item High dimensionality (\textbf{\textit{large p}}) 
+        \item Observed metadata (\textbf{i.e., covariates, outcomes})
+        \item Multiple modalities (\textbf{e.g., texts \textit{and} videos \textit{and} surveys}) 
+        % pre-trained embeddings OR from scratch
+    \end{itemize}
+
+% Writing down a complex DGP is very easy (e.g., structural + multimodel), but estimating the model is hard. That's why we use neural networks.
+
+% There are structural or multimodal latent factor models out there, but we propose a unified fast + structural + multimodal latent factor model.
+% It allows both structured and unstructured data inputs.
+
+% Why not Bertopic? Bertopic does not assume a DGP and has no theoretical guarantees, so typically, depending on the embeddings you use, you may not obtain interpretable topics.
+
+% There's growing interest in the literature of understanding whether we can bridge advances in machine learning / deep learning and traditional, statistical models used in the social sciences. We are contributing to this strand of research by focusing on unsupervised learning problems.
+
+% 
+
+\end{itemize}
+
+\end{frame}
+
+\begin{frame}{Our Approach: Deep Latent Factor Models}
+
+\begin{itemize}
+    \item We introduce a fairly general class of deep latent factor models.
+    \begin{itemize}
+        \item Nests many special cases: Probabilistic PCA, Structural Topic Model, etc.
+    \end{itemize}
+    \item We propose an extended variational autoencoder (i.e, neural networks) to maximize a lower bound on the model's marginal likelihood.
+    \begin{itemize}
+        \item Very fast and scalable approach.
+    \end{itemize}
+    % We clarify under which conditions the ELBO is tight.
+    % autoencoders are specific architecture of neural nets
+    
+    \item Several interesting aspects of our model:
+
+    \begin{itemize}
+    \item Flexibly handles metadata (approximate inference + prediction).
+        %\begin{itemize}
+        %    \item How do covariates affect latent factors and their mapping to response variables?
+        %    \item How do the latent factors relate to outcomes?
+        %\end{itemize}
+
+    \item Learns latent factors from any number of data sources
+    %\begin{itemize}
+    %    \item You can train a model on paired texts, images, and videos if you like.
+    %\end{itemize}
+    
+    \item Once trained, predicts latent factors out-of-sample.
+    %\begin{itemize}
+    %    \item This is computationally efficient
+        % Allows model sharing with other researchers!
+    %    \item It allows for transfer learning (via pre-trained embeddings)
+        %\item Helps with the interpretability of the latent factors
+    %\end{itemize}
+    \end{itemize}
+    
+    \end{itemize}
+            
+\end{frame}
+
+\begin{frame}{Contributions}
+
+\begin{itemize}
+    \item We propose a unified class of latent factor models, which is well-suited for unstructured data (metadata + multimodality).
+    \item We analyze under which conditions the approximation error from maximizing a lower bound is small (theoretically and empirically).
+    \item We propose a theoretically grounded Product-of-Experts (PoE) approach for multimodal estimation.
+    \item We present several use cases of the model for topic modeling and a Python package \texttt{DeepLatent} to facilitate future applications.
+\end{itemize}
+    
+\end{frame}
+
+\begin{frame}{Related Literature}
+
+\begin{itemize}
+    \item Deep learning in economics
+    \begin{itemize}
+        \item \cite{fernandez2025deep, dell2024deep, farrell2020deep, farrell2021deep}
+    \end{itemize}
+    \item Latent factor models
+    \begin{itemize}
+        \item \cite{blei2003latent, blei2006correlated, blei2012probabilistic}
+        \item \cite{srivastava2017autoencoding, card2018neural, kingma2019introduction}
+        \item \cite{canen2020unbundling, canen2021political, roberts2013structural, battaglia2024inference}
+    \end{itemize}
+    \item Many applications
+    \begin{itemize}
+        \item e.g., \cite{hansen2018transparency, mueller2018reading, larsen2019value, draca2024polarised, djourelova2024impact, bybee2024business}
+    \end{itemize}
+\end{itemize}
+    
+\end{frame}
+
+\section*{Model}
+
+\begin{frame}{The Model} \label{structural_model}
+
+For observation $i \in \{1,...,N\}$:
+
+\begin{equation*} \label{eq:deeplatent_normalized}
+\begin{aligned}
+    &\textbf{Latent factors:} 
+    && z_i \sim p_{\psi}(z_i \mid x_i^p), \\[0.5em]
+    &\textbf{Response variables:} 
+    && w_{im} \sim p_{\theta_m}(w_{im} \mid z_i, x_i^c), \quad m = 1,\ldots,M, \\[0.5em]
+    &\textbf{Auxiliary outcomes:} 
+    && y_{ik} \sim p_{\theta_k}(y_{ik} \mid z_i, x_i^s), \quad k = 1,\ldots,K,
+\end{aligned}
+\end{equation*}
+\begin{itemize}
+    \item[] where:
+    \begin{itemize}
+        \item $z_i$ is a vector of $L$ latent factors.
+        \item $w_{im}$ is a vector of response variables for each modality $m$.
+        \item $y_{ik}$ is outcome $k$.
+        \item $p_{\psi}(z_i \mid x_i^p)$ is a prior distribution.
+        \item $x_i^p$, $x_i^c$, and $x_i^s$ are covariates that influence the latent, response, or outcome variables.
+    \end{itemize}
+\end{itemize}
+
+% Mention that the main assumption is conditional independence between modalities/outcomes. Once we know the latent factor z, all these variables are assumed to be independent. 
+
+\end{frame}
+
+\begin{frame}{Special Case 1: Probabilistic PCA}
+
+For observation $i \in \{1,...,N\}$:
+
+\begin{equation*}
+\begin{aligned}
+    &\textbf{Latent factors:} 
+    && z_i \sim \mathcal{N}(0, I), \\[0.75em]
+    &\textbf{Response variables:} 
+    && w_i \sim \mathcal{N}(W z_i + \mu,\ \sigma^2 I_D),\\[0.5em]
+    &\textbf{Auxiliary outcomes:} 
+    && --,
+\end{aligned}
+\end{equation*}
+
+\begin{itemize}
+    \item[] where:
+    \begin{itemize}
+        \item $z_i$: latent factors.
+        \item $w_i$: observed vector.
+        \item $W$: loading matrix.
+        \item $\mu$: mean vector.
+        \item $\sigma^2$: isotropic noise variance.
+    \end{itemize}
+\end{itemize}
+
+% You can mention ideal-point models based on politicians' voting records as a classical use case.
+
+\end{frame}
+
+\begin{frame}{Special Case 2: A "Structural" Topic Model}
+
+For observation $i \in \{1,...,N\}$:
+
+\begin{equation*}
+\begin{aligned}
+    &\textbf{Latent factors:} 
+    && z_i \sim \mathrm{LN}(\Gamma'X_i,\ \Sigma), \\[0.75em]
+    &\textbf{Response variables:} 
+    && w_i \sim \mathrm{Multinomial}(N_i,\ f(X_i, z_i)),\\[0.5em]
+    &\textbf{Auxiliary outcomes:} 
+    && --,
+\end{aligned}
+\end{equation*}
+
+\begin{itemize}
+    \item[] where:
+    \begin{itemize}
+        \item $X_i$ is a vector of covariates.
+        \item $z_i$: topic proportions drawn from a logistic--normal.
+        \item $w_i$: word-count vector.
+        \item $N_i$: document length.
+        \item $f(\cdot)$ is a function of doc-topic shares and covariates.
+    \end{itemize}
+\end{itemize}
+
+% Mention here the STM by Stewart and co-authors, and explain briefly how covariates affect z_i (topic choice) (Eq 1), and how, conditional on topic choice z_i, covariates may also influence the words used to discuss a topic (topic slant) (Eq 2)
+
+\end{frame}
+
+\begin{frame}{Special Case 3: A "Supervised" Topic Model}
+
+For observation $i \in \{1,...,N\}$:
+
+\begin{equation*}
+\begin{aligned}
+    &\textbf{Latent factors:} 
+    && z_i \sim \mathrm{LN}(0,\ I), \\[0.75em]
+    &\textbf{Response variables:} 
+    && w_i \sim \mathrm{Multinomial}(N_i,\ \Phi z_i),\\[0.5em]
+    &\textbf{Auxiliary outcomes:} 
+    && y_{i} = \beta' z_i + \varepsilon_i,
+\end{aligned}
+\end{equation*}
+
+\begin{itemize}
+    \item[] where:
+    \begin{itemize}
+        \item $z_i$: topic proportions drawn from a logistic--normal.
+        \item $w_i$: word-count vector.
+        \item $N_i$: document length.
+        \item $\Phi$: topic–word matrix.
+        \item $\beta$ captures the correlation between topics $z_i$ and $y_i$.
+    \end{itemize}
+\end{itemize}
+
+% Many such supervised topic models are in the literature. They are particularly useful for creating interpretable predictions in the macroeconomics and conflict literatures (often based on newspaper articles). 
+
+\end{frame}
+
+% Nothing prevents you from doing much more complicated models of texts and images with transformer neural nets for the encoders/decoders (see next slide)
+
+\begin{frame}{Special Case 4: An Image--Text Model}
+
+For observation $i \in \{1,...,N\}$:
+
+\begin{equation*} \label{eq:deeplatent_normalized}
+\begin{aligned}
+    &\textbf{Latent factors:} 
+    && z_i \sim \mathrm{N}(0,I), \\[0.5em]
+    & \textbf{Texts:} 
+    && w_{i,text} \sim NeuralNet(z_i, x_i^c),  \\[0.5em]
+    &  \textbf{Images:} 
+    && w_{i,images} \sim NeuralNet(z_i, x_i^c),
+\end{aligned}
+\end{equation*}
+\begin{itemize}
+    \item[] where:
+    
+    \begin{itemize}
+        \item $z_i$ is a vector of latent variables.
+        \item $w_{im}$ is a vector representation for each modality $m$.
+        \item The neural networks can take any form (e.g., feedforward, CNNs, or transformers).
+    \end{itemize}
+\end{itemize}
+
+% A general formulation for a multimodal latent factor model. The factors may be less interpretable (especially in the presence of images).
+
+\end{frame}
+
+\section*{Estimation}
+
+\begin{frame}{}
+
+In general, the marginal likelihood is intractable:
+
+{\footnotesize
+\begin{equation*}
+p_\theta\big(w_{i,1:M}, y_{i,1:K} \mid x_i\big)
+=
+\int p_\psi(z_i \mid x_i^p)
+\Bigg[ \prod_{m=1}^M p_{\theta_m}\big(w_{im} \mid z_i, x_i^c\big) \Bigg]
+\Bigg[ \prod_{k=1}^K p_{\theta_k}\big(y_{ik} \mid z_i, x_i^s\big) \Bigg]
+dz_i.
+\end{equation*}
+}
+
+\vspace{1cm}
+
+\centering \textbf{How do we estimate such a model?}
+
+% There are two ways of thinking about estimation.
+% There's a practical recipe view (the autoencoder figures) and a theoretically grounded view (the ELBO that comes after).
+    
+\end{frame}
+
+\begin{frame}{A Primer on Autoencoders}
+
+\begin{figure}
+    \centering
+    \includegraphics[width=\linewidth, page=1]{figures/AE.pdf}
+\end{figure}
+
+\vspace{-0.5cm}
+\begin{equation*}
+\begin{aligned}
+\mathcal{L}(\theta,\phi; i)=\log p_{\theta}\big(w_{i} \mid q_{\phi}(w_i)\big)
+\end{aligned}
+\end{equation*}
+
+% Plain autoencoders are deterministic and only aim to minimize the reconstruction loss. They are composed of two neural networks: the encoder and the decoder. You learn the neural network weights by stochastic gradient descent.
+
+% NB: There are potentially many latent factor configurations that can lead to a low reconstruction loss (very unidentified model, which is fine if you don't want to interpret the latent factors, but we typically do). 
+
+\end{frame}
+
+\begin{frame}{A Primer on Variational Autoencoders \citep{kingma2013auto}}
+
+\begin{figure}
+    \centering
+    \includegraphics[width=\linewidth, page=2]{figures/AE.pdf}
+\end{figure}
+
+\vspace{-0.5cm}
+\begin{equation*}
+\begin{aligned}
+\mathcal{L}(\theta,\phi,\psi; i)
+&=
+\mathbb{E}_{q_\phi}\!\left[\log p_{\theta}\big(w_{i} \mid z_i\big)\right]  -
+\mathrm{D}\Big(
+q_\phi\big(z_i \mid w_{i}\big)
+\;\Vert\;
+p_\psi(z_i)
+\Big).
+\end{aligned}
+\end{equation*}
+
+% The VAE adds (i) a stochastic encoder that outputs a distribution over latent variables and (ii) a regularization term that penalizes the model if the distribution of latent factors learned strays too far apart from the prior distribution). This weakly enforces the distribution of latent factors to remain close to the prior, and thus to take a specific form (e.g., Gaussian clusters). It can be theoretically grounded in a maximum likelihood framework (see slides below).
+
+\end{frame}
+
+\begin{frame}{Our Extended Variational Autoencoder}
+
+\begin{figure}
+    \centering
+    \includegraphics[width=\linewidth]{figures/deeplatent.png}
+\end{figure}
+
+\vspace{-0.5cm}
+\begin{equation*}
+\begin{aligned}
+\mathcal{L}(\theta,\phi,\psi; i)
+&=
+\sum_{m=1}^M 
+\mathbb{E}_{q_\phi}\!\left[\log p_{\theta_m}\big(w_{im} \mid z_i, x_i^c\big)\right]
++
+\sum_{k=1}^K 
+\mathbb{E}_{q_\phi}\!\left[\log p_{\theta_k}\big(y_{ik} \mid z_i, x_i^s\big)\right]
+\\[0.2cm]
+&\qquad
+-
+\mathrm{D}\Big(
+q_\phi\big(z_i \mid w_{i,1:M}, y_{i,1:K}, x_i\big)
+\;\Vert\;
+p_\psi(z_i \mid x_i^p)
+\Big).
+\end{aligned}
+\end{equation*}
+
+% We basically extend the VAE to add covariates, outcomes, and multiple modalities. 
+
+% The first sum is: how well do we reconstruct each modality?
+% The second sum is: how well do we predict each outcome?
+% The third term is the usually penalty to nudge the latent factors to follow a specific distribution.
+    
+\end{frame}
+
+% The VAE objectives are not heuristic objectives. They are actually grounded in maximum likelihood theory, which we discuss below.
+
+\begin{frame}{Theoretical Foundations: The Evidence Lower Bound (ELBO)}
+
+\small
+
+Define the encoder $q_\phi\big(z_i \mid w_{i,1:M}, y_{i,1:K}, x_i\big)$ from the variational family $\mathcal{Q}_\phi$ (e.g., mean field, full rank gaussian, mixture of gaussians, etc.). 
+
+\vspace{0.3cm} 
+
+Then we can bypass the likelihood and instead maximize the ELBO:
+\begin{equation*}
+\begin{aligned}
+\mathcal{L}(\theta,\phi,\psi; i)
+&=
+\sum_{m=1}^M 
+\mathbb{E}_{q_\phi}\!\left[\log p_{\theta_m}\big(w_{im} \mid z_i, x_i^c\big)\right]
++
+\sum_{k=1}^K 
+\mathbb{E}_{q_\phi}\!\left[\log p_{\theta_k}\big(y_{ik} \mid z_i, x_i^s\big)\right]
+\\[0.2cm]
+&\qquad
+-
+\mathrm{KL}\Big(
+q_\phi\big(z_i \mid w_{i,1:M}, y_{i,1:K}, x_i\big)
+\;\Vert\;
+p_\psi(z_i \mid x_i^p)
+\Big).
+\end{aligned}
+\end{equation*}
+
+The ELBO is a provable lower bound on the marginal likelihood:
+\begin{equation*}
+\log p_\theta\big(w_{i,1:M}, y_{i,1:K} \mid x_i\big)
+\;\ge\;
+\mathcal{L}(\theta,\phi,\psi; i).
+\end{equation*}
+
+% There are basically a few distinct concepts you need to have clearly in mind: 
+% - **the marginal likelihood** is the typical MLE objective: what is the probability of observing this document and these outcomes given the DGP we assumed?
+% - **the posterior likelihood** is the probability of z_i conditional on seeing an observation: p(z_i|w,y,x) (it's basically what the encoder q is trying to recover).
+% - **the variational family** ==> because the posterior likelihood is intractable, we try to approximate it by specifying a simpler distribution, which we call the variational family. For instance, it is often specified as a Gaussian. You can imagine the true posterior has multiple modes and one unique maximum, and we are simply going to try to approximate this with a Gaussian that has only one mode. In our case, we can parameterize the variational family as a neural network (the encoder). For any given document, the encoder typically outputs a mean and a variance (which define a Gaussian distribution for the latent factor of this observation). We can then further refine this distribution via normalizing flows, which makes the variational family even more flexible, but this is a technical detail.
+% - **the ELBO**: given a variational family, the ELBO is defined as a lower bound on the marginal likelihood (you can see that all the expectations are based on the encoder/variational family q). It's a lower bound precisely because we are simplifying the problem by fitting a simpler distribution to approximate the posterior likelihood.
+
+\end{frame}
+
+% OK, so we are maximizing a lower bound on the likelihood, but how 'tight' is this bound (i.e., how closely does it match the likelihood)? The looser it is, the more approximation error we have in our estimation.
+
+\begin{frame}{When is this lower bound tight?}
+
+\small
+
+\textbf{Two sources of approximation error:}
+\begin{equation*}
+\log p_\theta(d_i \mid x_i)
+-
+\mathcal{L}(\theta,\phi,\psi; i)
+=
+\underbrace{V_i}_{\text{variational gap}}
+\;+\;
+\underbrace{A_i}_{\text{amortization gap}}.
+\end{equation*}
+
+\textbf{1. Variational gap $V_i$.}  
+This gap exists because the variational family $\mathcal{Q}$ may not contain the true posterior.  
+It disappears if:
+\begin{equation*}
+q_\phi(z_i \mid d_i, x_i) = p_{\theta,\psi}(z_i \mid d_i, x_i) \in \mathcal{Q}.
+\end{equation*}
+
+$\rightarrow$ Because normalizing flows are universal approximators of smooth and continuous distributions, adding a flow to a Gaussian encoder allows $V_i$ to be made arbitrarily small \citep{kingma2016improved}.
+
+\vspace{0.5cm}
+
+\textbf{2. Amortization gap $A_i$.}  
+This gap exists because the encoder $q_\phi$ must approximate the optimal  
+per-data variational solution $q_i^\star$.  
+It disappears if:
+\begin{equation*}
+q_\phi(z_i \mid d_i, x_i) = q_i^\star \quad \text{for all } i.
+\end{equation*}
+
+$\rightarrow$ We show that this ideal encoder exists \citep{MargossianBlei2024}. Since neural networks are universal approximators, $A_i$ can be made arbitrarily small.
+
+%In both cases, the remaining difficulty is optimization (i.e., actually finding the optimal solutions).
+
+% There are two sources of approximation error: (i) you specified a variational family that doesn't contain the true posterior and (ii) you are using one big function (the encoder) to approximate the optimal per-data variational solution. 
+
+% This first point refers to the use of a Gaussian to approximate the potentially much more complex posterior likelihood. The solution to this problem is usually to apply a normalizing flow on top of this Gaussian. Normalizing flows are functions that can transform a simple distribution (thee Gaussian in our case) in a much more complicated distribution (hopefully the posterior likelihood!).
+
+% This second point is that, in traditional VI, you do not use an encoder, you just optimize a mean and a variance parameter per data point (so that's A LOT of parameters to optimize over!). We use an encoder, which has two advantages: (i) out of sample predictions are made possible and (ii) we have less parameters to optimize over because the encoder is shared across all observations. The issue is that potentially the encoder outputs suboptimal means and variances relative to traditional VI. In our context, we can prove that the ideal encoder (that maps documents to the optimal per-data traditional VI solution) exists, so a sufficiently expressive encoder should be able, in theory, to find it.
+
+\end{frame}
+
+% From the analysis in the previous slide, we see that we have to be a bit careful in how we define the encoder/variational family. If it's poorly specified, it will lead to a variational gap. This is important when you want to model multiple data sources.
+
+% Basically, when you have multiple modalities, you want each encoder to be able to approximate the posterior likelihood of each modality p(z|w,y,x), and you also want the fusion of these encoders to approximate the posterior likelihood of all these modalities observed jointly p(z|w_1,...,w_M,y,x). The individual encoders allow you to predict out of sample for each modality. The joint fusion allows you to properly estimate the z_i given all the modalities you observe (your estimate of z_i is typically more precise if you observe multiple modalities).
+
+% In our case, we specify the modality-specific encoders and the fusion of these encoders in a way that is theoretically grounded, so that each encoder can really be interpreted as an approximation of the posterior likelihood, and the fusion can capture the posterior likelihood of observing all modalities.
+
+% A nice feature of our approach is that each modality-specific encoder outputs a mean and a precision increment, which literally tells you how much more precise your estimate of z_i is made by observing this modality (so it measures how confident the model is in this modality).
+
+\begin{frame}{How should we encode multiple data sources?}
+
+\small
+
+The true posterior is intractable:
+\begin{equation*}
+p_{\theta,\psi}(z_i \mid d_i, x_i)
+\;\propto\;
+p_\psi(z_i \mid x_i^p)\,
+\prod_{m \in S_i} p_{\theta_m}(w_{im} \mid z_i, x_i^c)\,
+\prod_{k=1}^K p_{\theta_k}(y_{ik} \mid z_i, x_i^s),
+\end{equation*}
+where $S_i$ is the set of observed modalities and 
+$d_i = (w_{i,1:M}, y_{i,1:K})$.
+
+\medskip
+
+The literature proposed a product of experts (PoE) approach \citep{wu2018multimodal}:
+\begin{equation*}
+q_\phi(z_i \mid d_i, x_i)
+\;\propto\;
+\prod_{m \in S_i} q_{\phi_m}(z_i \mid w_{im}, y_{i,1:K}, x_i),
+\end{equation*}
+where $S_i$ is the set of observed modalities and $d_i = (w_{i,1:M}, y_{i,1:K})$. 
+
+\medskip 
+
+Because $q_{\phi_m}(z_i \mid w_{im}, y_{i,1:K}, x_i) \approx p_\psi(z_i \mid x_i^p)  p_{\theta_m, \theta_k}(d_{im} \mid z_i, x_i^c, x_i^s)$,
+this inadvertently raises the prior to a power $>1$ and produces an overconfident posterior!
+
+\end{frame}
+
+\begin{frame}{How should we encode multiple data sources?}
+
+\small
+
+The correct form is: 
+\begin{equation*}
+   q_\phi(z_i \mid d_i, x_i)
+        \;\propto\;
+        \frac{\prod_{m \in S_i} q_{\phi_m}(z_i \mid w_{im}, y_{i,1:K}, x_i)}
+             {\,p_\psi(z_i \mid x_i^p)^{\lvert S_i \rvert - 1}}. 
+\end{equation*}
+
+\medskip 
+
+For each modality $m$, our encoder outputs a Gaussian
+\[
+q_{\phi_m}(z_i \mid w_{im}, y_{i,1:K}, x_i)
+= \mathcal{N}\!\big(\mu_{im},\, (\Lambda_{0i} + \Delta_{im})^{-1}\big),
+\]
+where $\Lambda_{0i}$ is the prior precision (from $p_\psi(z_i \mid x_i^p)$) and $\Delta_{im} \succeq 0$ is a \emph{precision increment} contributed by modality $m$.
+
+\medskip
+
+The fused posterior for a subset of modalities $S_i$ is then:
+\begin{align*}
+\Lambda_{S_i}
+    = \Lambda_{0i} + \sum_{m \in S_i} \Delta_{im} \qquad \text{and} \qquad & \eta_{S_i} 
+    = \sum_{m \in S_i} (\Lambda_{0i} + \Delta_{im})\, \mu_{im} \;-\; (|S_i|-1)\Lambda_{0i}\mu_{0i}, \\[0.2cm]
+q_\phi(z_i \mid d_i, x_i) 
+    &= \mathcal{N}\!\big(\Lambda_{S_i}^{-1}\eta_{S_i},\, \Lambda_{S_i}^{-1}\big).
+\end{align*}
+    
+\end{frame}
+
+\begin{frame}{Estimation Algorithm}
+
+% Subsampling of modalities is key for out-of-sample performance of the encoders. Otherwise, the joint encoder may focus on only one modality and set all other encoders to output minimal or meaningless values. With subsampling, you force the model to treat each modality seriously during training, since it may be the only modality in some minibatches.
+
+% A rule of thumb: you can estimate a topic model on 100,000 documents on a small GPU in under 5 minutes with this approach. For comparison, the STM would take hours if not days to complete its estimation with traditional VI.
+
+\begin{table}[ht!]
+    \centering
+    \resizebox{0.8\textwidth}{!}{%
+    \begin{tabular}{l}
+    \toprule
+    \textbf{Input:} Dataset $\{(w_{i,1:M}, y_{i,1:K}, x_i)\}_{i=1}^N$ \\
+    \textbf{Initialize:} Encoders $\{\phi_m\}_{m=1}^M$; decoders $\{\theta_m\}_{m=1}^M$; predictors $\{\theta_k\}_{k=1}^K$; prior $\psi$. \\
+    \midrule
+    \textbf{for} epoch $=1,\dots,E$ \textbf{do} \\
+    \quad \textbf{for} minibatch $\{(w_{i,1:M}, y_{i,1:K}, x_i)\}_{i=1}^n$ \textbf{do} \\
+    \quad\quad Randomly sample modality subset $S_i \subseteq \{1,\ldots,M\}$ for each $i$. \\
+    \quad\quad For each $m \in S_i$, compute $q_{\phi_m}(z_i \mid w_{im}, y_{i,1:K}, x_i)$. \\
+    \quad\quad Aggregate via PoE: \\
+    \quad\quad\quad $\displaystyle q_\phi(z_i \mid d_i, x_i)
+        \;\propto\;
+        \frac{\prod_{m \in S_i} q_{\phi_m}(z_i \mid w_{im}, y_{i,1:K}, x_i)}
+             {\,p_\psi(z_i \mid x_i^p)^{\lvert S_i \rvert - 1}}$. \\
+    \quad\quad Sample $\hat{z}_i \sim q_\phi(z_i \mid d_i, x_i)$ via reparameterization. \\
+    \quad\quad Evaluate $\log p_{\theta_m}(w_{im}\mid \hat{z}_i, x^c_i)$ for all $m$, and $\log p_{\theta_k}(y_{ik}\mid \hat{z}_i, x^s_i)$ for all $k$. \\
+    \quad\quad Compute minibatch ELBO $\widehat{\mathcal{L}}$. \\
+    \quad\quad Update $(\{\phi_m\}, \{\theta_m\}, \{\theta_k\}, \psi)$ via SGD on $\widehat{\mathcal{L}}$. \\
+    \quad \textbf{end for} \\
+    \textbf{end for} \\
+    \bottomrule
+    \end{tabular}%
+    }
+\end{table}
+
+\end{frame}
+
+\begin{frame}{Theory vs. Practice}
+
+% This is related to the estimation issues we have been facing. In practice, posterior collapse is very common, and the best solution is to depart from the ELBO and set beta < 1. Still gives good performance in simulations (the simulation you see is actually with beta = 0.01, for instance).
+
+% The trade-off between higher prediction accuracy and lower latent factor interpretability is also interesting in supervised learning contexts.
+
+% You can also mention the WAE here as an alternative to the VAE that has very stable training at the expense of less theoretical guarantees.
+
+\begin{itemize}
+    \item Posterior collapse is a common local optimum where the encoder collapses and outputs trivial, uninformative latent factors. It appears when the KL loss imposes too much regularization.
+    \item Often, in applications, researchers optimize a weighted ELBO:
+    \begin{equation*}
+    \begin{aligned}
+    \mathcal{L}(\theta,\phi,\psi; i)
+    &=
+    \sum_{m=1}^M \eta_m
+    \mathbb{E}_{q_\phi}\!\left[\log p_{\theta_m}\big(w_{im} \mid z_i, x_i^c\big)\right]
+    \\
+    &\qquad + 
+    \sum_{k=1}^K \eta_k
+    \mathbb{E}_{q_\phi}\!\left[\log p_{\theta_k}\big(y_{ik} \mid z_i, x_i^s\big)\right]
+    \\[0.2cm]
+    &\qquad
+    - \beta
+    \mathrm{KL}\Big(
+    q_\phi\big(z_i \mid w_{i,1:M}, y_{i,1:K}, x_i\big)
+    \;\Vert\;
+    p_\psi(z_i \mid x_i^p)
+    \Big).
+    \end{aligned}
+    \end{equation*}
+    \item Setting $\beta < 1$ typically avoids posterior collapse. Setting $\eta_k > 1$ trades off higher prediction accuracy with lower latent factor interpretability.
+    
+\end{itemize}
+
+% Other interesting architectures:
+% Transfer learning via pre-trained embeddings (what we do in the third application with LongCLIP)
+% Cross-modal encoder-decoder architectures (take texts as input and predict votes, etc.). 
+%  Both are more heuristic, less grounded in theory, but probably useful.
+    
+\end{frame}
+
+
+
+% Many open theoretical questions: 
+% - identification
+% - consistency 
+% - non-parametrics
+
+\section*{Simulations}
+
+\begin{frame}{Monte Carlo Simulations: Logistic Normal Prior}
+
+\begin{figure}
+    \centering
+    \includegraphics[width=\linewidth]{figures/true_vs_estimated_sample_logistic_normal_6.pdf}
+\end{figure}
+    
+\end{frame}
+
+\begin{frame}{Monte Carlo Simulations: Probabilistic PCA with Votes and Texts}
+
+\begin{figure}
+    \centering
+    \includegraphics[width=\linewidth]{figures/votes_and_texts.png}
+\end{figure}
+    
+\end{frame}
+
+\begin{frame}{Monte Carlo Simulations: Probabilistic PCA with Votes and Texts}
+
+\begin{figure}
+    \centering
+    \includegraphics[width=\linewidth]{figures/votes_alone.png}
+\end{figure}
+    
+\end{frame}
+
+\begin{frame}{Monte Carlo Simulations: Probabilistic PCA with Votes and Texts}
+
+\begin{figure}
+    \centering
+    \includegraphics[width=\linewidth]{figures/texts_alone.png}
+\end{figure}
+    
+\end{frame}
+
+\section*{Applications}
+
+\begin{frame}{Application 1: A Structural Topic Model}
+
+The increase in speech polarization in US politics is now a well-established stylized fact {\small (Gentzkow, Shapiro, \& Taddy, 2019)}.
+
+    \begin{figure}
+        \centering
+        \includegraphics[width = 0.8\textwidth]{figures/gst_leave_out_estimator.png}
+    \end{figure}
+
+\centering
+\textbf{$\rightarrow$ Is this increase driven by topics or slant?} 
+
+\end{frame}
+
+\begin{frame}{Proposed (Unsupervised) Decomposition Methodology} \label{proposed_methodology}
+
+\begin{itemize}
+    
+    \item We estimate the GTM on the full \textit{US Congressional Record} (1873 -- 2016). 
+    \item We allow party $\times$ session covariates to affect topic choice \textit{and} content.
+    \item We use our model of speech to generate samples of partisan speeches.
+    \item We simulate 1000 typical speeches for each party $\times$ session under four distinct scenarios:
+    \begin{itemize}
+        \item \textbf{Total polarization (observed):} Republicans and Democrats differ in topic choice and topical content.
+        \item \textbf{Between-topic polarization (topics):} Republicans and Democrats differ in topic choice but not in topical content.
+        \item \textbf{Within-topic polarization (slant):} Republicans and Democrats differ in topical content but not in topic choice.
+        \item \textbf{Placebo:} Republicans and Democrats do not differ in either dimension.
+    \end{itemize}
+    \item We compute a speech polarization index per session and scenario.
+\end{itemize}
+
+\end{frame}
+
+\begin{frame}{Slant matters (much) more than topic choice.}
+
+\begin{figure}
+    \centering
+    \includegraphics[width = \textwidth]{figures/trends_in_speech_polarization_with_CI_50.png}
+\end{figure}
+ 
+\end{frame}
+
+
+\begin{frame}{The Topics} \label{topics}
+
+\vspace{-0.8cm}
+\begin{table}[]
+    \centering
+    %\setlength{\extrarowheight}{-1pt}
+    \resizebox{\textwidth}{!}{%
+    \begin{tabular}{l|l}
+    \toprule
+    \textbf{Topic Label} & \textbf{Top Words} \\
+    \midrule
+    Welfare and Unemployment & food stamp, unemployment benefit, welfare reform, money borrow, poor people, unemployment \\
+    Military Weapons & missile, ballistic missile, ballistic, submarine, silo, cruiser \\
+    Education & pupil, school district, private school, vocational education, school, local school district \\
+    Transportation and Infrastructure & passenger, airport, highway trust fund, highway trust, rail, mail service \\
+    Human Rights & captive nation, polish people, genocide, human right, human right violation, anniversary independence \\
+    Health Insurance & private insurance, health insurance, health plan, insurance company, premium, hospital care \\
+    Budget and Appropriations & budget authority outlay, authority outlay, budget authority, amount recommend, budget estimate \\ %, recommend appropriation
+    Land Entitlement & vessel, act entitle act, certain land, act entitle, subdivision, entitle act \\
+    Condolences and Tribute & condolence, mourn, untimely death, eulogy, passing, sense humor \\
+    Water and Navigation & navigable, nuclear waste, dam, flood control, basin, navigation \\
+    Judiciary and Trials & jury trial, jury, trial jury, grand jury, district judge, defendant \\
+    Trade and Industry & build ship, freedom independence, coastwise, farmer buy, cut taxis, coal miner \\
+    Scientific Research & space station, space, shuttle, scientist engineer, basic research, library \\
+    Postal Services & cent pound cent, pound cent, cent pound, postal employee, pound, advertising \\
+    Pensions and Social Security & grant pension, pension, increase pension, widow, social security benefit, retirement system \\
+    Banking and Finance & commercial bank, bank, national bank, silver dollar, loan association, depositor \\
+    Banking Regulation & hold company, national bank, banking, bank bank, bank, loan association \\
+    Foreign Aid & foreign aid, military assistance, military aid, military budget, economic aid, aid \\
+    Agriculture and Farming & wheat, bushel, feed grain, cent bushel, percent parity, bale \\
+    Elections and Voting & elector, ballot, vacancy, suffrage, legislative power, fill vacancy \\
+    Tariffs and Public Service & protective tariff, law degree, career public, pastor, treasurer, farm organization \\
+    Taxation & sale tax, property tax, tax income, property taxes, tax return, local taxes \\
+    Trade and Textile & trade agreement, textile, fair trade, free trade, textile industry, export \\
+    Public Buildings and Construction & circuit judge, cubic, public building, lieutenant, cadet, erection \\
+    Military Service and Veterans & active duty, veteran, disabled veteran, enlisted, reservist, enlisted man \\
+    \bottomrule
+    \end{tabular}    
+    }
+\end{table}
+
+\end{frame}
+
+\begin{frame}{The Topics (continued)} 
+
+\vspace{-0.5cm}
+\begin{table}[]
+    \centering
+    \resizebox{\textwidth}{!}{%
+    \begin{tabular}{l|l}
+    \toprule
+    \textbf{Topic Label} & \textbf{Top Words} \\
+    \midrule
+    Intelligence and Investigation & subpoena, grand jury, impeachment, investigation, intelligence agency, intelligence \\
+    Campaign Finance & spending limit, campaign finance, electoral, finance reform, candidate, campaign finance reform \\
+    Labor Market & wage rate, minimum wage, increase minimum wage, wage worker, cent hour, farm labor \\
+    Nuclear Treaties & nuclear test, nuclear arm, treaty, arm control, nuclear weapon, treaty treaty \\
+    Oil and Energy & domestic oil, barrel day, barrel oil, crude oil, oil, barrel \\
+    Public Health Risks & quarantine, ordnance, beverage, follow resolve, act entitle act, peace security \\
+    National Forests & national forest, wilderness, acre, wilderness area, grazing, timber \\
+    Legislative Process & unfinished business, divide control, general appropriation, unfinished, open hour, complete action \\
+    Energy Policy & change exist law, free election, national energy policy, testimony hearing, change exist, debatable \\
+    Capital Gains and Taxes & capital gain, gain tax, capital gain tax, tax rate, surtax, estate tax \\
+    Military Construction & military assistance, military construction, new project, increase pension, complete project, river harbor \\
+    Judicial and Highway Funding & district attorney, highway trust fund, highway trust, judgeship, parking, controller \\
+    Fisheries and Maritime Activities & fishery, coastwise, merchant marine, vessel, fishing, canal \\
+    Legal Claims & claimant, pay claim, claim claim, attorney fee, statute limitation, claim pay \\
+    Public Health & home health, disease, heart disease, mental health, health center, dental \\
+    Housing and Urban Development & affordable housing, public housing, urban renewal, housing unit, housing, voucher \\
+    Law Enforcement & law enforcement officer, enforcement officer, absent, pair, prisoner war, enlisted man \\
+    Forest Conservation & forest, rainfall, pest, timber, insect, acre \\
+    Natural Disasters & earthquake, evacuate, parking, evacuation, flooding, fire department \\
+    Crime and Justice & juvenile, crime, deport, firearm, violent crime, handgun \\
+    Intellectual Property and Commerce & copyright, patent, common carrier, interstate commerce, plaintiff, antitrust \\
+    War Negotiations & military aid, aggression, embargo, peace process, troop, peace \\
+    Sports and Social Issues & championship, colored, basketball, colored people, abortion, coach \\
+    Agricultural Commodities & butter, wool, pesticide, cent pound, cent pound cent, cent ad \\
+    Debt and Budget & debt limit, increase debt, public debt, balance budget, debt increase, interest debt \\
+    \bottomrule
+    \end{tabular}
+    }
+\end{table}
+
+\end{frame}
+
+\begin{frame}{Visualizing the Topics}
+
+\begin{figure}
+    \centering
+    \includegraphics[width = \textwidth]{figures/topics_tsne_50.png}
+\end{figure}
+    
+\end{frame}
+
+\begin{frame}{Topical Content Over Time}
+
+\begin{table}[h!]
+\centering
+\caption*{Content Associated with Covariates: Distinctive Words Over Time}
+\label{tab:year_words}
+\resizebox{\textwidth}{!}{ %
+\begin{tabular}{l|l}
+\toprule
+\textbf{Year of Congress} & \textbf{Top Words} \\
+\midrule
+Intercept & country, people, great, man, law, give \\
+1917 & conscription, prosecution war, win war, war measure, profiteer, present war \\
+1919 & profiteer, league, covenant, armistice, federal control, packer \\
+1921 & profiteer, armistice, prewar, bloc, tile, criticize \\
+1939 & conscription, peacetime, national income, totalitarian, setup, airplane \\
+1941 & war effort, nondefense, defense industry, sabotage, defense effort, rubber \\
+1943 & war effort, postwar, parity price, win war, directive, print record part \\
+1945 & decontrol, atomic bomb, postwar, war effort, atomic energy, full employment \\
+1947 & atomic energy, atomic bomb, atomic, free enterprise, decontrol, ideology \\
+1973 & energy crisis, mass transit, legal service, energy problem, impact statement, environmental \\
+1977 & energy problem, oversight hearing, economic stimulus, cruise missile, rate inflation, move opposition \\
+1979 & energy problem, oversight hearing, windfall profit, food stamp, inflation rate, auto industry \\
+1981 & regulatory reform, block grant, social security system, oversight hearing, auto industry, deferral \\
+1993 & health care reform, care reform, unfunded mandate, space station, deficit reduction, stimulus package \\
+2001 & war terrorism, homeland security, terrorist attack, economic stimulus, stimulus package, weapon mass destruction \\
+2003 & homeland security, war terror, war terrorism, terrorist attack, weapon mass destruction, terrorist \\
+2005 & war terror, homeland security, web site, border security, war terrorism, transparency \\
+2007 & transparency, war terror, homeland security, ensure, work bipartisan, urge reserve balance \\
+2009 & transparency, ensure, web site, stakeholder, job creation, health care reform \\
+2011 & transparency, job creation, job growth, infrastructure, ensure, bipartisan agreement \\
+\bottomrule
+\end{tabular}
+}
+\end{table}
+    
+\end{frame}
+
+\begin{frame}{Learnt Word Embeddings}
+
+\begin{table}[ht!]
+    \begin{center}
+    \renewcommand{\arraystretch}{0.7}
+    \resizebox{0.9\textwidth}{!}{%
+    \begin{tabular}{l|l|l|l}
+    \toprule
+    \multicolumn{4}{c}{\textbf{Most Similar Phrases in Embeddings Space for:}} \\
+    \midrule
+    \textbf{taxation} & \textbf{immigration} & \textbf{war} & \textbf{health} \\
+    \midrule
+    levy tax & immigration reform & military & health care \\
+    burden taxation & immigration law & troop & medical \\
+    taxes impose & immigrant come & soldier & care \\
+    tax income & illegal immigration & war war & disease \\
+    tax power & deport & country & cancer \\
+    tax cent & immigrant & peace & drug \\
+    amount revenue & undocumented & man & hospital \\
+    taxes levy & deportation & nation & child \\
+    \midrule
+    \textbf{wage} & \textbf{election} & \textbf{regulation} & \textbf{fiscal} \\
+    \midrule
+    minimum wage & election hold & law & budget \\
+    wage increase & ballot & regulate & appropriation \\
+    increase minimum wage & election election & regulatory & fund \\
+    increase minimum & election law & federal regulation & fiscal fiscal \\
+    raise minimum & day election & propose regulation & authorization \\
+    wage worker & candidate & new regulation & increase \\
+    labor & general election & law regulation & expenditure \\
+    wage hour & voter & company & fiscal budget \\
+    \bottomrule
+    \end{tabular}%
+    }
+    \end{center}
+\end{table}
+    
+\end{frame}
+
+\begin{frame}{Learnt Word Embeddings (continued)}
+
+\begin{table}[ht!]
+    \begin{center}
+    \renewcommand{\arraystretch}{0.7}
+    \resizebox{0.9\textwidth}{!}{%
+    \begin{tabular}{l|l|l|l}
+    \toprule
+    \multicolumn{4}{c}{\textbf{Most Similar Phrases in Embeddings Space for:}} \\
+    \midrule
+    \textbf{debt} & \textbf{deficit} & \textbf{campaign} & \textbf{insurance} \\
+    \midrule
+    national debt & deficit reduction & candidate & insurance company \\
+    public debt & budget deficit & campaign contribution & private insurance \\
+    debt debt & reduce deficit & campaign finance & insurance industry \\
+    pay debt & deficit problem & election & insurance coverage \\
+    debt pay & cut deficit & presidential campaign & insurance premium \\
+    debt limit & deficit deficit & election campaign & insurer \\
+    increase debt & federal deficit & political campaign & premium \\
+    pay interest & increase deficit & editorial & insured \\
+    \midrule
+    \textbf{recession} & \textbf{growth} & \textbf{welfare} & \textbf{crime} \\
+    \midrule
+    recession & economic growth & welfare reform & fight crime \\
+    unemployment benefit & growth rate & welfare system & violent crime \\
+    unemployed worker & growth economy & people welfare & commit crime \\
+    economic stimulus & rate growth & welfare people & crime commit \\
+    people unemployed & economic & welfare country & gun control \\
+    jobless & job creation & dependency & criminal justice \\
+    unemployment percent & economy grow & child care & crime rate \\
+    unemployment insurance & capital & public welfare & murder \\
+    \bottomrule
+    \end{tabular}%
+    }
+    \end{center}
+\end{table}
+    
+\end{frame}
+
+
+\begin{frame}{Topical Choice and Partisanship}
+
+\begin{figure}
+    \centering
+    \includegraphics[width = 0.5\textwidth]{figures/topic_deviations_for_republicans_50.png}
+\end{figure}
+    
+\end{frame}
+
+\begin{frame}{Topical Content and Partisanship}
+
+\begin{table}[h!]
+\caption*{Topic-Covariate Interactions: Party-Specific Topic Language}
+\setlength{\extrarowheight}{2pt}
+\resizebox{\textwidth}{!}{ %
+\begin{tabular}{llll}
+\toprule
+\textbf{Topic Label} & \textbf{Type} & \textbf{Top Words} \\
+\midrule
+Welfare and Unemployment & Baseline & food stamp, unemployment benefit, welfare reform, money borrow, poor people, unemployment \\
+ & Republicans & money, man, pay, people, pension, come \\
+ & Democrats & unemployment, poor people, poverty, hungry, food stamp, unemployed \\
+ \midrule
+Elections and Voting & Baseline & elector, ballot, vacancy, suffrage, legislative power, fill vacancy \\
+ & Republicans & precinct, election, contestant, elector, ballot, seat \\
+ & Democrats & civil right, racial, equal protection, segregation, equal protection law, filibuster \\
+ \midrule
+Military Service and Veterans & Baseline & active duty, veteran, disabled veteran, enlisted, reservist, enlisted man \\
+ & Republicans & officer, man, soldier, enlistment, regiment, enlisted man \\
+ & Democrats & veteran, disabled veteran, personnel, care veteran, veteran family, veteran benefit \\
+ \midrule
+Campaign Finance & Baseline & spending limit, campaign finance, electoral, finance reform, candidate, campaign finance reform \\
+ & Republicans & election, candidate, party, money, postage, expenditure \\
+ & Democrats & campaign finance, spending limit, finance reform, campaign finance reform, campaign contribution \\
+ \midrule
+Labor Market & Baseline & wage rate, minimum wage, increase minimum wage, wage worker, cent hour, farm labor \\
+ & Republicans & laborer, labor, man, railroad, workman, railway \\
+ & Democrats & minimum wage, wage worker, worker, increase minimum wage, cent hour, wage \\
+ \midrule
+Crime and Justice & Baseline & juvenile, crime, deport, firearm, violent crime, handgun \\
+ & Republicans & officer, liquor, alien, consular, gun, intoxicate \\
+ & Democrats & juvenile, law enforcement, drug, enforcement, crime, criminal justice \\
+\bottomrule
+\end{tabular}
+}    
+\end{table}
+\end{frame}
+
+
+
+\begin{frame}{Application 2: A Supervised Topic Model}
+
+\begin{figure}
+    \begin{center}
+    \caption*{Log Industrial Production Growth (Raw)}
+    \includegraphics[width=\linewidth]{figures/wsj_smoothed_IPG.png} \\
+    \end{center}
+\end{figure}
+    
+\end{frame}
+
+\begin{frame}{}
+
+\begin{figure}
+    \begin{center}
+    \caption*{Predictions Based on Topics from the \textit{Wall Street Journal}}
+    \includegraphics[width=\linewidth ]{figures/wsj_smoothed_IPG_testing_set.png} \\
+    \end{center}
+\end{figure}
+    
+\end{frame}
+
+
+
+\begin{frame}{Application 3: An Image Topic Model}
+    
+\begin{itemize}
+    \item We collect the universe of posts written and images shared by US Congress representatives on Facebook between 2010 and 2020.
+    \item We train the GTM on texts only using embeddings that handle texts and images (LongCLIP) as input, and try to reconstruct the bag of words as output.
+    \item The model can then predict topics out-of-sample for texts and images.
+    \item Some open questions:
+    \begin{itemize}
+        \item Are texts or images more polarized? 
+        \item How do image and text topics correlate within a post? 
+        \item Are some topics more likely to be addressed with images?
+    \end{itemize}
+\end{itemize}
+    
+\end{frame}
+
+\begin{frame}{The 20 Topics}
+
+\centering
+\resizebox{0.75\textwidth}{!}{%
+\begin{tabular}{ll}
+\toprule
+\textbf{Label} & \textbf{Representative Words} \\
+\midrule
+Sports and Competitions & game, win, team, football, fun \\
+Holidays and Awards & wish, family, love, present, hope \\
+Voting System & vote, election, democracy, ballot, state \\
+Military Honors & brave, medal, hero, military, present \\
+Gun Violence & gun, violence, shooting, action, border \\
+COVID-19 Health Services & vaccine, test, health, covid, site \\
+Natural Disasters & storm, fire, damage, evacuation, area \\
+Clean Energy \& Infrastructure & energy, infrastructure, clean, water, project \\
+Campaign Volunteering \& Outreach & volunteer, campaign, update, constituent, folk \\
+Tragedy \& Mourning & lose, prayer, love, fight, attack \\
+Women’s Rights & woman, equality, vote, fight, legacy \\
+Voting Encouragement & vote, early, polling, ballot, location \\
+Taxes & tax, cost, insurance, bill, plan \\
+Business Openings & facility, manufacturing, opening, company, economy \\
+Public Health & health, funding, flood, fire, recovery \\
+Military Sacrifice \& Remembrance & sacrifice, hero, brave, forget, woman \\
+Economy & economy, tax, growth, cost, american \\
+Farming \& Small Business & farmer, product, company, grow, industry \\
+Schools & teacher, school, education, class, young \\
+Immigration \& Border Control & border, immigrant, illegal, crisis, southern \\
+\bottomrule
+\end{tabular}%
+}
+
+\end{frame}
+
+\begin{frame}{Some examples: Military Honors}
+\begin{figure}
+    \centering
+    \includegraphics[width=0.8\linewidth]{figures/military_honors_3.jpg}
+\end{figure}
+\end{frame}
+
+\begin{frame}{Some examples: Business Openings}
+\begin{figure}
+    \centering
+    \includegraphics[width=0.5\linewidth]{figures/business_opening_2.jpg}
+\end{figure}
+\end{frame}
+
+\begin{frame}{Some examples: Schools}
+\begin{figure}
+    \centering
+    \includegraphics[width=0.8\linewidth]{figures/education_youth_3.jpg}
+\end{figure}
+\end{frame}
+
+\begin{frame}{Some examples: Immigration and Border Controls}
+\begin{figure}
+    \centering
+    \includegraphics[width=0.8\linewidth]{figures/immigration_border_control.jpg}
+\end{figure}
+\end{frame}
+
+
+
+\section*{Concluding Remarks}
+
+
+\begin{frame}{Concluding Remarks}
+
+\centering
+
+We are releasing an open-source Python package \texttt{DeepLatent} to support future applications
+
+\texttt{pip install deeplatent}
+
+...
+
+and we look forward to your feedback.
+
+Thanks for listening!
+    
+\end{frame}
+
+\frame[plain]{\titlepage}
+
+\begin{frame}[plain,allowframebreaks]{References}
+
+    \footnotesize
+    \bibliographystyle{apalike}
+    \bibliography{references}
+        
+\end{frame}
+
+
+\appendix
+
+% Some details (such as the special cases?)
+% Some proofs (ELBO, existence of the ideal encoder)
+% WAE as an alternative with stable training
+
+
+
+\end{document}

@@ -1,0 +1,67 @@
+DeepLatent pitch
+
+Latent factor models are common in the social sciences, 
+but can be hard to estimate when the number of observations 
+or dimensionality of the objects studied grow.
+
+We propose a class of latent factor models that offer:
+
+    - Handling metadata for more expressive models and supervised learning
+    ==> covariates + outcomes 
+
+    - Joint modeling of any data source 
+    ==> different data sources used for inference
+
+    - Amortized inference 
+    ==> speed and scalability + transfer learning + interpretability + model sharing across contexts
+
+Theoretical analysis:
+
+    - The class of models we consider and typical special cases
+        ==> Probabilistic PCA / Basic topic models / Deeper models
+    - Estimation via the extended VAE (heuristics and theoretical foundations)
+        - Heuristic view: Regularized autoencoder architecture
+        - Theoretical justification: Relationship to variational inference and the ELBO
+        - Extensions to metadata and multiple modalities
+        - Estimation algorithm: Scaling properties (complexity of the estimation algorithm O(something))
+    - ELBO and analysis of the approximation error relative to the marginal likelihood
+        - formalize the proofs of the universal approximators to decrease (i) the variational and (ii) the amortization gap
+    - General estimation rate guarantees for the target density and the latent factors 
+    (parametric and non-parametric settings for the decoder, only non-parametric setting for the encoders of course)
+    - Identifiability: Discuss lack of identifiability, particularly as the models become "deep". 
+        ==> Discuss identifiability in well-studied linear models (PPCA)
+        ==> Explain the diffeomorphism story for deeper models.
+        ==> Provide simulation evidence that it doesn't seem to be such a big deal 
+            (perhaps because of implicit regularization in deep neural nets)
+    - Theory vs. Practice (and common use cases)
+        - you can optimize surrogate objectives for estimation stability via beta-VAE for instance 
+        (e.g., beta <1 avoids posterior collapse) or prediction tasks (e.g., business cycles / conflicts)
+        ==> our view is that, ultimately, what matters is "good" latent factors
+        ==> the latent factors are best viewed as social constructs that require human validation, 
+        and inference should not necessarily be done on the DGP (which we don't really believe in to begin with)
+        - cross-modality training 
+        ==> you can also encode/decode different things (e.g., texts to votes)
+        - you can do transfer learning via pre-trained embeddings
+        ==> weaker theoretical guarantees
+
+Simulations for the appendix:
+
+    - IRT model (ex-post alignment with ground truth) ==> unimodal + multimodal + increasing depth of the encoder/decoder
+    - Topic model (Logistic Normal, with anchor words) ==> unimodal + multimodal + increasing depth of the encoder/decoder
+    - Decomposition exercise (topics vs slant)
+    - Colored MNIST
+
+Applications: 
+
+    Handling metadata
+
+    - Structural topic model: US Congress (Inference)
+    - Making interpretable predictions with topics: WSJ (Prediction)
+
+    Joint modeling of different data sources
+
+    - Image / text model based on newspaper articles and trained from scratch (Multimodality)
+
+    Amortized inference for transfer learning
+
+    - Topics for images: Facebook posts of US politicians (Transfer learning)

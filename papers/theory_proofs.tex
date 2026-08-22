@@ -1,0 +1,694 @@
+\section{Proofs of the statistical guarantees}
+\label{app:statistical_proofs}
+
+Throughout this appendix, equalities and inequalities between conditional
+densities are understood up to sets of Lebesgue measure zero.  For estimation
+results we write $P_nf=n^{-1}\sum_{i=1}^nf(U_i)$ and
+$P_0f=\E_0[f(U)]$.
+
+\subsection{Proof of Proposition~\ref{prop:elbo_identity_decomposition}}
+
+\begin{proof}
+Fix $(\vartheta,V)$ and abbreviate the joint and marginal densities by
+$p_\vartheta(u,z\mid x,S)$ and $p_\vartheta(u\mid x,S)$.  Bayes' rule gives
+\[
+ \log p_\vartheta(u,z\mid x,S)
+ =\ell_\vartheta(V)+\log\pi_\vartheta(z\mid V).
+\]
+The ELBO can be written as
+\[
+ \mathcal L(\vartheta,q;V)
+ =\int q(z\mid V)
+ \{\log p_\vartheta(u,z\mid x,S)-\log q(z\mid V)\}\,\diff z.
+\]
+Substitution of the Bayes identity and integration of the constant
+$\ell_\vartheta(V)$ yield
+\[
+ \mathcal L(\vartheta,q;V)
+ =\ell_\vartheta(V)-
+ \int q(z\mid V)\log\frac{q(z\mid V)}{\pi_\vartheta(z\mid V)}\,\diff z.
+\]
+This proves Eq.~\eqref{eq:elbo_gap_identity_profile}; nonnegativity and the
+equality condition are the standard Gibbs inequality.  Finally, add and
+subtract $\Delta_{\mathcal Q}(\vartheta,V)$ on the right-hand side.  The
+first resulting term is nonnegative by definition of an infimum, and the
+second is nonnegative because $q_\phi\in\mathcal Q$.
+\end{proof}
+
+\subsection{Proof of Theorem~\ref{thm:one_comparator}}
+
+\begin{proof}
+Nonnegativity of the gap and approximate optimality give
+\[
+ \ell_n(\widehat\vartheta_n)
+ \geq L_n(\widehat\vartheta_n,\widehat q_n)
+ \geq \ell_n(\vartheta_0)-D_n(\vartheta_0,q_n^0)-o_p(1)
+ =\ell_n(\vartheta_0)-o_p(1).
+\]
+The separation event rules out every parameter outside any fixed
+$\epsilon$-ball, proving consistency.  The same comparison yields
+\[
+ D_n(\widehat\vartheta_n,\widehat q_n)
+ \leq \ell_n(\widehat\vartheta_n)-\ell_n(\vartheta_0)
+      +D_n(\vartheta_0,q_n^0)+o_p(1),
+\]
+which proves the fitted-gap conclusion under the stated exact-criterion
+continuity.
+
+For the aggressive comparison, approximate optimality and the comparator at
+the exact extremum give
+\[
+ L_n(\widehat\vartheta_n,\widehat q_n)
+ \geq \ell_n(\widetilde\vartheta_n)-\rho_n-\epsilon_n.
+\]
+Since $L_n=\ell_n-D_n$, $D_n\geq0$, and
+$\ell_n(\widehat\vartheta_n)\leq\ell_n(\widetilde\vartheta_n)$,
+\begin{align*}
+ 0&\leq\ell_n(\widetilde\vartheta_n)
+          -\ell_n(\widehat\vartheta_n)
+    \leq\rho_n+\epsilon_n,\\
+ 0&\leq D_n(\widehat\vartheta_n,\widehat q_n)
+    \leq\rho_n+\epsilon_n.
+\end{align*}
+Equation~\eqref{eq:exact_local_quadratic_separation} now gives
+Eq.~\eqref{eq:aggressive_parameter_comparison}.  If
+$\rho_n+\epsilon_n=o_p(n^{-1})$, multiplying the resulting distance by
+$\sqrt n$ gives exact-estimator equivalence.  If instead the sum is
+$o_p(n^{-1/2})$, the comparison distance is $o_p(n^{-1/4})$; adding the
+root-$n$ exact-estimator error proves the preliminary-rate claim.
+\end{proof}
+
+\subsection{Linear--Gaussian posterior and proof of
+Theorem~\ref{thm:lg_profile_mle}}
+
+For a fixed subset $S$, suppress the arguments $(\vartheta,V)$ and define
+$\widetilde u_S=u_S-a_S-D_Sf(x)$ and $\mu_0=Bf_p(x^p)$.  Up to a constant
+that does not depend on $z$, the log posterior is
+\begin{align*}
+ &-\frac12(z-\mu_0)^\top\Sigma_0^{-1}(z-\mu_0)
+ -\frac12(\widetilde u_S-G_Sz)^\top
+ \Omega_S^{-1}(\widetilde u_S-G_Sz)\\
+ &\quad=-\frac12z^\top
+ (\Sigma_0^{-1}+G_S^\top\Omega_S^{-1}G_S)z
+ +z^\top(\Sigma_0^{-1}\mu_0+G_S^\top\Omega_S^{-1}
+ \widetilde u_S)+\text{constant}.
+\end{align*}
+Completing the square gives Eq.~\eqref{eq:lg_posterior_main}.  In particular,
+$V_S$ depends on $S$ and $\vartheta$ but not on the observed values, while
+$m_S$ is affine in $(u_S,f_p(x^p),f(x))$.  A finite collection of affine
+mean heads and constant Cholesky heads therefore realizes all subset
+posteriors at a fixed $\vartheta$.
+
+\begin{proof}[Proof of Theorem~\ref{thm:lg_profile_mle}]
+For each $\vartheta$, let $\phi^*(\vartheta)$ be encoder weights that produce
+the mean and covariance in Eq.~\eqref{eq:lg_posterior_main} for every subset.
+Proposition~\ref{prop:elbo_identity_decomposition} gives, for every $U_i$ and
+every $S\subseteq O_i$,
+\[
+ \mathcal L(\vartheta,q_{\phi^*(\vartheta)};V_i(S))
+ =\ell_\vartheta(V_i(S)).
+\]
+For every other $\phi$, the same proposition gives
+$\mathcal L(\vartheta,q_\phi;V_i(S))\le\ell_\vartheta(V_i(S))$.
+Taking $\E_{S\mid O_i}$ and summing proves the profile identity
+\eqref{eq:gaussian_profile_identity}.  It follows immediately that the
+$\vartheta$ component of a global joint maximizer maximizes
+$P_n\bar\ell_\vartheta$.
+
+Under Assumption~\ref{ass:lg_regular}, the uniform law of large numbers,
+identification, and the argmax theorem give
+$\widehat\vartheta_n\to_p\vartheta_0$.  Because the estimator is interior
+with probability tending to one, its first-order condition and the integral
+form of Taylor's theorem give
+\[
+ 0=P_n\bar s_0+H_n(\widehat\vartheta_n-\vartheta_0),
+ \qquad
+ H_n:=\int_0^1P_n\nabla^2_{\vartheta\vartheta}
+ \bar\ell_{\vartheta_0+t(\widehat\vartheta_n-\vartheta_0)}\,\diff t,
+\]
+where $\bar s_0=\nabla_\vartheta\bar\ell_{\vartheta_0}$.  The central limit
+theorem gives $\sqrt nP_n\bar s_0\rightsquigarrow\mathcal N(0,B_0)$, and the
+uniform Hessian law of large numbers gives $H_n\to_p-A_0$.  Slutsky's theorem
+yields the stated sandwich limit.  For an ordinary correctly specified
+likelihood, the information identity reduces it to $I_0^{-1}$.  The proof
+never differentiates with respect to encoder weights and therefore does not
+require those weights to be identified.
+\end{proof}
+
+For completeness, the corrected product-of-experts claim follows directly
+from Bayes' rule.  If $\pi_{\vartheta,m}(z\mid w_m,x)$ is an exact modality
+posterior and $\pi_{\vartheta,y}(z\mid y,x)$ is the exact outcome posterior,
+then
+\[
+ \frac{\pi_{\vartheta,y}(z\mid y,x)
+ \prod_{m\in S}\pi_{\vartheta,m}(z\mid w_m,x)}
+ {p_\psi(z\mid x^p)^{|S|}}
+ \ \propto\ 
+ p_\psi(z\mid x^p)p_\theta(y\mid z,x^s)
+ \prod_{m\in S}p_{\theta_m}(w_m\mid z,x^c).
+\]
+The right-hand side is the exact subset posterior kernel.  In the Gaussian
+case, multiplying kernels adds natural parameters, which gives precisely the
+precision and mean in Eq.~\eqref{eq:lg_posterior_main}.  If outcomes are not
+used by the encoder, omit the outcome expert and divide the modality product
+by $p_\psi^{|S|-1}$ instead.  This reduced fusion is exact for
+$p_\vartheta(z\mid w_S,x)$, not for $p_\vartheta(z\mid w_S,y,x)$.
+
+\subsection{Proof of Proposition~\ref{prop:mog_encoder_tightness}}
+
+\begin{proof}
+We first record the approximation argument in a form that makes the
+conditional continuity explicit.  Put
+$T=\mathcal V\times\mathcal K_V$ and write $\pi_t$ for
+$\pi_\vartheta(\cdot\mid V)$, $t=(\vartheta,V)\in T$.
+
+\paragraph{Step 1: truncate and smooth.}
+Let $K_R=[-R,R]^L$ and
+$c_t(R)=\int_{K_R}\pi_t(u)\,\diff u$.  Uniform tightness implies
+\begin{equation}
+ \inf_{t\in T}c_t(R)\longrightarrow1.
+ \label{eq:uniform_trunc_mass}
+\end{equation}
+For $R$ large enough, all $c_t(R)$ are bounded away from zero.  Define the
+truncated density
+\[
+ f_{t,R}(u)=\frac{\pi_t(u)\mathbf 1\{u\in K_R\}}{c_t(R)}
+\]
+and let $g_{t,R,\sigma}=f_{t,R}*\varphi_\sigma$, where
+$\varphi_\sigma$ is the $\mathcal N(0,\sigma^2I_L)$ density.  For fixed $R$,
+the map $t\mapsto f_{t,R}$ is continuous in $L^1$.  Indeed, $c_t(R)$ is
+continuous and bounded away from zero, while joint continuity and the common
+bound $C/\inf_tc_t(R)$ permit dominated convergence on the finite-measure set
+$K_R$.  Since $T$ is compact, its image is a compact subset of $L^1$.
+Convolution is an $L^1$ contraction, so applying the approximate-identity
+theorem to a finite net of this compact image gives
+\begin{equation}
+ \sup_{t\in T}\|g_{t,R,\sigma}-f_{t,R}\|_1\longrightarrow0
+ \quad\text{as }\sigma\downarrow0.
+ \label{eq:uniform_approx_identity}
+\end{equation}
+
+We next pass from $L^1$ to reverse KL.  On every fixed compact set,
+$\pi_t$ is bounded away from zero uniformly in $t$ by positivity, joint
+continuity, and compactness of $T$.  The function $u\mapsto u\log u$ is
+uniformly continuous on bounded intervals after defining $0\log0=0$.
+To spell out the entropy step, split a compact set into
+$\{|g-f|\le\delta\}$ and its complement.  Uniform continuity controls the
+first set, while the second has measure at most
+$\|g-f\|_1/\delta$ and the integrands are uniformly bounded.  Cross-entropy
+convergence follows similarly because $|\log\pi_t|$ is uniformly bounded on
+the compact set.  Equation~\eqref{eq:uniform_approx_identity} therefore
+implies convergence of both integrals there.  For the tails, fix
+$\sigma_0>0$ and put
+$M=C/\inf_tc_t(R)$.  Convolution gives $g_{t,R,\sigma}\le M$.  If
+$\mathrm{dist}(z,K_R)\ge\sqrt L\sigma_0$, then, uniformly over
+$0<\sigma\le\sigma_0$ and $u\in K_R$,
+\[
+ \varphi_\sigma(z-u)
+ \le (2\pi\sigma_0^2)^{-L/2}
+ \exp\{-\mathrm{dist}(z,K_R)^2/(2\sigma_0^2)\}.
+\]
+Combining this Gaussian bound outside an enlarged cube with the bound $M$
+inside it gives an integrable envelope $H$ for which
+$H|\log H|$ and $H(1+\|z\|^r)$ are integrable.  Enlarge the tail cube until
+$H\le e^{-1}$ outside it.  Because $v\mapsto-v\log v$ is increasing on
+$[0,e^{-1}]$, the entropy tails are then controlled by $H|\log H|$ and, by
+Assumption~\ref{ass:posterior_regular}(iii), the cross-entropy tails are
+controlled by $H(1+\|z\|^r)$.  They vanish uniformly as the enlarged cube
+grows.  Hence
+\begin{align}
+ \sup_{t\in T}\left|
+ \mathrm{KL}(g_{t,R,\sigma}\|\pi_t)
+ -\mathrm{KL}(f_{t,R}\|\pi_t)\right|&\longrightarrow0,
+ \label{eq:kl_smoothing_limit}\\
+ \mathrm{KL}(f_{t,R}\|\pi_t)
+ &=\int_{K_R}\frac{\pi_t}{c_t(R)}
+ \log\frac{1}{c_t(R)}\,\diff z
+ =\log\frac1{c_t(R)}.
+ \label{eq:truncated_kl}
+\end{align}
+Choose $R$ so large that the supremum of
+Eq.~\eqref{eq:truncated_kl} is less than $\varepsilon/4$, and then choose
+$\sigma$ so small that the supremum in
+Eq.~\eqref{eq:kl_smoothing_limit} is less than $\varepsilon/4$.
+
+\paragraph{Step 2: discretize the mixing distribution.}
+Partition $K_R$ into finitely many half-open rectangular cells
+$A_1,\ldots,A_J$ of positive volume and diameter at most $h$ (assign boundary
+faces arbitrarily), choose a center $\mu_j\in A_j$, and set
+\[
+ \alpha_{t,j}=\int_{A_j}f_{t,R}(u)\,\diff u,
+ \qquad
+ q_{t,J}(z)=\sum_{j=1}^J\alpha_{t,j}
+ \varphi_\sigma(z-\mu_j).
+\]
+Translation continuity of the Gaussian kernel gives
+\begin{align*}
+ \|q_{t,J}-g_{t,R,\sigma}\|_1
+ &\le\sum_{j=1}^J\int_{A_j}f_{t,R}(u)
+ \|\varphi_\sigma(\cdot-\mu_j)-
+ \varphi_\sigma(\cdot-u)\|_1\,\diff u\\
+ &\le\sup_{\|a-b\|\le h}
+ \|\varphi_\sigma(\cdot-a)-\varphi_\sigma(\cdot-b)\|_1
+ \longrightarrow0.
+\end{align*}
+The bound is uniform in $t$.  Since $\sigma$ is now fixed, the two densities
+are uniformly bounded and dominated in the tails by a common Gaussian
+envelope.  Splitting into a compact set and its complement, uniform
+continuity of $v\log v$ on the bounded density range controls entropy on the
+compact set, while the Gaussian envelope controls entropy and polynomial
+cross-entropy in the tail.  Therefore
+\[
+ \sup_{t\in T}\left|
+ \mathrm{KL}(q_{t,J}\|\pi_t)
+ -\mathrm{KL}(g_{t,R,\sigma}\|\pi_t)\right|\longrightarrow0
+ \quad(h\downarrow0).
+\]
+For a sufficiently fine partition, the total KL is therefore less than
+$3\varepsilon/4$ uniformly in $t$.
+
+For each cell with nonempty interior, strict positivity of $\pi_t$ implies
+$\alpha_{t,j}>0$.  Moreover, $t\mapsto\alpha_{t,j}$ is continuous by joint
+continuity and dominated convergence.  Compactness of $T$ then bounds every
+fixed-partition weight away from zero.  Thus the logits
+$b_{t,j}=\log\alpha_{t,j}$ are jointly continuous on $T$.
+
+\paragraph{Step 3: amortize the weights.}
+The ReLU universal approximation theorem applied to the continuous vector
+map $(\vartheta,V)\mapsto(b_{t,1},\ldots,b_{t,J})$ gives a finite network that
+approximates it uniformly.  For a fixed $\vartheta$, absorb the connections
+from the $\vartheta$ inputs into the first-layer biases.  This produces an
+encoder of the same architecture whose input is only $V$ and whose weights
+may depend on $\vartheta$.  Consequently,
+\[
+ \sup_{\vartheta\in\mathcal V}\inf_\phi
+ \sup_{V\in\mathcal K_V}
+ \|\operatorname{softmax}(g_\phi(V))-\alpha_\vartheta(V)\|
+\]
+can be made arbitrarily small.  To make the KL step uniform, let
+$\alpha_0=\min_{t,j}\alpha_{t,j}>0$ and denote an approximating weight vector
+by $\beta$.  If $\|\beta-\alpha_t\|_\infty<\alpha_0/2$, then the mixture ratio
+$q_\beta/q_{t,J}$ lies between the smallest and largest values of
+$\beta_j/\alpha_{t,j}$ and is therefore uniformly close to one.  Also
+$q_{t,J}\ge\alpha_0\varphi_\sigma(\cdot-\mu_1)$, so
+\[
+ \left|\log\frac{q_{t,J}(z)}{\pi_t(z)}\right|
+ \le C'(1+\|z\|^{\max\{2,r\}}).
+\]
+Using
+\begin{align*}
+ \mathrm{KL}(q_\beta\|\pi_t)-\mathrm{KL}(q_{t,J}\|\pi_t)
+ &=\int q_\beta\log\frac{q_\beta}{q_{t,J}}\,\diff z\\
+ &\quad+\int(q_\beta-q_{t,J})
+ \log\frac{q_{t,J}}{\pi_t}\,\diff z
+\end{align*}
+and the finite polynomial moments of the fixed Gaussian components, the
+absolute difference is bounded by
+$C''\|\beta-\alpha_t\|_1$, uniformly in $t$.  Here $C''$ may depend on the
+already fixed $J$, $\sigma$, component centers, $\alpha_0$, and $r$; no
+uniform-in-$J$ rate is asserted.  The network approximation can therefore
+make the additional KL error less than $\varepsilon/4$.  The ELBO identity
+now yields
+Eq.~\eqref{eq:uniform_mog_tightness} (indeed, the construction gives a bound
+smaller than $\varepsilon$ after relabeling constants).
+\end{proof}
+
+\subsection{Proofs of the model-specific posterior propositions}
+
+\begin{proof}[Proof of Proposition~\ref{prop:gtm_bounded_tilt}]
+The topic map $\theta(\eta)$ takes values in the compact simplex.  Compact
+decoder parameters and bounded content covariates therefore put
+$h(\eta)=B\theta(\eta)+Dx^c+b$ in a common compact set.  In the
+cross-entropy branch, fixed-count multinomial log likelihood is continuous on
+this set, and its oscillation in $\eta$ is bounded uniformly by a constant
+depending only on $\bar N$ and the displayed compact parameter set.  If
+$M$ bounds that oscillation and
+$m_i=\E_{p_\vartheta(\eta\mid x_i^p)}L_i(\eta)$, then
+\[
+ e^{-M}\leq L_i(\eta)/m_i\leq e^M.
+\]
+Multiplication by the Gaussian prior proves
+Eq.~\eqref{eq:gtm_gaussian_comparison}.
+
+For MSE, if $h_1$ and $h_2$ range over the same compact set, expansion of the
+two squares gives
+\[
+ \big|\|y-h_1\|^2-\|y-h_2\|^2\big|
+ \leq C(1+\|y\|).
+\]
+This proves the uniform bounded-$y$ statement and the integrated statement
+under the stipulated exponential envelope.  Two-sided comparison with a
+Gaussian gives positivity, continuity, tightness, and all sufficiently small
+Gaussian exponential moments.  For cross-entropy and bounded $y$, the
+oscillation bound is uniform, so the standard bounded-perturbation lemma
+transfers the Gaussian log-Sobolev inequality with a uniform constant; its
+uniform $T_2$ implication is the log-Sobolev-to-transport theorem cited in the
+proposition.  For unbounded Gaussian $y$, the bound above and hence the
+perturbation constant depend on the realized record.  The exponential
+envelope yields the asserted integrated controls but no uniform log-Sobolev or
+$T_2$ constant.  None of these arguments imposes convexity on the
+softmax-composed likelihood.
+\end{proof}
+
+\begin{proof}[Proof of Proposition~\ref{prop:idealpoint_strong_logconcavity}]
+The negative log Gaussian prior has Hessian $\Sigma^{-1}$.  A Gaussian affine
+head contributes $A_g^\top\Omega_g^{-1}A_g$.  A collection of independent
+Bernoulli affine-logit heads contributes
+$A_b^\top\operatorname{diag}\{p_b(1-p_b)\}A_b$, and a fixed-count
+categorical head contributes
+$n_cA_c^\top(\operatorname{Diag}p_c-p_cp_c^\top)A_c$.  Every likelihood
+contribution is positive semidefinite.  Since
+$\Sigma^{-1}\succeq\bar\lambda^{-1}I$, their sum proves
+Eq.~\eqref{eq:idealpoint_posterior_hessian}.  Strong log-concavity gives
+unimodality and the stated Gaussian concentration and functional
+inequalities.  If all heads are affine Gaussian, completing the square gives
+a Gaussian posterior; the Bernoulli and categorical normalizers contain the
+nonconjugate integrals that remain intractable.
+\end{proof}
+
+\begin{proof}[Proof of Proposition~\ref{prop:omitted_conditioning_gap}]
+Let
+\[
+ a(z)=\exp\!\left\{\sum_c\omega_c\log\pi_c(z)\right\},
+ \qquad Z_a=\int a(z)\diff z.
+\]
+Direct algebra gives, for every density $q$,
+\[
+ \sum_c\omega_c\mathrm{KL}(q\|\pi_c)
+ =\mathrm{KL}\{q\|a/Z_a\}-\log Z_a.
+\]
+The first term is minimized at $q=a/Z_a$.  Generalized H\"older inequality
+gives $Z_a\leq\prod_c(\int\pi_c)^{\omega_c}=1$, with equality only when the
+positive-weight densities agree almost everywhere.  This proves the result.
+\end{proof}
+
+\subsection{Proof of Theorem~\ref{thm:sieve_consistency_rate}}
+
+\begin{proof}
+Write $\widehat\eta_n=(\widehat\vartheta_n,\widehat q_n)$,
+$\eta_0=(\vartheta_0,\pi_0)$, and
+$\eta_n^*=(\vartheta_0,q_n^*)$.  Approximate maximization, the global uniform
+law, and the population approximation condition give
+\begin{align*}
+ \bar M(\eta_0)-\bar M(\widehat\eta_n)
+ &\le \{\bar M(\eta_0)-\bar M(\eta_n^*)\}
+ +2\sup_{\eta\in\mathcal H_n}|(P_n-P_0)\bar m(\eta)|+o_p(r_n^2)\\
+ &=o_p(1).
+\end{align*}
+Global separation therefore implies
+$\rho(\widehat\eta_n,\eta_0)=o_p(1)$.  We may hence work, with probability
+tending to one, in the fixed neighborhood where curvature and the local
+modulus hold.  Approximate maximization also gives
+\[
+ P_n\bar m(\widehat\eta_n)
+ \ge P_n\bar m(\eta_n^*)-o_p(r_n^2).
+\]
+Add and subtract population criteria, use the $O(a_n^2)$ approximation loss,
+and apply quadratic curvature.  With
+$\delta_n=\rho(\widehat\eta_n,\eta_0)$, this yields
+\begin{equation}
+ c\delta_n^2
+ \le C a_n^2
+ +|(P_n-P_0)\{\bar m(\widehat\eta_n)-\bar m(\eta_n^*)\}|
+ +o_p(r_n^2).
+ \label{eq:rate_basic_inequality}
+\end{equation}
+The triangle inequality gives
+$\rho(\widehat\eta_n,\eta_n^*)\le\delta_n+a_n$.  If
+$\delta_n+a_n<r_n$, the asserted rate is immediate.  Otherwise, consistency
+places this radius below $\bar\delta$ with probability tending to one, and a
+standard dyadic-shell application of the local stochastic modulus bounds the
+empirical term in Eq.~\eqref{eq:rate_basic_inequality} by
+\[
+ O_p\!\left((\delta_n+a_n)\sqrt{\kappa_n/n}\right).
+\]
+Using $2uv\le c u^2/2+2v^2/c$ to absorb the term containing $\delta_n$ into
+the left-hand side gives
+\[
+ \delta_n^2=O_p\left(a_n^2+\kappa_n/n\right)+o_p(r_n^2),
+\]
+and hence $\delta_n=O_p(a_n+\sqrt{\kappa_n/n})=O_p(r_n)$.  The generative
+parameter bound follows from the definition (equivalence class) of the local
+metric.  If the model is identified only modulo a transformation group, the
+same proof applies after replacing Euclidean distance by the quotient metric
+and working in a local identified chart.
+\end{proof}
+
+Equation~\eqref{eq:illustrative_sieve_rate} is an additional, explicitly
+postulated model-specific bound rather than a consequence of the abstract
+theorem.  Substituting its approximation and entropy orders into
+$r_n=a_n+\sqrt{\kappa_n/n}$ gives the displayed rate.  Balancing its three
+terms means setting
+\[
+ j\beta/L=(p-j)\alpha/d_V=(1-p)/2=\gamma.
+\]
+Thus $j=\gamma L/\beta$, $p-j=\gamma d_V/\alpha$, and
+$p=1-2\gamma$.  Adding the first two equalities and substituting the third
+gives
+$\gamma\{2+L/\beta+d_V/\alpha\}=1$.  Hence the stated exponent follows, and
+$\gamma>1/4$ is equivalent to $L/\beta+d_V/\alpha<2$.  Verifying the input
+orders requires the extra mixture-scale, weight, network-norm, smoothness,
+and tail controls listed immediately after
+Eq.~\eqref{eq:illustrative_sieve_rate}.
+
+\subsection{Proof of Theorem~\ref{thm:sieve_clt}}
+
+\begin{proof}
+Consistency from Theorem~\ref{thm:sieve_consistency_rate} places
+$\widehat\vartheta_n$ in the neighborhood on which
+Eq.~\eqref{eq:assumed_profile_hessian} holds.  The approximate profile
+first-order condition, Eq.~\eqref{eq:assumed_profile_score}, and the integral
+form of Taylor's theorem give
+\[
+ 0=P_n\bar s_0+o_p(n^{-1/2})
+ +H_n(\widehat\vartheta_n-\vartheta_0),
+\]
+where
+\[
+ H_n:=\int_0^1\nabla^2_{\vartheta\vartheta}\widehat M_n
+ \{\vartheta_0+t(\widehat\vartheta_n-\vartheta_0)\}\,\diff t
+ =-A_0+o_p(1).
+\]
+Because $A_0$ is nonsingular and
+$P_n\bar s_0=O_p(n^{-1/2})$, this equation first gives
+$\widehat\vartheta_n-\vartheta_0=O_p(n^{-1/2})$ and then
+\[
+ \sqrt n(\widehat\vartheta_n-\vartheta_0)
+ =A_0^{-1}\frac1{\sqrt n}\sum_{i=1}^n\bar s_0(U_i)+o_p(1).
+\]
+The multivariate central limit theorem and Slutsky's theorem give the
+sandwich limit.  The information identity further reduces the covariance
+only when $\bar\ell_\vartheta$ is an ordinary correctly specified likelihood;
+it does not generally hold for the overlapping-subset composite criterion.
+\end{proof}
+
+\subsection{Proofs for score correction}
+
+\begin{proof}[Proof of Proposition~\ref{prop:no_automatic_orthogonality}]
+Holding $q$ fixed permits differentiation under the integral and gives
+$\nabla_\vartheta v=\E_qs_c$.  Along the displayed density path,
+\[
+ \left.\frac{\diff}{\diff t}\E_{q_t}s_c\right|_{t=0}
+ =\E_\pi(b s_c\mid V)
+ =\E_\pi\{b(s_c-s_o)\mid V\},
+\]
+because $s_o$ is constant conditional on $V$ and $\E_\pi(b\mid V)=0$.
+For a Bernoulli decoder
+$Y\mid Z\sim\operatorname{Bernoulli}\{\operatorname{logit}^{-1}
+(\alpha+dZ)\}$, write
+$s_{c,\alpha}=Y-\operatorname{logit}^{-1}(\alpha+dZ)$ and
+$s_{o,\alpha}=\E_\pi(s_{c,\alpha}\mid V)$.  Choose
+$b=c_V(s_{c,\alpha}-s_{o,\alpha})$, with $c_V>0$ small enough that
+$1+tb\geq0$ locally.  This $b$ is centered under the posterior, and the
+$\alpha$ coordinate of the derivative is
+$c_V\operatorname{Var}_\pi(s_{c,\alpha}\mid V)$, positive whenever the latent
+variable changes the success probability on a nondegenerate posterior
+support.
+
+For local sharpness of the square-root KL order, take any centered score
+direction $g$ with a moment-generating function near zero and set
+$q_t=\pi e^{tg}/\E_\pi e^{tg}$.  Standard cumulant expansion gives
+\[
+ \mathrm{KL}(q_t\|\pi)=\tfrac12t^2\operatorname{Var}_\pi(g)+o(t^2),
+ \qquad
+ \E_{q_t}g-\E_\pi g=t\operatorname{Var}_\pi(g)+o(t).
+\]
+Thus reverse KL alone cannot improve the square-root order uniformly.
+\end{proof}
+
+\begin{proof}[Proof of Theorem~\ref{thm:defensive_one_step}]
+Put $h_n=\widehat\vartheta_n-\vartheta_0$ and
+$\widehat A=\widehat A_{n,R}(\widehat\vartheta_n)$.  The local expansion,
+$\|h_n\|^2=o_p(n^{-1/2})$, and importance-score accuracy give
+\[
+ \widehat S_{n,R}(\widehat\vartheta_n)
+ =S_n^\star(\vartheta_0)-A_0h_n+o_p(n^{-1/2}).
+\]
+Since $\widehat A\to_pA_0$, its inverse exists with probability tending to
+one and is bounded in probability.  Substitution into the update gives
+\begin{align*}
+ \check\vartheta_n-\vartheta_0
+ &=h_n+\widehat A^{-1}
+   \{S_n^\star(\vartheta_0)-A_0h_n\}+o_p(n^{-1/2})\\
+ &=\widehat A^{-1}S_n^\star(\vartheta_0)
+   +\widehat A^{-1}(\widehat A-A_0)h_n+o_p(n^{-1/2}).
+\end{align*}
+The critical product condition makes the second term $o_p(n^{-1/2})$.
+Moreover, $S_n^\star(\vartheta_0)=O_p(n^{-1/2})$ and
+$\widehat A^{-1}-A_0^{-1}=o_p(1)$, so the first term equals
+$A_0^{-1}S_n^\star(\vartheta_0)+o_p(n^{-1/2})$.  Multiplication by
+$\sqrt n$, the score CLT, and Slutsky's theorem prove the result.
+\end{proof}
+
+\begin{proof}[Proof of
+Theorem~\ref{thm:fixed_unbiased_randomized_score}]
+Put $h_n=\widehat\vartheta_n-\vartheta_0$ and let $\widehat A$ denote the
+information estimate in the randomized one-step update.  Local stochastic
+continuity of the simulation error and the exact-score expansion give
+\[
+ P_n\psi_i(\widehat\vartheta_n)
+ =S_n^\star(\vartheta_0)-A_0h_n+P_n\xi_i(\vartheta_0)
+  +o_p(n^{-1/2}).
+\]
+The same algebra as in the preceding proof, including the information product
+condition, therefore yields
+\[
+ \check\vartheta_n-\vartheta_0
+ =A_0^{-1}P_n\{s_i^\star(\vartheta_0)+\xi_i(\vartheta_0)\}
+  +o_p(n^{-1/2}).
+\]
+The conditional triangular-array CLT proves the asserted limit.  Moreover,
+$s_i^\star(\vartheta_0)$ is measurable with respect to $U_i$ and
+$\E(\xi_i\mid U_i)=0$, so its two cross-covariances with $\xi_i$ vanish.
+The law of total variance consequently gives
+\[
+ \operatorname{Var}(s_i^\star+\xi_i)
+ =B_0+\E\{\operatorname{Var}(\xi_i\mid U_i)\}.
+\]
+For the mean of $K$ conditionally independent exact posterior draws, the
+conditional variance of the simulation error is
+$K^{-1}\operatorname{Var}_{\pi_i}(s_{c,i}\mid U_i)$.  The identical calculation
+for $K_S$ independent subset draws gives
+$K_S^{-1}\operatorname{Var}_{S}(s_{i,S}\mid U_i)$.  Finally,
+\[
+ \operatorname{Var}(\xi_i^{\rm post}+\xi_i^S\mid U_i)
+ =\operatorname{Var}(\xi_i^{\rm post}\mid U_i)
+  +\operatorname{Var}(\xi_i^S\mid U_i)
+  +\operatorname{Cov}(\xi_i^{\rm post},\xi_i^S\mid U_i)
+  +\operatorname{Cov}(\xi_i^S,\xi_i^{\rm post}\mid U_i),
+\]
+which proves the cross-term and conditional-independence statements.
+\end{proof}
+
+\begin{proof}[Proof of Theorem~\ref{thm:iterated_defensive_correction}]
+Taylor's theorem and the uniform inverse and Lipschitz bounds give the stated
+quadratic contraction for the exact Newton map.  Let
+$e_{n,k}=\|\vartheta_n^{(k)}-\widetilde\vartheta_n\|$.  The maximal map-error
+bound implies
+\[
+ e_{n,k+1}\leq Ce_{n,k}^2+\xi_n.
+\]
+Define $x_0=e_{n,0}$ and $x_{k+1}=Cx_k^2$, so that
+$x_k=C^{-1}(Ce_{n,0})^{2^k}$.  With
+$d_k=(e_{n,k}-x_k)_+$ and both sequences in the radius-$r$ basin,
+\[
+ d_{k+1}\leq C(e_{n,k}+x_k)d_k+\xi_n
+ \leq qd_k+\xi_n,
+ \qquad q=2Cr<1.
+\]
+Because $d_0=0$, iteration gives
+$d_{K_n}\leq\xi_n/(1-q)$ and therefore
+Eq.~\eqref{eq:iterated_newton_bound}.  If both terms there are
+$o_p(n^{-1/2})$, exact-estimator equivalence and its influence-function
+expansion follow.
+\end{proof}
+
+\subsection{Proof of Proposition~\ref{prop:posterior_recovery}}
+
+\begin{proof}
+By the definition of the local metric in Eq.~\eqref{eq:sieve_metric} and
+Theorem~\ref{thm:sieve_consistency_rate},
+\[
+ \E_0\E_{S\mid O}h^2(\widehat q_n,
+ \pi_{\widehat\vartheta_n})=o_p(1).
+\]
+If $\E_0\E_{S\mid O}h^2(\pi_\vartheta,\pi_{\vartheta_0})\to0$ as
+$\vartheta\to\vartheta_0$, the triangle inequality for Hellinger distance and
+consistency of $\widehat\vartheta_n$ imply
+$\E_0\E_{S\mid O}h^2(\widehat q_n,\pi_{\vartheta_0})=o_p(1)$.
+For bounded $g$, total variation is bounded by a constant times Hellinger
+distance, so Cauchy--Schwarz gives
+\[
+ \E_0\E_{S\mid O}\left|
+ \E_{\widehat q_n}g-\E_{\pi_{\vartheta_0}}g\right|
+ \le C\|g\|_\infty
+ \left\{\E_0\E_{S\mid O}
+ h^2(\widehat q_n,\pi_{\vartheta_0})\right\}^{1/2}=o_p(1).
+\]
+For unbounded $g$, apply the bounded argument to
+$g_M=g\mathbf 1\{|g|\le M\}$.  The two tail terms vanish in the iterated
+limit by the integrated uniform-integrability conditions displayed in the
+proposition, which proves the extension by truncation.
+
+Finally, fix an available pattern and abbreviate $V_i(S)$ by $V_i$.  Let
+$\widetilde z_i$ be any estimator based on the unit's
+measurements and even grant it oracle knowledge of $\vartheta_0$.  Conditional
+least-squares projection gives
+\[
+ \E_0\|\widetilde z_i-z_i\|^2
+ \ge \E_0\operatorname{tr}\{
+ \operatorname{Var}_{\vartheta_0}(z_i\mid V_i)\}.
+\]
+Thus an integrated posterior-variance lower bound rules out mean-squared
+point recovery.  If, in addition, the posterior is uniformly
+anti-concentrated in the sense that for some $\epsilon,c>0$,
+\[
+ \E_0\!\left[\inf_a
+ \Pr_{\vartheta_0}(\|z_i-a\|>\epsilon\mid V_i)\right]\ge c,
+\]
+then every point estimator has error probability at least $c$, which rules
+out convergence in probability.  Pointwise latent-factor consistency
+therefore requires an additional within-unit asymptotic regime under which
+the exact posterior concentrates.
+\end{proof}
+
+\subsection{Proof of Proposition~\ref{prop:algorithmic_remainders}}
+
+\begin{proof}
+By approximate maximization,
+\[
+ C_n(\widetilde\eta_n)
+ \ge C_n(\eta_n^*)-
+ \{R_n(\widetilde\eta_n)-R_n(\eta_n^*)\}-\epsilon_n.
+\]
+Under the consistency conditions the last two terms are $o_p(1)$, uniformly
+where needed, so the global ULLN and separation argument in the proof of
+Theorem~\ref{thm:sieve_consistency_rate} applies to
+$\widetilde\eta_n$.  Under the cumulative rate conditions, the last two terms
+are $o_p(r_n^2)$.  The same basic inequality
+\eqref{eq:rate_basic_inequality}, with $\widetilde\eta_n$ in place of
+$\widehat\eta_n$, therefore gives
+$\rho(\widetilde\eta_n,\eta_0)=O_p(r_n)$.
+
+For asymptotic normality, the perturbed profile is
+$\widetilde M_n=\widehat M_n+R_n^p$.  The derivative bounds on $R_n^p$
+preserve Eqs.~\eqref{eq:assumed_profile_score} and
+\eqref{eq:assumed_profile_hessian}; locality, interiority, and the assumed
+perturbed profile-score residual then permit the proof of
+Theorem~\ref{thm:sieve_clt} to be applied verbatim.
+
+For the last claim, the simulated score is
+$\bar s_0(U)+R^{-1}\sum_{r=1}^R\xi_r$.  Conditional mean zero makes its
+cross-covariance with $\bar s_0(U)$ vanish, and conditional independence
+across draws gives
+\[
+ \mathrm{Var}\!\left\{\bar s_0(U)+R^{-1}\sum_{r=1}^R\xi_r\right\}
+ =B_0+\frac1R\E_0[\mathrm{Var}(\xi_1\mid U)]=B_R.
+\]
+The profile expansion for the simulated criterion and the multivariate
+central limit theorem therefore give covariance
+$A_0^{-1}B_RA_0^{-1}$.  Under a triangular-array Lindeberg condition this
+extra term vanishes when $R\to\infty$.  These statements concern a simulated
+extremum criterion; they do not assert that a nonconvex stochastic-gradient
+algorithm reaches its global extremum.
+\end{proof}

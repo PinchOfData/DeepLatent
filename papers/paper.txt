@@ -1,0 +1,458 @@
+\documentclass[11pt]{article}
+\usepackage[utf8]{inputenc}
+\usepackage{xurl}
+\usepackage[colorlinks=true,allcolors=blue]{hyperref}
+\usepackage[margin=1in, bottom=0.8in]{geometry} %included to change page margins
+\usepackage{graphicx} %included to insert a graph
+\usepackage{caption}
+\usepackage{subcaption}
+\usepackage{amsmath,amssymb}
+\DeclareMathOperator{\E}{\mathbb{E}}
+\usepackage[bottom]{footmisc}
+\usepackage[authoryear]{natbib}
+\usepackage{titling} % to choose where the title is on the first page
+\setlength{\droptitle}{-2em}   % This is your set screw
+\usepackage{setspace}
+\usepackage{longtable}
+\usepackage{placeins}
+\usepackage{chngcntr}
+\usepackage{xcolor,colortbl}
+\usepackage{minted}
+\definecolor{darkgreen}{rgb}{0.20,0.43,0.09}
+\definecolor{colhigh}{RGB}{50, 80, 200} % highlight
+\DeclareMathAlphabet{\mathcal}{OMS}{cmsy}{m}{n}
+\usepackage{mathtools}
+\usepackage{bigints}
+\usepackage{booktabs}
+\newcommand*\diff{\mathop{}\!\mathrm{d}}
+\usepackage{mathptmx}
+\usepackage{rotating}
+\usepackage{mathpazo}
+\usepackage{dsfont}
+%\usepackage{parskip}
+
+\onehalfspacing
+
+\newtheorem{assumption}{Assumption}
+\newtheorem{proposition}{Proposition}
+
+\usepackage{bibunits}
+\usepackage{titletoc}
+\usepackage{pdflscape}
+
+\defaultbibliography{references}
+\defaultbibliographystyle{apalike}
+
+\begin{document}
+
+\begin{titlepage}
+%\title{\LARGE \textbf{Deep latent factor Models for Unstructured Data}}
+\title{\LARGE \textbf{Deep Latent Factor Models for Text and Audiovisual Data}}
+%\title{\LARGE \textbf{Learning Topics with Text and Audiovisual Data with Metadata}}
+%\title{\LARGE \textbf{Conditional Deep Latent Factor Models}}
+\author{{\large Germain Gauthier, Philine Widmer, Elliott Ash}}
+\date{\today}
+\maketitle
+
+\centering \textit{Preliminary version. Comments welcome.}
+
+\begin{abstract}
+
+\noindent We propose a general class of latent factor models for unstructured data -- including text, images, audio, and video -- that can be used for exploration, causal inference, and prediction on large multimodal datasets. Our estimation approach maximizes a lower bound on the marginal likelihood parametrized by neural networks. Theoretically, we discuss conditions under which this bound is tight and yields exact inference. Empirically, our approach is fast, scalable, and performs well in Monte Carlo simulations. We demonstrate its usefulness in three applications. First, we fit a model of political speech that learns the prevalence and framing of policy topics discussed in the US Congress (1873--2024). Second, we learn topics in the texts and images of Facebook posts by Members of Congress (2010--2022). Third, we produce interpretable predictions of U.S. macroeconomic indicators based on the topics in articles of the \textit{Wall Street Journal} (1984--2012).\footnote{Author details: Germain Gauthier (corresponding author), Bocconi University, germain.gauthier@unibocconi.it; Philine Widmer, Paris School of Economics, philine.widmer@psemail.eu; Elliott Ash, ETH Zurich, ashe@ethz.ch. We thank Stephen Hansen and Xavier d'Haultfoeuille for helpful feedback. We thank Anton Boltachka, Benjamin Kohler, Shimpei Kojio, Federica Kulka, and Guanlan Liu for their excellent research assistance.}
+
+\bigskip
+
+\noindent
+\textbf{Keywords:} Deep learning, Latent factor models, Unstructured data, Topic models
+
+\end{abstract}
+\setcounter{page}{0}
+\thispagestyle{empty}
+\end{titlepage}
+\newpage
+
+\setcounter{page}{1}
+
+\begin{bibunit}
+
+\section{Deep Latent Factor Models} \label{sec:autoencoders}
+
+\subsection{Data-generating process}
+
+Let $z_i \in \mathcal{Z}\subseteq\mathbb{R}^L$ denote an $L$-dimensional vector of latent factors for observation $i$. We assume that $L$ is fixed and known. The latent factors are drawn from a conditional \emph{prior} distribution that depends on prevalence covariates $x_i^p \in \mathcal{X}^p$.\footnote{Following the VAE literature, we use the term \emph{prior} for $p_\psi(z_i\mid x_i^p)$, but it should be understood as a modeling assumption rather than a subjective Bayesian prior.} Each observation may also have covariates $x_i^c \in \mathcal{X}^c$ associated with response variables and $x_i^s \in \mathcal{X}^s$ associated with auxiliary outcomes. We denote by $w_{im}$ the observed response for modality $m \in \{1,\ldots,M\}$, and by $y_{ik}$ the observed auxiliary outcome for task $k \in \{1,\ldots,K\}$. The distributions are parameterized by $\psi$ for the prior and $\theta_m,\theta_k$ for the modality- and outcome-specific conditionals. For observation $i$, the latent factors, responses, and auxiliary outcomes are generated as
+\begin{equation} \label{eq:deeplatent_normalized}
+\begin{aligned}
+    &\textbf{Latent factors:} 
+    && z_i \sim p_{\psi}(z_i \mid x_i^p), \\[0.5em]
+    &\textbf{Response variables:} 
+    && w_{im} \sim p_{\theta_m}(w_{im} \mid z_i, x_i^c), \quad m = 1,\ldots,M, \\[0.5em]
+    &\textbf{Auxiliary outcomes:} 
+    && y_{ik} \sim p_{\theta_k}(y_{ik} \mid z_i, x_i^s), \quad k = 1,\ldots,K .
+\end{aligned}
+\end{equation}
+
+This formulation nests many popular latent factor models as special cases. Appendix \ref{app:special-cases} maps Probabilistic PCA and several standard topic models into the notation of Eq.~\eqref{eq:deeplatent_normalized}.
+
+\subsection{Estimation}
+
+For observation $i$, the marginal likelihood is
+\begin{equation}\label{eq:marglik_multi_normalized}
+p_\theta\!\big(w_{i,1:M},\,y_{i,1:K}\mid x_i\big)
+= \int p_\psi(z_i\mid x_i^p)
+    \Bigg[\prod_{m=1}^M p_{\theta_m}\!\big(w_{im}\mid z_i, x_i^c\big)\Bigg]
+    \Bigg[\prod_{k=1}^K p_{\theta_k}\!\big(y_{ik}\mid z_i, x_i^s\big)\Bigg]
+\,dz_i .
+\end{equation}
+For nonlinear decoders or nonconjugate likelihoods, the integral over $z_i$ has no closed form, and its gradient in $\theta$ requires differentiation through the integral. This is generally intractable, which motivates our use of an extended variational autoencoder (VAE) architecture.
+
+An autoencoder is a neural network architecture that learns a compressed representation of high-dimensional data. It consists of two parts: an encoder that maps observed inputs into a lower-dimensional “bottleneck,” and a decoder that reconstructs the original inputs from this compressed code. Autoencoders are trained to minimize reconstruction error, ensuring that the low-dimensional representation captures the main features of the data. Figure \ref{fig:plain_autoencoder} provides a graphical overview.
+
+A variational autoencoder (VAE) extends this idea by treating the bottleneck not as a fixed code, but as a latent random variable. The encoder no longer returns a single point, but instead outputs a distribution that approximates the posterior of the latent factor given the data. The decoder specifies a probabilistic mapping from the latent factors back to the data. Training the VAE then amounts to maximizing a variational lower bound on the marginal likelihood, which balances reconstruction accuracy with regularization that keeps the latent space close to a specified prior distribution. Figure \ref{fig:variational_autoencoder} provides a graphical overview.
+
+We extend this framework in three important ways to fit our setting. First, we allow for multiple modalities: each modality has its own encoder and decoder, and when several modalities are observed for the same unit, the modality-specific encoders are fused into a joint latent distribution using the corrected product-of-experts approach in Eq.~\eqref{eq:corrected_poe}. Second, we introduce auxiliary outcomes: in addition to reconstructing observed modalities, the latent factors can also be used to predict other outcomes, which are modeled through their own predictive heads. Finally, we incorporate covariates at three different stages of the model: covariates that shift the prior distribution of latent factors ($x^p$), covariates that influence the mapping from latent factors to modalities ($x^c$), and covariates that correlate with auxiliary outcomes ($x^s$). These extensions allow the VAE to flexibly accommodate heterogeneous data sources while producing latent representations that are explicitly linked to relevant document metadata.
+
+% Explain why this is important for the social sciences
+
+Figure \ref{fig:deeplatent} presents a graphical overview of our extended variational autoencoder framework. Table \ref{tab:algo-deeplatent} summarizes the estimation algorithm. We provide technical details below.
+
+\begin{figure}[ht!]
+    \begin{center}
+    \caption{Plain Autoencoder -- Graphical Overview}
+    \label{fig:plain_autoencoder}
+    \includegraphics[width=\linewidth, page=1]{figures/AE.pdf}
+    \end{center}
+    \vspace{0.5cm}
+    \footnotesize \textbf{Notes:} A graphical depiction of a plain autoencoder. Blocks colored in green are estimated objects, typically parametrized as neural networks. Vectors colored in red are the generative model's predictions.
+\end{figure}
+
+\begin{figure}[ht!]
+    \begin{center}
+    \caption{Variational Autoencoder -- Graphical Overview}
+    \label{fig:variational_autoencoder}
+    \includegraphics[width=\linewidth, page=2]{figures/AE.pdf}
+    \end{center}
+    \vspace{0.5cm}
+    \footnotesize \textbf{Notes:} A graphical depiction of a variational autoencoder. Blocks colored in green are estimated objects, typically parametrized as neural networks. Vectors colored in red are the generative model's predictions.
+\end{figure}
+
+\begin{figure}[ht!]
+    \begin{center}
+    \caption{Deep Latent Factor Model -- Graphical Overview}
+    \label{fig:deeplatent}
+    \includegraphics[width=\textwidth]{figures/deeplatent.png}
+    \end{center}
+    \vspace{0.5cm}
+    \footnotesize \textbf{Notes:} A graphical depiction of our model's architecture. Vectors colored in blue are observed. Blocks colored in green are estimated objects, typically parametrized as neural networks. Vectors colored in red are the generative model's predictions.
+\end{figure}
+
+\paragraph{Encoders and multimodal fusion.}
+We approximate the posterior distribution of $z_i$ with a variational encoder
+\[
+q_\phi(z_i \mid w_{i,1:M}, y_{i,1:K}, x_i) \in \mathcal{Q}_\phi,
+\]
+where $\mathcal{Q}_\phi$ denotes a flexible variational family parameterized by $\phi$ (e.g., Gaussian, normalizing flow). For multimodal data, we define modality-specific encoders
+\[
+q_\phi^{(m)}(z_i\mid w_{im}, y_{i,1:K}, x_i), \qquad m=1,\ldots,M.
+\]
+
+Let $S_i\subseteq\{1,\ldots,M\}$ be the set of modalities used for unit $i$ (either the observed set or a randomly sampled subset; see Table \ref{tab:algo-deeplatent}). Write $d_{i,S_i}:=\{w_{im}:m\in S_i\}$. The true posterior for the subset satisfies
+\[
+p_{\theta,\psi}(z_i\mid d_{i,S_i}, y_{i,1:K}, x_i)
+\;\propto\;
+p_\psi(z_i\mid x_i^p)\,\prod_{m\in S_i} p_{\theta_m}(w_{im}\mid z_i,x_i^c)\,\prod_{k=1}^K p_{\theta_k}(y_{ik}\mid z_i,x_i^s).
+\]
+
+Each single-modality posterior also contains one copy of the prior factor:
+\[
+p_{\theta,\psi}(z_i\mid w_{im}, y_{i,1:K}, x_i)
+\;\propto\;
+p_\psi(z_i\mid x_i^p)\,p_{\theta_m}(w_{im}\mid z_i,x_i^c)\,\prod_{k=1}^K p_{\theta_k}(y_{ik}\mid z_i,x_i^s).
+\]
+Since $q_\phi^{(m)}(\cdot)$ is trained to approximate this object, a naive product $\prod_{m\in S_i} q_\phi^{(m)}(z_i\mid\cdot)$ duplicates the prior and yields an overconfident multimodal posterior approximation.
+
+We therefore fuse modality encoders using the corrected product-of-experts (PoE):
+\begin{equation}
+\label{eq:corrected_poe}
+q_\phi(z_i\mid d_{i,S_i}, y_{i,1:K}, x_i)
+\;\propto\;
+\frac{\prod_{m\in S_i} q_\phi^{(m)}(z_i\mid w_{im}, y_{i,1:K}, x_i)}{\,p_\psi(z_i\mid x_i^p)^{\,|S_i|-1}}.
+\end{equation}
+
+When the $q_\phi^{(m)}$ are Gaussian, Eq.~\eqref{eq:corrected_poe} remains Gaussian and yields a transparent fusion rule. Suppose the prior is Gaussian
+\[
+p_\psi(z_i\mid x_i^p)=\mathcal{N}(\mu_{0i},\Lambda_{0i}^{-1}),
+\]
+and each modality encoder outputs a mean $\mu_{im}$ and a \emph{precision increment} $\Delta_{im}\succeq 0$ such that
+\[
+q_\phi^{(m)}(z_i\mid w_{im}, y_{i,1:K}, x_i)=\mathcal{N}\big(\mu_{im},\ (\Lambda_{0i}+\Delta_{im})^{-1}\big).
+\]
+Then the fused encoder for modalities $S_i$ is
+\[
+q_\phi(z_i\mid d_{i,S_i}, y_{i,1:K}, x_i)=\mathcal{N}(\mu_{S_i},\Lambda_{S_i}^{-1}),
+\qquad
+\Lambda_{S_i}=\Lambda_{0i}+\sum_{m\in S_i}\Delta_{im},
+\]
+with mean given by the corresponding natural parameter aggregation
+\[
+\mu_{S_i}=\Lambda_{S_i}^{-1}\eta_{S_i},
+\qquad
+\eta_{S_i}=\sum_{m\in S_i}(\Lambda_{0i}+\Delta_{im})\mu_{im}-(|S_i|-1)\Lambda_{0i}\mu_{0i}.
+\]
+This makes clear that each modality contributes additively to posterior precision while the prior appears exactly once after the correction.\footnote{A mixture-of-experts (MoE) fusion is also an option, e.g., $q(z)=\sum_{m\in S_i}\pi_m q^{(m)}(z)$. However, by construction, this family generally does not contain the true multimodal posterior, which has a multiplicative (product) structure in the likelihood factors. Another alternative is to fit a single encoder that takes the concatenated modality vectors $(w_{i1},\ldots,w_{iM})$ as input. This can work when all modalities are always observed, but it does not naturally handle missing modalities and it does not yield modality-specific inference functions for out-of-sample prediction when only a subset of modalities is available.}
+
+\paragraph{Decoders.}
+The generative model specifies conditional likelihoods for each modality and each auxiliary outcome:
+\[
+p_{\theta_m}(w_{im}\mid z_i, x_i^c), \quad m=1,\ldots,M,
+\qquad\text{and}\qquad
+p_{\theta_k}(y_{ik}\mid z_i, x_i^s), \quad k=1,\ldots,K.
+\]
+Here $\theta = \{\theta_m,\theta_k\}$ denotes the parameters of the decoder networks. In practice, $\theta_m$ and $\theta_k$ define the likelihood family: Gaussian for continuous data, Poisson for counts, and categorical or multinomial for text and discrete outcomes.  In general, both encoders and decoders are parametrized as feed-forward neural networks, but this is not a requirement. For instance, in the case of images as data, researchers may want to specify convolutional neural networks \citep{tolstikhin2018wasserstein} or diffusion models \citep{ho2020denoising}. For text as data, natural choices are fully connected feed-forward neural networks for small datasets \citep{srivastava2022autoencoding, nan2019topic}, and transformers to model text sequences for larger datasets \citep{vaswani2017attention}.
+
+\paragraph{Priors.}
+The prior is parameterized as $p_\psi(z_i\mid x_i^p)$. Its parametrization depends on the researcher's goals. To recover the standard ideal point model, one can posit a standard normal. For a typical topic model, one can posit a standard logistic normal. To increase the prior's expressivity, it can also be conditioned on covariates, such that it is a normal or logistic normal with mean $\mu_\psi(x_i^p)$ and covariance $\Sigma_\psi(x_i^p)$ \citep{roberts2013structural}. It can also be modeled with more flexible parametric models -- such as Gaussian mixtures or normalizing flows \citep[e.g.,][]{tomczak2018vae, gatopoulos2020super}. Learning a structured prior may be helpful if one wishes to generate new conditional samples from the decoders.
+
+% XXX mention the US Congress application here (for conditional generation)
+
+\paragraph{VAE Objective.}
+
+We sidestep the intractable marginal likelihood and instead optimize its evidence lower bound (ELBO), which we denote $\mathcal{L}(\theta,\phi,\psi; i)$ \citep{kingma2019introduction}. The ELBO is a provable lower bound on the likelihood, as briefly shown below:
+\begin{align*}
+\log p_\theta(w_{i,1:M}, y_{i,1:K}\mid x_i)
+&= \int p_\psi(z_i\mid x_i^p)
+    \Bigg[\prod_{m=1}^M p_{\theta_m}\!\big(w_{im}\mid z_i, x_i^c\big)\Bigg]
+    \Bigg[\prod_{k=1}^K p_{\theta_k}\!\big(y_{ik}\mid z_i, x_i^s\big)\Bigg]
+\,dz_i \\
+&= \log \int
+\frac{q_\phi(z_i \mid w_{i,1:M}, y_{i,1:K}, x_i)}{q_\phi(z_i \mid w_{i,1:M}, y_{i,1:K}, x_i)} \,
+p_\psi(z_i\mid x_i^p)
+\prod_{m=1}^M p_\theta(w_{im}\mid z_i, x_i^c)
+\prod_{k=1}^K p_\theta(y_{ik}\mid z_i, x_i^s)
+\,dz_i \\
+&= \log \,\E_{q_\phi}\!\left[
+    \frac{ p_\psi(z_i\mid x_i^p) \,
+           \prod_{m=1}^M p_\theta(w_{im}\mid z_i, x_i^c) \,
+           \prod_{k=1}^K p_\theta(y_{ik}\mid z_i, x_i^s)
+    }{ q_\phi(z_i \mid w_{i,1:M}, y_{i,1:K}, x_i)  }
+\right] \\[0.25em]
+&\ge \E_{q_\phi}\!\Big[
+    \log p_\psi(z_i\mid x_i^p) 
+    + \sum_{m=1}^M \log p_\theta(w_{im}\mid z_i, x_i^c) \\
+&\qquad\qquad
+    + \sum_{k=1}^K \log p_\theta(y_{ik}\mid z_i, x_i^s)
+    - \log q_\phi(z_i \mid w_{i,1:M}, y_{i,1:K}, x_i) 
+\Big] \\[0.25em]
+&= \sum_{m=1}^M \E_{q_\phi}\!\big[\log p_\theta(w_{im}\mid z_i, x_i^c)\big] \\
+&\qquad + \sum_{k=1}^K \E_{q_\phi}\!\big[\log p_\theta(y_{ik}\mid z_i, x_i^s)\big] \\
+&\qquad
+ - \mathrm{KL}\!\Big(q_\phi(z_i\mid w_{i,1:M}, y_{i,1:K}, x_i)\,\big\|\,p_\psi(z_i\mid x_i^p)\Big) \\[0.25em]
+&=: \ \mathcal{L}(\theta,\phi,\psi; i)\,,
+\end{align*}
+
+where the importance sampling identity is used in the second line and Jensen's inequality in the third line. Hence,
+\[
+\log p_\theta(w_{i,1:M}, y_{i,1:K}\mid x_i) \ \ge\ \mathcal{L}(\theta,\phi,\psi; i),
+\]
+with equality if and only if $q_\phi(z_i\mid w_{i,1:M}, y_{i,1:K}, x_i) = p_{\theta,\psi}(z_i\mid w_{i,1:M}, y_{i,1:K}, x_i)$ almost surely. Equivalently, we obtain the standard decomposition:
+\[
+\log p_\theta(w_{i,1:M}, y_{i,1:K}\mid x_i)
+= \mathcal{L}(\theta,\phi,\psi; i)\ 
++ \ \mathrm{KL}\!\Big(q_\phi(z_i\mid w_{i,1:M}, y_{i,1:K}, x_i)\,\big\|\,p_{\theta,\psi}(z_i\mid w_{i,1:M}, y_{i,1:K}, x_i)\Big),
+\]
+which makes the lower-bound property explicit.
+
+\subsection{Analysis of the inference gap}
+
+When is this bound tight, such that inference is exact? We decompose the implied approximation error into two distinct sources. Fix a per-data-point variational family $\mathcal{Q}$ for $Z_i$ and let 
+\[
+q_i^\star \;\in\; \arg\max_{q\in \mathcal{Q}} \ \mathcal{L}(\theta,q,\psi;i),
+\quad
+\mathcal{L}_i^\star := \sup_{q\in\mathcal{Q}} \mathcal{L}(\theta,q,\psi;i).
+\]
+Denote the amortized encoder by $q_\phi(Z_i\mid d_i,x_i)\in\mathcal{Q}_\phi\subseteq\mathcal{Q}$, 
+where $d_i=(w_{i,1:M},y_{i,1:K})$ is the observed data for unit $i$. The total approximation error, or \emph{inference gap}, is:
+\[
+\mathcal{G}_i := \log p_\theta(d_i\mid x_i) - \mathcal{L}(\theta,\phi,\psi;i).
+\]
+This decomposes as $\mathcal{G}_i = \mathcal{V}_i + \mathcal{A}_i$, where:
+\begin{align}
+\mathcal{V}_i &:= \log p_\theta(d_i\mid x_i) - \mathcal{L}_i^\star &&\text{(variational gap)} \\
+\mathcal{A}_i &:= \mathcal{L}_i^\star - \mathcal{L}(\theta,\phi,\psi;i) &&\text{(amortization gap)}
+\end{align}
+
+The \emph{variational gap} $\mathcal{V}_i$ reflects the limitation of the variational family $\mathcal{Q}$ in representing the true posterior. Even with the optimal variational distribution $q_i^\star$, a discrepancy may remain between the variational bound and the true log marginal likelihood. Thus, this gap depends solely on the expressiveness of the variational family $\mathcal{Q}$. If the variational family is rich enough that it contains the posterior, then the variational gap $\mathcal{V}_i$ vanishes, since $q_i^\star$ can coincide with the true posterior. For complex posteriors, this motivates the use of universal variational families -- e.g., normalizing flows or Gaussian mixtures -- that can approximate any smooth and continuous posterior distribution arbitrarily well \citep{rezende2015variational, kingma2016improved}.
+
+The \emph{amortization gap} $\mathcal{A}_i$ arises from using a shared encoder $q_\phi$ across all units rather than optimizing variational parameters separately for each observation. If the encoder class $\mathcal{Q}_\phi$ cannot reproduce the optimal distribution $q_i^\star$, the amortized bound is weaker than the variational optimum. Crucially, closing this gap hinges on the existence of an ideal inference function that maps each observation's data to its optimal variational parameter $q_i^\star$. This is not guaranteed for all models. Note that we can rewrite our model with global parameters $\vartheta = (\psi, \theta)$ and observed variables $d_i = (w_{i,1:M}, y_{i,1:K})$ and $x_i$ as:
+\[
+p(\vartheta)\prod_{i=1}^n p(z_i\mid \vartheta,x_i)\,p(d_i\mid z_i,\vartheta,x_i).
+\]
+
+This makes it apparent that our model is a simple hierarchical model (SHM) in the sense of \citet{MargossianBlei2024}. The factorization shows that conditioning on global parameters $\vartheta$ and covariates $x_i$, the local variables $(z_i, d_i)$ are conditionally independent across units $i$. This separation of global and local structure is the defining characteristic of an SHM. By \citet[Theorem~3.4]{MargossianBlei2024}, simple hierarchical models admit an ideal inference function that maps each unit's data $(d_i, x_i)$ to its optimal variational parameter $q_i^\star$. When the encoder class $\mathcal{Q}_\phi$ is expressive enough to represent this ideal function, the amortization gap vanishes.
+
+Proposition \ref{prop:elbo_consistency_exact} formalizes these observations.
+
+\begin{proposition}[ELBO Tightness]
+\label{prop:elbo_consistency_exact}
+Consider a simple hierarchical model with global parameters $\vartheta=(\psi,\theta)$ and data $(d_i,x_i)$ for $i=1,\ldots,n$, factorizing as
+\[
+p(\vartheta)\prod_{i=1}^n p(z_i\mid \vartheta,x_i)\,p(d_i\mid z_i,\vartheta,x_i).
+\]
+Assume:
+\begin{enumerate}
+    \item[(A1$'$)] (Exact representability) For each $i$, the true posterior is in $\mathcal{Q}$:
+    \[
+    p_\vartheta(z_i\mid d_i,x_i) \in \mathcal{Q}.
+    \]
+    Equivalently,
+    \[
+    \sup_{q\in\mathcal{Q}} \mathcal{L}(\theta,q,\psi;i)=\log p_\theta(d_i\mid x_i),
+    \quad
+    \text{with argmax } q_i^\star=p_\vartheta(z_i\mid d_i,x_i).
+    \]
+    \item[(A2)] (Expressive encoder) The encoder class contains the ideal inference function: there exists $\phi^\star\in\Phi$ such that
+    \[
+    q_{\phi^\star}(z_i\mid d_i,x_i)=q_i^\star \quad \text{for all } i.
+    \]
+\end{enumerate}
+Then
+\[
+\sup_{\phi \in \Phi} \mathcal{L}(\theta,\phi,\psi;i)=\log p_\theta(d_i\mid x_i)\quad\text{for all } i,
+\]
+and consequently
+\[
+\arg\max_{\vartheta,\phi} \sum_{i=1}^n \mathcal{L}(\theta,\phi,\psi;i)
+\;=\; \arg\max_{\vartheta} \sum_{i=1}^n \log p_\theta(d_i\mid x_i).
+\]
+\end{proposition}
+
+\vspace{1cm}
+
+\noindent \textbf{Proof.}
+The inference gap decomposes as $\mathcal{G}_i=\mathcal{V}_i+\mathcal{A}_i$. By (A1$'$), $\mathcal{L}_i^\star=\log p_\theta(d_i\mid x_i)$, so $\mathcal{V}_i=0$. By (A2), there exists $\phi^\star$ with $q_{\phi^\star}=q_i^\star$ for all $i$, hence $\mathcal{L}(\theta,\phi^\star,\psi;i)=\mathcal{L}_i^\star$, so $\mathcal{A}_i=0$. Therefore,
+\[
+\sup_{\phi \in \Phi} \mathcal{L}(\theta,\phi,\psi;i)=\log p_\theta(d_i\mid x_i).
+\]
+Summing across $i$ shows that maximizing the amortized ELBO over $(\vartheta,\phi)$ yields the same maximizers in $\vartheta$ as the marginal likelihood.
+
+\paragraph{Reparametrization trick and parameter updates.}
+To optimize the ELBO with gradient-based methods, we require gradients through expectations with respect to $q_\phi(z_i\mid\cdot)$. Since these expectations are intractable, we approximate them with Monte Carlo samples from $q_\phi$. Direct differentiation through such samples is not possible because $z_i$ depends on $\phi$. The reparametrization trick resolves this by expressing $z_i$ as a deterministic transformation of a parameter-free noise variable \citep{kingma2013auto}. For example, if $q_\phi(z_i\mid\cdot)=\mathcal{N}(\mu_\phi,\Sigma_\phi)$, we can write
+\[
+z_i = \mu_\phi + \Sigma_\phi^{1/2}\,\varepsilon, 
+\qquad \epsilon \sim \mathcal{N}(0,I).
+\]
+This shifts randomness into $\varepsilon$, which is independent of $\phi$, so gradients can propagate through $\mu_\phi$ and $\Sigma_\phi$ via backpropagation. More complex variational families (e.g., logistic normal, normalizing flows) admit analogous reparametrizations. In all cases, expectations in the ELBO are replaced with Monte Carlo averages (note that it is common to draw only one sample for speed) based on such reparametrized samples. Parameters are then learned by stochastic gradient descent using, for instance, the ADAM optimizer \citep{kingma2015adam}.
+
+\paragraph{Computational Complexity.}
+The estimation algorithm scales linearly with the number of observations $N$ (or rather, the number of batches), making it suitable for large datasets. For a minibatch of size $B$, the complexity of a single update step is $O(B \cdot (C_{\text{enc}} + C_{\text{dec}}))$, where $C_{\text{enc}}$ and $C_{\text{dec}}$ are the costs of the encoder and decoder forward/backward passes. Crucially, unlike MCMC methods, the cost does not grow with the total dataset size $N$ per iteration, and the number of parameters does not necessarily grow with $N$ (unless using non-parametric components). This allows for efficient training on massive datasets of text or images. 
+\medskip
+
+\begin{table}[ht!]
+    \centering
+    \caption{Estimation Algorithm}
+    \label{tab:algo-deeplatent}
+    \setlength{\extrarowheight}{5pt}
+    \begin{tabular}{l}
+    \toprule
+    \textbf{Input:} \\
+    \hspace{0.5cm} Dataset $\{(w_{i1}, \dots, w_{iM}, x^p_i, x^c_i, x^s_i, y_{i1}, \dots, y_{iK})\}_{i=1}^N$ \\
+    Initialize encoder params $\phi$, decoders $\{\theta_m\}_{m=1}^M$, predictors $\{\theta_k\}_{k=1}^K$, and prior params $\psi$. \\
+    \textbf{for} epoch $=1,\dots,E$ \textbf{do} \\
+    \hspace{0.5cm} \textbf{(A) Minibatch loop} \\
+    \hspace{0.5cm} \textbf{for} minibatch $\{(w_{i1}, \dots, w_{iM}, x^p_i, x^c_i, x^s_i, y_{i1}, \dots, y_{iK})\}_{i=1}^n$ \textbf{do} \\
+    \hspace{1.0cm} For each unit $i$ in the minibatch, randomly sample a modality subset $S_i\subseteq\{1,\ldots,M\}$. \\
+    \hspace{1.0cm} For each $m\in S_i$, compute $q_\phi^{(m)}(z_i\mid w_{im}, y_{i,1:K}, x_i)$. \\
+    \hspace{1.0cm} Fuse the encoders into $q_\phi(z_i\mid d_{i,S_i}, y_{i,1:K}, x_i)$ using Eq.~\eqref{eq:corrected_poe}. \\
+    \hspace{1.0cm} Draw $\hat{z}_i \sim q_\phi(z_i\mid d_{i,S_i}, y_{i,1:K}, x_i)$ (reparameterization). \\
+    \hspace{1.0cm} Evaluate $\log p_{\theta_m}(w_{im}\mid \hat{z}_i, x^c_i)$ for $m\in S_i$, and $\log p_{\theta_k}(y_{ik}\mid \hat{z}_i, x^s_i)$ for $k=1,\ldots,K$. \\
+    \hspace{1.0cm} Compute minibatch ELBO $\widehat{\mathcal{L}}$ and update $(\phi,\{\theta_m\},\{\theta_k\},\psi)$ via stochastic gradient ascent. \\
+    \hspace{0.5cm} \textbf{end for} \\
+    \textbf{end for} \\
+    \bottomrule
+    \end{tabular}
+\end{table}
+
+\noindent \textbf{Why randomly sample modalities?} Subsampling $S_i$ forces each modality-specific encoder to solve the inference problem even when other modalities are absent. This mitigates a common failure mode where training concentrates inference capacity on a single, highly informative modality and leaves other encoders untrained, which harms out-of-sample inference when modalities are missing.
+\subsection{Theory vs. Practice}
+
+In practice, researchers face specific challenges when working with VAE architectures and may deviate from the theoretical framework outlined above in various ways, which we discuss below. 
+
+\paragraph{Posterior collapse.} A recurrent challenge in training VAEs is \emph{posterior collapse}. Posterior collapse occurs when the approximate posterior distribution learned by the encoder converges to the prior distribution regardless of the input data. In this case, the latent variables carry no information about the observations, and the decoder generates outputs almost entirely without using the latent code. The KL divergence term in the ELBO then approaches zero, signaling that the latent representation has become redundant. This undermines the purpose of the VAE, since the model no longer learns a meaningful mapping between data and latent space. In the linear Gaussian VAE setting, it can be shown that posterior collapse occurs when the model converges to a local minimum \citep{Lucas2019DontBlameELBO}. In fact, posterior collapse arises if and only if the latent factors are not identifiable -- as is the case in the linear Gaussian VAE setting \citep{wang2023posterior}. 
+
+To mitigate posterior collapse, researchers have adopted various strategies. \cite{srivastava2017autoencoding} suggests training models with a high learning rate, a high momentum, and dropout. \cite{bowman2016generating} proposes KL-annealing, a procedure that gradually increases the weight on the KL divergence in the ELBO from zero to one as training progresses. One can also hardcode that the KL divergence should always exceed a threshold to prevent it from going to zero -- a technique known as "free bits" \citep{kingma2016improved}. Batch normalization on the output of the encoder has also been shown to help \citep{zhu2020bnvae}. Finally, richer priors or more expressive variational families often reduce the odds of posterior collapse \citep{rezende2015variational, kingma2016improved, tomczak2018vae}. An alternative to the VAE is the Wasserstein Autoencoder \citep[WAE,][]{tolstikhin2018wasserstein}, which can be more stable in practice but comes at the expense of weaker likelihood-based guarantees.
+
+\paragraph{Weighted ELBO.} A popular generalization of the ELBO is a weighted objective that weights the contributions of losses differently and scales the regularizer:
+\begin{equation}\label{eq:weighted_elbo}
+\begin{aligned}
+\mathcal{L}_{\beta,\gamma}(\theta,\phi,\psi;i)
+&= \sum_{m=1}^M \E_{q_\phi}\!\big[\log p_{\theta_m}(w_{im}\!\mid z_i,x_i^c)\big]
+ \;+\; \sum_{k=1}^K \gamma_k \,\E_{q_\phi}\!\big[\log p_{\theta_k}(y_{ik}\!\mid z_i,x_i^s)\big] \\
+&\quad - \beta \, \mathrm{KL}\!\Big(q_\phi(z_i\!\mid w_{i,1:M},y_{i,1:K},x_i)\,\big\|\,p_\psi(z_i\!\mid x_i^p)\Big),
+\end{aligned}
+\end{equation}
+with weights $\gamma_k\!\ge\!0$ and $\beta\!>\!0$. When $\gamma_k\!=\!1$ and $\beta\!=\!1$ we recover the ELBO. For $\beta \neq 1$, the KL penalty is rescaled, no longer corresponding exactly to a likelihood bound, but can improve the interpretability of the latent space. $\beta>1$ strengthens the KL penalty in favor of the prior, whereas $\beta<1$ relaxes the regularization in favor of reconstruction accuracy \citep{higgins2017beta}. Theoretically, $\beta<1$ produces an objective that is no longer a guaranteed lower bound on the marginal likelihood. Empirically, it mitigates posterior collapse and provides more interpretable latent factors (especially with restrictive variational families such as Gaussians). The weights $\eta_k$ are included to control the weight given to the prediction loss. This is useful if researchers prioritize achieving high predictive accuracy over latent factor interpretability. Higher values will nudge the model to learn latent factors that are more predictive of the outcomes \citep{kingma2014semi}.
+
+\paragraph{Transfer learning.} Recent papers have also shown that VAEs are capable of encoding and decoding different representations of the data. For example, \citet{bianchi2021cross} leverages the transfer learning abilities of multilingual and/or multimodal embeddings. In the context of multilingual topic modeling, the authors train a VAE using text documents in one language (e.g., English) using multilingual text embeddings as an input to the encoder and then predict out-of-sample topic shares of documents in other languages (e.g., German). They coin this approach a ``zero-shot'' topic modeling approach for multilingual corpora because the model leverages the semantic information contained in the embeddings to extrapolate topic shares in previously unseen languages. This approach is not without limitations, however. First and foremost, though it performs well in the multilingual context, its relationship to the data-generating process remains unclear. Second, researchers use only part of the data available for the estimation. Third, the model cannot generate new samples for all modalities, but only for the modality on which it was trained. In our multilingual example, though the model can infer the topic shares of German documents, it can only produce typical documents about a specific topic in English since it does not possess a decoder for the German language. Thus, this method is inadequate in cases where researchers aim to preserve the model's generative ability across modalities (e.g., if researchers would like to produce typical documents or images conditional on covariates).
+
+\subsection{Main advantages and typical use cases}
+
+amortized inference (speed + sharing + transfer learning)
+
+multimodality
+
+outcomes, covariates, and causal inference
+
+outcomes, covariates, and supervised learning
+
+confidence intervals out of the box
+
+\clearpage
+
+\putbib
+
+\clearpage
+
+\appendix
+
+\section{Special Cases and Notation Mapping}
+\label{app:special-cases}
+
+This appendix records several common latent factor models as special cases of the data-generating process in Eq.~\eqref{eq:deeplatent_normalized}. Throughout, we keep the notation $(z_i, x_i^p, x_i^c, x_i^s, w_{im}, y_{ik})$ fixed and specify how each special case sets $M$, $K$, the prior $p_\psi(\cdot)$, and the conditional distributions $p_{\theta_m}(\cdot)$ and $p_{\theta_k}(\cdot)$.
+
+\subsection{Probabilistic PCA (PPCA)}
+Set $M=1$, $K=0$, $x_i^p$ degenerate (or empty), and denote $w_{i1}\equiv w_i\in\mathbb{R}^D$. Let $z_i\in\mathbb{R}^L$.
+\begin{align*}
+z_i &\sim p_\psi(z_i\mid x_i^p)=\mathcal{N}(0,I_L),\\
+w_{i1} &\sim p_{\theta_1}(w_{i1}\mid z_i,x_i^c)=\mathcal{N}(W z_i+\mu,\sigma^2 I_D),
+\end{align*}
+where $\theta_1=(W,\mu,\sigma^2)$. 
+
+\subsection{Structural Topic Model (STM)}
+Set $M=1$, $K=0$, and let $w_{i1}\equiv w_i$ be the document word-count vector of length $V$ with total count $N_i=\sum_{v=1}^V w_{iv}$. Let the prevalence covariates be $x_i^p\equiv X_i$. A standard STM prior is a logistic-normal on topic proportions:
+\begin{align*}
+z_i &\sim p_\psi(z_i\mid x_i^p)=\mathrm{LN}(\Gamma'X_i,\Sigma),\\
+w_{i1} &\sim p_{\theta_1}(w_{i1}\mid z_i,x_i^c)=\mathrm{Multinomial}\big(N_i,\ f_{\theta_1}(z_i, x_i^c)\big),
+\end{align*}
+where $f_{\theta_1}(z_i,x_i^c)$ returns a simplex in $\Delta^{V-1}$ and may incorporate content covariates $x_i^c$ ("topic content" / "slant").
+
+\subsection{Supervised Topic Model}
+Set $M=1$, $K=1$, let $w_{i1}\equiv w_i$ denote the document word counts, and let $y_{i1}\equiv y_i$ be an auxiliary outcome.
+\begin{align*}
+z_i &\sim p_\psi(z_i\mid x_i^p)=\mathrm{LN}(0,I),\\
+w_{i1} &\sim p_{\theta_1}(w_{i1}\mid z_i,x_i^c)=\mathrm{Multinomial}(N_i,\Phi z_i),\\
+y_{i1} &\sim p_{\theta_1^{(y)}}(y_{i1}\mid z_i,x_i^s),
+\end{align*}
+where the last line is task-dependent (e.g., Gaussian regression, logistic regression) and may include $x_i^s$.
+
+\subsection{Multimodal Image--Text Model}
+Set $M=2$, with $w_{i1}$ the text modality and $w_{i2}$ the image modality (e.g., pixels or embeddings). The model is:
+\begin{align*}
+z_i &\sim p_\psi(z_i\mid x_i^p),\\
+w_{i1} &\sim p_{\theta_1}(w_{i1}\mid z_i,x_i^c),\\
+w_{i2} &\sim p_{\theta_2}(w_{i2}\mid z_i,x_i^c),
+\end{align*}
+where $p_{\theta_1}$ and $p_{\theta_2}$ can be instantiated using likelihoods and decoder architectures appropriate to each modality.
+
+
+\end{bibunit}
+
+\end{document}

@@ -1,0 +1,1678 @@
+\documentclass[11pt]{article}
+\usepackage[utf8]{inputenc}
+\usepackage{xurl}
+\usepackage[colorlinks=true,allcolors=blue]{hyperref}
+\usepackage[margin=1in, bottom=0.8in]{geometry}
+\usepackage{graphicx}
+\usepackage{caption}
+\usepackage{subcaption}
+\usepackage{amsmath,amssymb}
+\usepackage{amsthm}
+\DeclareMathOperator{\E}{\mathbb{E}}
+\usepackage[bottom]{footmisc}
+\usepackage[authoryear]{natbib}
+\usepackage{titling}
+\setlength{\droptitle}{-2em}
+\usepackage{setspace}
+\usepackage{longtable}
+\usepackage{placeins}
+\usepackage{chngcntr}
+\usepackage{xcolor,colortbl}
+\usepackage{minted}
+\definecolor{darkgreen}{rgb}{0.20,0.43,0.09}
+\definecolor{colhigh}{RGB}{50, 80, 200}
+\DeclareMathAlphabet{\mathcal}{OMS}{cmsy}{m}{n}
+\usepackage{mathtools}
+\usepackage{bigints}
+\usepackage{booktabs}
+\newcommand*\diff{\mathop{}\!\mathrm{d}}
+\usepackage{mathptmx}
+\usepackage{rotating}
+\usepackage{mathpazo}
+\usepackage{dsfont}
+
+\onehalfspacing
+
+\newtheorem{assumption}{Assumption}
+\newtheorem{theorem}{Theorem}
+\newtheorem{proposition}{Proposition}
+\newtheorem{remark}{Remark}
+
+\usepackage{bibunits}
+\usepackage{titletoc}
+\usepackage{pdflscape}
+
+\defaultbibliography{references,theory_references}
+\defaultbibliographystyle{apalike}
+
+\begin{document}
+
+\begin{titlepage}
+\title{\LARGE \textbf{Deep Latent Factor Models for the Social Sciences}}
+\author{{\large Germain Gauthier, Philine Widmer, Elliott Ash}}
+\date{\today}
+\maketitle
+
+\centering \textit{Preliminary version. Comments welcome.}
+
+\begin{abstract}
+
+We propose a general class of latent factor models for structured (e.g., surveys, voting records, etc.) and unstructured data (e.g., text, images, videos, etc.) that can be used for exploration, causal inference, and prediction on large datasets with potentially multiple data types per observation unit. Our estimation approach maximizes a lower bound on the marginal likelihood parametrized by neural networks. Theoretically, we discuss conditions under which this bound is tight and yields exact inference. Empirically, our approach is fast, scalable, and performs well in Monte Carlo simulations. We demonstrate its usefulness in various economic applications---ranging from macroeconomic forecasting to analyzing political discourse and voting behavior.\footnote{Author details: Germain Gauthier (corresponding author), Bocconi University, germain.gauthier@unibocconi.it; Philine Widmer, Paris School of Economics, philine.widmer@psemail.eu; Elliott Ash, ETH Zurich, ashe@ethz.ch. We thank Stephen Hansen and Xavier d'Haultfoeuille for helpful feedback. We thank Anton Boltachka, Benjamin Kohler, Shimpei Kojio, Federica Kulka, and Guanlan Liu for their excellent research assistance.}
+
+\bigskip
+
+\noindent \textbf{Keywords:} Deep learning, Latent factor models, Multimodal data
+
+\end{abstract}
+\setcounter{page}{0}
+\thispagestyle{empty}
+\end{titlepage}
+\newpage
+
+\setcounter{page}{1}
+
+\begin{bibunit}
+
+\section{Introduction}
+
+XXX
+
+\section{Deep latent factor models} \label{sec:deeplatent2}
+
+This section specifies our data-generating process and describes our estimation approach. The econometric object of interest is a low-dimensional latent factor $z_i$ that summarizes common variation across possibly high-dimensional measurements (text, images, or other ``unstructured'' data) and can be used to predict auxiliary outcomes. Our goal is to estimate (i) a measurement model linking $z_i$ to each observed modality and (ii) an approximation to the conditional distribution of $z_i$ given the observed data.
+
+The main practical challenge is computational: the marginal likelihood typically involves an integral over the latent factors that has no closed form when likelihoods are nonconjugate or parameterized flexibly (e.g., by neural networks). We therefore use variational inference. Concretely, we derive an evidence lower bound (ELBO) on the log marginal likelihood and maximize it by stochastic gradient methods. To make inference feasible at large $n$, we use a shared (amortized) inference function---an encoder---that maps observed data to a tractable approximate posterior distribution for $z_i$.
+
+\subsection{Data-generating process (DGP)}
+\label{subsec:dgp2}
+
+\subsubsection{The model}
+
+For each unit $i\in\{1,\ldots,n\}$ we observe up to $M$ response variables (``modalities'') $w_{im}$, indexed by $m\in\{1,\ldots,M\}$, up to $K$ auxiliary outcomes $y_{ik}$, indexed by $k\in\{1,\ldots,K\}$, and covariates $x_i$. The econometric object of interest is an $L$-dimensional latent factor $z_i$ that captures the common variation in $(w_{i1},\ldots,w_{iM})$ and is predictive for $(y_{i1},\ldots,y_{iK})$. 
+
+We partition covariates into three sets to make their roles explicit. First, prevalence covariates $x_i^p\in\mathcal{X}^p$ shift the distribution of latent factors across units through the conditional distribution $p_{\psi}(z_i\mid x_i^p)$. In topic-model applications, for example, $x_i^p$ can include metadata that shifts topic prevalence. Second, covariates $x_i^c\in\mathcal{X}^c$ shift the conditional distribution of the response variables $w_{im}$ given $z_i$ through $p_{\theta_m}(w_{im}\mid z_i,x_i^c)$. These covariates can be used to allow the mapping from latent factors to observables to vary with observed characteristics (e.g., to model systematic changes in how a topic is expressed). Third, covariates $x_i^s\in\mathcal{X}^s$ shift the conditional distribution of auxiliary outcomes $y_{ik}$ given $z_i$ through $p_{\theta_k}(y_{ik}\mid z_i,x_i^s)$.
+We use this partition because these three roles are conceptually distinct: covariates may shift who has which latent traits ($x_i^p$), how latent traits manifest in measurements ($x_i^c$), and how latent traits map into auxiliary outcomes ($x_i^s$).
+
+Let $z_i \in \mathcal{Z}\subseteq\mathbb{R}^L$ denote an $L$-dimensional vector of latent factors for unit $i$. We assume that $L$ is fixed and known. Throughout, we use the term \emph{prior} for the distribution of $z_i$ given $x_i^p$, but it should be understood as a modeling assumption rather than a subjective Bayesian prior. We assume \textit{conditional independence} across modalities and outcomes given the latent factor and the relevant covariates:
+
+\begin{equation}
+\label{eq:dgp_deeplatent2}
+\begin{aligned}
+    &\textbf{Latent factors:}
+    && z_i \sim p_{\psi}(z_i \mid x_i^p), \\[0.5em]
+    &\textbf{Response variables:}
+    && w_{im} \sim p_{\theta_m}(w_{im} \mid z_i, x_i^c), \quad m = 1,\ldots,M, \\[0.5em]
+    &\textbf{Auxiliary outcomes:}
+    && y_{ik} \sim p_{\theta_k}(y_{ik} \mid z_i, x_i^s), \quad k = 1,\ldots,K.
+\end{aligned}
+\end{equation}
+
+\medskip
+
+% Conceptually, the only difference between response variables and auxiliary outcomes is that we are not interested in approximating the posterior likelihood of outcomes (we don't want an encoder per outcome, only per modality).
+
+This formulation nests a variety of well-studied latent factor models as special cases (e.g., probabilistic PCA and several topic models). Appendix \ref{app:special-cases} maps a set of standard models into the notation of Eq.~\eqref{eq:dgp_deeplatent2}. At the same time, the specification is deliberately modular: it allows the researcher to choose likelihoods and function classes that are appropriate for each modality. For example, $p_{\theta_m}$ may be Gaussian for continuous data or categorical/multinomial for discrete outcomes such as words. If the researcher wishes to model unstructured data types (e.g., images or video), $p_{\theta_m}$ can be parameterized by expressive functions such as deep neural networks. 
+
+\subsubsection{Identifiability} 
+
+Latent factor models are generally not identifiable---that is, different parameter configurations can produce observationally equivalent distributions over observables. This non-identifiability arises because latent factors are unobserved, leaving transformations of the latent space empirically indistinguishable. Of course, identifiability is a property of the full DGP one specifies, and in particular of the decoder/likelihood mapping from $z_i$ to observables. As a result, if identifiability is required for a given application, it is in the researcher's hands to impose it through modeling restrictions (e.g., constraints on the decoder, structured priors, or auxiliary information) rather than to expect it to emerge from unconstrained training.
+
+In the simplest linear case, probabilistic principal component analysis (PPCA) is identifiable only up to trivial reparametrizations: sign flips, location shifts, and scale transformations of the latent factors \citep{tipping1999probabilistic}. These transformations do not change the likelihood but alter the representation of $z_i$. For instance, if the model places high probability on $(z_i, \theta)$, it places equal probability on $(-z_i, -\theta)$ or any rotation of the latent space. Researchers typically resolve these ambiguities by imposing normalizing constraints, such as zero mean and unit variance for the latent factors, and ordering conventions for the dimensions.
+
+Deeper models face more severe identifiability challenges. When decoders are parameterized by neural networks, the set of non-identifiable transformations expands considerably. In particular, any diffeomorphism (smooth, invertible transformation) $\phi: \mathcal{Z} \to \mathcal{Z}$ applied to the latent space can be compensated by adjusting the decoder to yield an equivalent generative model. Formally, if $p_\theta(w_i \mid z_i)$ generates the data, then so does $p_{\theta'}(w_i \mid \phi(z_i))$ for appropriately transformed parameters $\theta'$ \citep{khemakhem2020variational}. This means that, without additional assumptions, one can obtain infinitely many parameterizations that fit the data equally well but correspond to fundamentally different latent representations.
+
+Identifiability can be achieved under specific structural assumptions. For instance, \citet{khemakhem2020variational} shows that latent variables in nonlinear independent component analysis (ICA) can be identified up to permutation and component-wise transformations when the generative model satisfies certain conditional independence structures, and the data include auxiliary variables that modulate the latent distribution. Similarly, recent work on identifiable VAEs imposes constraints such as sparsity in the decoder \citep{locatello2019challenging, moran2021identifiable} or leverages temporal or distributional structure \citep{hyvarinen2019nonlinear}. However, such conditions are often restrictive and may not hold in typical social science applications, or may be more appropriate to model some data types than others (e.g., a sparse decoder may be relevant to model topics in text as data, but will likely underperform for visual data).
+
+In practice, we observe that the use of regularization during training often acts as an implicit selection rule among the many observationally equivalent solutions. Regularization techniques such as weight decay, dropout, or architectural choices like limiting network depth or width encourage simpler models. These inductive biases guide the optimization process toward solutions that are not only consistent with the data but also simpler in a sense defined by the regularization scheme. One can interpret this as the model selecting the ``simplest route'' to explain the data---a form of Occam's razor embedded in the learning algorithm. While this does not resolve the fundamental non-identifiability, it often yields interpretable and stable representations in practice. Researchers should nonetheless remain aware that the learned latent factors are one of many possible representations, and conclusions about their substantive meaning should be appropriately qualified.
+
+\subsection{Estimation via amortized variational inference}
+\label{subsec:amortized2}
+
+\subsubsection{The marginal likelihood} 
+
+Given the DGP in Eq.~\eqref{eq:dgp_deeplatent2}, the (conditional) marginal likelihood for a single unit $i$ (with all $M$ modalities observed) is
+\begin{equation}
+\label{eq:marglik_deeplatent2}
+ p_{\theta,\psi}\!\big(w_{i,1:M},\,y_{i,1:K}\mid x_i\big)
+ \;=\; \int p_{\psi}(z_i\mid x_i^p)
+ \Bigg[\prod_{m=1}^M p_{\theta_m}(w_{im}\mid z_i, x_i^c)\Bigg]
+ \Bigg[\prod_{k=1}^K p_{\theta_k}(y_{ik}\mid z_i, x_i^s)\Bigg] \,\diff z_i.
+\end{equation}
+When the decoder distributions are nonlinear functions of $z_i$ (as is typical with deep learning parameterizations) and/or when likelihoods are nonconjugate, the integral in Eq.~\eqref{eq:marglik_deeplatent2} has no closed form. Direct maximization of the marginal likelihood would then require repeated numerical integration and differentiation through the integral.
+In high-dimensional, multimodal settings this is typically infeasible: evaluating and differentiating the likelihood would require repeatedly integrating out $z_i$ for many observations and parameter updates.
+
+\subsubsection{The Evidence Lower Bound (ELBO)} 
+
+Variational inference avoids this difficulty by replacing the log marginal likelihood with a tractable lower bound \citep[for a literature review, see][]{blei2017variational}. Consider the log likelihood of the observed data $(w_{i,1:M},y_{i,1:K})$:
+\begin{equation}
+\label{eq:loglik_full2}
+\log p_{\theta,\psi}\!\big(w_{i,1:M},\,y_{i,1:K}\mid x_i\big).
+\end{equation}
+Let $q(z_i)$ be any distribution on $\mathcal{Z}$ that is absolutely continuous with respect to the prior. In applications, $q$ is chosen from a tractable parametric family that is typically simpler than the true posterior (e.g., a Gaussian distribution, often with diagonal covariance, or a mean-field factorization). The evidence lower bound (ELBO) is defined as
+\begin{equation}
+\label{eq:elbo_def_full2}
+\mathcal{L}_i(q)
+\;:=\;
+\E_{q(z_i)}\!\Bigg[\sum_{m=1}^M\log p_{\theta_m}(w_{im}\mid z_i, x_i^c)
++\sum_{k=1}^K\log p_{\theta_k}(y_{ik}\mid z_i, x_i^s)\Bigg]
+-\mathrm{KL}\!\Big(q(z_i)\,\big\|\,p_{\psi}(z_i\mid x_i^p)\Big).
+\end{equation}
+
+This quantity is a lower bound on the log marginal likelihood in Eq.~\eqref{eq:loglik_full2}: for every choice of $q$,
+\begin{equation}
+\label{eq:elbo_lowerbound_full2}
+\mathcal{L}_i(q)
+\;\le\;
+\log p_{\theta,\psi}\!\big(w_{i,1:M},\,y_{i,1:K}\mid x_i\big).
+\end{equation}
+The derivation of this bound is given in Appendix~\ref{app:elbo-derivation}. The gap between the left- and right-hand sides is the Kullback--Leibler divergence between $q(z_i)$ and the true posterior $p(z_i\mid w_{i,1:M},y_{i,1:K},x_i)$, which is always nonnegative. Hence, maximizing the ELBO pushes $q$ toward the posterior while simultaneously fitting the modality and outcome likelihoods.
+
+In principle, one could maximize Eq.~\eqref{eq:elbo_def_full2} separately for each unit $i$ by optimizing $q$ directly \citep{blei2017variational}. This would introduce unit-specific variational parameters and would be computationally expensive in large samples. Variational autoencoders instead use \emph{amortized} inference: we learn a single function (the encoder) that maps observed data to the parameters of a variational distribution \citep[for a literature review, see][]{kingma2019introduction}. In econometric terms, amortization replaces $n$ separate nuisance optimization problems (one per observation) with a single shared inference function that can be estimated once and then evaluated cheaply for any unit. We parametrize this inference function by a neural network. Concretely, for each modality $m$ we define a modality-specific encoder
+\[
+q_{\phi}^{(m)}\big(z_i\mid w_{im}, x_i^p,x_i^c\big),
+\qquad m=1,\ldots,M,
+\]
+where $\phi$ collects the encoder parameters (weights and biases). In applications, we often take $q_{\phi}^{(m)}$ to be a Gaussian distribution whose mean and covariance are outputs of a neural network:
+\[
+q_{\phi}^{(m)}\big(z_i\mid w_{im}, x_i^p,x_i^c\big)
+=\mathcal{N}\!\big(\mu_{\phi}^{(m)}(w_{im},x_i^p,x_i^c),
+\,\Sigma_{\phi}^{(m)}(w_{im},x_i^p,x_i^c)\big).
+\]
+These displays state a requirement for posterior-faithful conditioning, not a
+description of every current software path: an encoder must receive every
+covariate needed to represent its target posterior.  In particular, a modality
+expert needs likelihood-relevant content covariates and an outcome expert that
+targets $p(z_i\mid y_i,x_i)$ needs $x_i^p$ and $x_i^s$.  The audited stock
+non-image encoders currently concatenate the preceding representation only
+with prevalence covariates and, optionally, labels; they do not yet pass
+general $x_i^c$ or $x_i^s$.  Adding those inputs is therefore a required
+implementation repair before the vanishing-gap results below apply when these
+covariates change the likelihood.
+
+Because the encoder is a neural network and the decoder is typically parameterized as a neural network, it is useful to connect the ELBO to the intuition of ``encoding'' and ``reconstruction.'' The ELBO in Eq.~\eqref{eq:elbo_def_full2} has two components. The expectation term rewards latent factors $z_i$ that allow the decoder likelihoods to assign high probability to the observed data. The KL term penalizes variational distributions that deviate substantially from the prior $p_{\psi}(z_i\mid x_i^p)$. This tradeoff is the precise sense in which ELBO maximization resembles training a regularized autoencoder.
+
+To see this in the simplest setting, consider a stylized special case with (i) no covariates, (ii) no auxiliary outcomes, and (iii) a single modality (so $M=1$ and $K=0$). Let $w_i:=w_{i1}$ and let the model be $z_i\sim p(z)$ and $w_i\sim p_{\theta}(w_i\mid z_i)$. For any variational distribution $q(z_i\mid w_i)$, the ELBO reduces to
+\begin{equation}
+\label{eq:elbo_regularized_ae2}
+\E_{q(z_i\mid w_i)}\big[\log p_{\theta}(w_i\mid z_i)\big]
+-\mathrm{KL}\big(q(z_i\mid w_i)\,\|\,p(z_i)\big).
+\end{equation}
+The first term is a probabilistic reconstruction criterion (fit of $w_i$ given $z_i$), while the second term regularizes the inferred latent representation by anchoring it to the prior. In our full model, the same decomposition holds, but with multiple likelihood components (one per observed modality and one per auxiliary outcome) and with a covariate-dependent prior (see Figures \ref{fig:vae_overview} and \ref{fig:deeplatent_overview} for a graphical overview).
+
+\begin{figure}[ht!]
+    \centering
+    \caption{Graphical Overview of the Original Variational Autoencoder}
+    \label{fig:vae_overview}
+    \includegraphics[width=\textwidth]{figures/VAE.png} \\[0.6cm]
+    \vspace{0.4cm}
+    \footnotesize
+    \flushleft
+    \textbf{Notes:}
+    A graphical depiction of the model architectures.
+    Vectors colored in blue are observed.
+    Blocks colored in green are estimated objects, typically neural networks.
+    Vectors colored in red are the generative model's predictions.
+\end{figure}
+
+\begin{landscape}
+
+\thispagestyle{empty}
+
+\begin{figure}[ht!]
+    \centering
+    \caption{Graphical Overview of our Extended Variational Autoencoder}
+    \label{fig:deeplatent_overview}
+    \includegraphics[width=1.3\textwidth]{figures/DeepLatent.png}
+    \vspace{0.4cm}
+    \footnotesize
+    \flushleft
+    \textbf{Notes:}
+    A graphical depiction of the model architectures.
+    Vectors colored in blue are observed.
+    Blocks colored in green are estimated objects, typically neural networks.
+    Vectors colored in red are the generative model's predictions.
+\end{figure}
+
+\end{landscape}
+
+
+\subsubsection{Extension to missing modalities} 
+
+In many applications, not all modalities are observed for all units. Let $O_i\subseteq\{1,\ldots,M\}$ denote the set of modalities observed for unit $i$. At training time and at test time, we may further choose to condition only on a subset of the observed modalities; we denote such a conditioning set by $S\subseteq O_i$. For any $S\subseteq\{1,\ldots,M\}$ we define the corresponding (subset) log marginal likelihood
+\begin{equation}
+\label{eq:loglik_subset2}
+\log p_{\theta,\psi}\!\big(w_{i,S},\,y_{i,1:K}\mid x_i\big)
+\end{equation}
+and the associated subset ELBO
+\begin{equation}
+\label{eq:elbo_def_subset2}
+\mathcal{L}_i(S; q)
+\;:=\;
+\E_{q(z_i)}\!\Bigg[\sum_{m\in S}\log p_{\theta_m}(w_{im}\mid z_i, x_i^c)
++\sum_{k=1}^K\log p_{\theta_k}(y_{ik}\mid z_i, x_i^s)\Bigg]
+-\mathrm{KL}\!\Big(q(z_i)\,\big\|\,p_{\psi}(z_i\mid x_i^p)\Big).
+\end{equation}
+By construction, for every $q$ this lower bound satisfies
+\begin{equation}
+\label{eq:elbo_lowerbound_subset2}
+\mathcal{L}_i(S; q)
+\;\le\;
+\log p_{\theta,\psi}\!\big(w_{i,S},\,y_{i,1:K}\mid x_i\big).
+\end{equation}
+
+Our model is designed for settings where units have different observed modality sets $O_i$ and where we want inference to work even when only a subset of modalities is available. To achieve this, we train by randomly subsampling modalities. The target criterion permits a draw $S_i\subseteq O_i$ for each unit from a user-chosen distribution $r(\cdot\mid O_i)$. In a training step the ELBO includes likelihood contributions only for modalities in $S_i$ (and for all auxiliary outcomes, if outcomes are always observed). Concretely, we evaluate
+\begin{equation}
+\label{eq:elbo_training_subset2}
+\mathcal{L}_i\big(S_i;\theta,\phi,\psi\big)
+:= \mathcal{L}_i\Big(S_i;\ q_\phi(\cdot\mid d_{i,S_i},y_{i,1:K},x_i)\Big),
+\end{equation}
+where $\mathcal{L}_i(S;\cdot)$ is defined in Eq.~\eqref{eq:elbo_def_subset2} and $d_{i,S_i}:=\{w_{im}:m\in S_i\}$. By Eq.~\eqref{eq:elbo_lowerbound_subset2}, for each realized subset $S_i$ we have the pointwise bound
+\begin{equation}
+\label{eq:pointwise_bound_S2}
+\mathcal{L}_i\big(S_i;\theta,\phi,\psi\big)
+\;\le\;\log p_{\theta,\psi}\!\big(w_{i,S_i},\,y_{i,1:K}\mid x_i\big).
+\end{equation}
+
+Because $S_i$ is random during training, our training objective averages these bounds over the subsampling distribution:
+\begin{equation}
+\label{eq:training_objective_expectation2}
+\mathcal{J}(\theta,\phi,\psi)
+:= \sum_{i=1}^n \E_{S_i\sim r(\cdot\mid O_i)}\Big[\mathcal{L}_i\big(S_i;\theta,\phi,\psi\big)\Big].
+\end{equation}
+Taking expectations in Eq.~\eqref{eq:pointwise_bound_S2} yields
+\begin{equation}
+\label{eq:expected_bound2}
+\E_{S_i\sim r(\cdot\mid O_i)}\Big[\mathcal{L}_i(S_i;\theta,\phi,\psi)\Big]
+\;\le\;\E_{S_i\sim r(\cdot\mid O_i)}\Big[\log p_{\theta,\psi}(w_{i,S_i},y_{i,1:K}\mid x_i)\Big].
+\end{equation}
+Therefore, maximizing $\mathcal{J}(\theta,\phi,\psi)$ maximizes a lower bound
+on the expected-subset composite log criterion induced by the training-time
+subsampling distribution.
+
+The audited stock routine implements this expectation by drawing one common
+active subset for a minibatch, assigning it to every unit in that minibatch,
+and decoding only those active modalities.  When this common draw has law
+$r$, it provides a stochastic approximation to the same expected-subset
+composite criterion, with correlated subset noise within a minibatch.  It is
+not a likelihood based on one independently realized coarsening per unit.
+Independent per-unit subset draws are an algorithmic refinement rather than a
+description of the current code.
+
+\input{theory_guarantees}
+
+\iffalse
+\subsection{Statistical guarantees}
+\label{subsec:elbo_tight2_legacy_disabled}
+
+Given that we are optimizing a lower bound on the marginal likelihood, a natural question arises: when is this bound tight so that inference is exact?
+
+\subsubsection{Inference gap: definition and decomposition}
+
+Fix a unit $i$ and a conditioning subset $S\subseteq\{1,\ldots,M\}$. Let
+\[
+d_{i,S}:=(w_{i,S},y_{i,1:K})
+\]
+denote the observed modalities in $S$ together with the (continuous) auxiliary outcomes, and write $p_\vartheta(z_i\mid d_{i,S},x_i)$ for the exact posterior under generative parameters $\vartheta:=(\theta,\psi)$. For any candidate distribution $q(z_i)$ that is absolutely continuous with respect to the posterior, the standard ELBO identity gives
+\begin{equation}
+\log p_{\vartheta}(d_{i,S}\mid x_i)
+\;=\;
+\mathcal{L}_i(S;q)
+\;+
+\mathrm{KL}\!\Big(q(z_i)\,\big\|\,p_\vartheta(z_i\mid d_{i,S},x_i)\Big).
+\label{eq:elbo_gap_identity_subset}
+\end{equation}
+We therefore define the (subset-specific) inference gap as
+\[
+\mathrm{Gap}_i(S;q)
+:=\log p_{\vartheta}(d_{i,S}\mid x_i)-\mathcal{L}_i(S;q)
+=\mathrm{KL}\!\Big(q(z_i)\,\big\|\,p_\vartheta(z_i\mid d_{i,S},x_i)\Big)\ \ge 0.
+\]
+The bound is tight if and only if $q(z_i)$ coincides with the true posterior almost surely.
+
+In amortized variational inference, $q$ is not optimized separately for each observation. Instead one restricts attention to a tractable variational family $\mathcal{Q}$ and uses a shared encoder $q_\phi(\cdot\mid d_{i,S},x_i)\in\mathcal{Q}$. The resulting approximation error decomposes into a \emph{variational gap} and an \emph{amortization gap} \citep{cremer2018inference}:
+\begin{equation}
+\underbrace{\log p_{\vartheta}(d_{i,S}\mid x_i) - \mathcal{L}_i(S;q_\phi)}_{\text{total gap}}
+\;=\;
+\underbrace{\log p_{\vartheta}(d_{i,S}\mid x_i) - \mathcal{L}_i^\star(S)}_{\text{variational gap}}
+\;+\;
+\underbrace{\mathcal{L}_i^\star(S) - \mathcal{L}_i(S;q_\phi)}_{\text{amortization gap}},
+\label{eq:gap_decomposition_legacy_disabled}
+\end{equation}
+where $\mathcal{L}_i^\star(S):=\sup_{q\in\mathcal{Q}}\mathcal{L}_i(S;q)$ is the best achievable ELBO within $\mathcal{Q}$. 
+
+The \textit{variational gap} measures the cost of restricting inference to the family $\mathcal{Q}$. By Equation~\eqref{eq:elbo_gap_identity_subset}, this gap equals the smallest Kullback--Leibler divergence from any member of $\mathcal{Q}$ to the true posterior. For this gap to vanish, two conditions must be met. First, the true posterior must lie in (or be well-approximated by) the variational family: if $\mathcal{Q}$ is not expressive enough, no amount of optimization will close the gap. Second, we must be able to \emph{find} the best approximation within $\mathcal{Q}$. 
+
+The \textit{amortization gap} measures the cost of using a shared encoder rather than optimizing the variational parameters separately for each observation. For this gap to vanish, two conditions must again be met. First, an \emph{ideal inference function} must exist: there must be a mapping from observed data $(d_{i,S},x_i)$ to the variational parameters that achieve the optimum $\mathcal{L}_i^\star(S)$. Second, we must be able to \emph{find} (or approximate) such a mapping with the chosen encoder architecture.
+
+When both gaps are negligible, the ELBO is tight, and inference is exact. Proposition \ref{prop:elbo_tightness_uat} below formalizes the conditions required to bridge the inference gap.
+
+\subsubsection{When does the inference gap vanish?}
+
+Proposition~\ref{prop:elbo_tightness_uat} below gives a generic set of sufficient conditions under which the total gap can be made arbitrarily small (uniformly over a compact data domain) by choosing a sufficiently expressive variational family and encoder class.
+
+\begin{proposition}[Tightness of the ELBO]
+\label{prop:elbo_tightness_uat}
+Fix $\vartheta=(\theta,\psi)$ and a subset $S\subseteq\{1,\ldots,M\}$. Suppose:
+\begin{enumerate}
+\item[\emph{(i)}] \emph{(Compact domain)} The data $(d_{i,S},x_i)$ lie in a compact set $\mathcal{D}_S\times\mathcal{X}$, and the variational parameter space $\Lambda$ is a subset of $\mathbb{R}^p$ for some $p \geq 1$.
+
+\item[\emph{(ii)}] \emph{(Expressive variational family)} For every $(d,x)\in\mathcal{D}_S\times\mathcal{X}$,
+\[
+\inf_{q\in\mathcal{Q}}\mathrm{KL}\!\Big(q\,\big\|\,p_\vartheta(\cdot\mid d,x)\Big)=0.
+\]
+
+\item[\emph{(iii)}] \emph{(Continuous near-optimal selector in $\mathcal{Q}$)} Write $\mathcal{Q}=\{q_\lambda:\lambda\in\Lambda\}$ and define the best-in-family (per-datapoint) KL gap
+\[
+\Delta_\mathcal{Q}(d,x):=\inf_{\lambda\in\Lambda}\mathrm{KL}\!\Big(q_\lambda\,\big\|\,p_\vartheta(\cdot\mid d,x)\Big).
+\]
+For every $\delta>0$, there exists a continuous function $\lambda^\delta:\mathcal{D}_S\times\mathcal{X}\to\Lambda$ such that for all $(d,x)\in\mathcal{D}_S\times\mathcal{X}$,
+\[
+\mathrm{KL}\!\Big(q_{\lambda^\delta(d,x)}\,\big\|\,p_\vartheta(\cdot\mid d,x)\Big)\le \Delta_\mathcal{Q}(d,x)+\delta.
+\]
+
+\item[\emph{(iv)}] \emph{(Regularity of KL divergence)} The map
+\[
+(\lambda, d, x) \mapsto \mathrm{KL}\!\Big(q_\lambda\,\big\|\,p_\vartheta(\cdot\mid d,x)\Big)
+\]
+is continuous on $\Lambda \times \mathcal{D}_S \times \mathcal{X}$.
+
+\item[\emph{(v)}] \emph{(Encoder can approximate the selector)} For every $\delta>0$, let $\lambda^\delta:\mathcal{D}_S\times\mathcal{X}\to\Lambda$ be the continuous near-optimal selector whose existence is guaranteed by condition (iii). Then for every $\eta>0$ there exists an encoder parameterization $\phi$ such that
+\[
+\sup_{(d,x)\in\mathcal{D}_S\times\mathcal{X}}\big\|g_\phi(d,x)-\lambda^\delta(d,x)\big\|<\eta.
+\]
+\end{enumerate}
+Then for every $\varepsilon>0$ there exists an encoder parameterization $\phi$ such that
+\[
+0\;\le\; \log p_\vartheta(d_{i,S}\mid x_i) - \mathcal{L}_i\big(S;\,q_\phi(\cdot\mid d_{i,S},x_i)\big) \;\le\; \varepsilon
+\quad\text{for all } (d_{i,S},x_i)\in\mathcal{D}_S\times\mathcal{X}.
+\]
+\end{proposition}
+
+\medskip
+
+The proof is given in Appendix~\ref{app:proof-elbo-tightness}. In plain words, Proposition~\ref{prop:elbo_tightness_uat} says that the ELBO can be made arbitrarily tight if (ii) the variational family is rich enough to approximate the true posterior at each data point, (iii) near-optimal variational parameters can be selected as a continuous function of the data, and (v) the encoder class can uniformly approximate this selector.
+
+\begin{remark}
+The five conditions serve distinct roles:
+\begin{itemize}
+    \item Condition (i) provides the topological structure needed for uniform approximation arguments.
+    \item Condition (ii) ensures the \emph{variational gap} can be closed: the family $\mathcal{Q}$ is rich enough to approximate the true posterior at each data point.
+    \item Condition (iii) ensures the \emph{amortization gap} can be closed in principle: optimal (or near-optimal) variational parameters can be selected as a continuous function of the data, which is necessary for a shared encoder to track them.
+    \item Condition (iv) is a regularity condition ensuring that small perturbations in the variational parameters lead to small changes in the KL divergence, uniformly over the data domain.
+    \item Condition (v) links the encoder architecture to the selector from condition (iii): it requires that the encoder class can uniformly approximate the particular continuous near-optimal selector $\lambda^\delta$.
+\end{itemize}
+\end{remark}
+
+\begin{remark}
+In our setting, an ideal inference function exists (in the sense of a mapping from $(d_{i,S},x_i)$ to variational parameters that achieve the per-datapoint optimum within $\mathcal{Q}$). In particular, we show in Appendix~\ref{app:shm-condition-iii} that our model is a simple hierarchical model, and under the regularity assumptions in \citet{MargossianBlei2024} this implies condition~(iii) in Proposition~\ref{prop:elbo_tightness_uat}.
+\end{remark}
+
+\begin{remark}
+Condition (iv) holds under mild assumptions on the variational family and the model. For example, if $\mathcal{Q}$ is a Gaussian family with parameters $\lambda = (\mu, \Sigma)$ representing the mean and covariance, and if the posterior $p_\vartheta(\cdot \mid d,x)$ has a continuous density with respect to $(d,x)$ and finite second moments uniformly over the compact domain, then standard continuity results for KL divergence between Gaussians (or between a Gaussian and a regular density) imply condition (iv).
+\end{remark}
+
+\begin{remark}
+    Proposition~\ref{prop:elbo_tightness_uat} is an inference result: it characterizes when a shared encoder can approximate the posterior for a fixed generative model. Establishing frequentist guarantees for the estimator (consistency and asymptotic normality of ELBO maximizers) additionally requires identification and smoothness, and we illustrate this below in an extended conditional linear--Gaussian case.
+\end{remark}
+
+\begin{remark}
+In the extended conditional linear--Gaussian case introduced below, for any fixed $\vartheta$ and any subset $S$, the exact subset posterior $p_\vartheta(z_i\mid d_{i,S},x_i)$ is Gaussian with a closed-form mean and covariance (Appendix~\ref{app:linear_gaussian_case}). Consequently, if $\mathcal{Q}$ contains full-covariance Gaussians, the variational gap is zero. If moreover the encoder class can represent the analytic posterior-parameter map $(d_{i,S},x_i)\mapsto (m_{i,S},V_{i,S})$ (or if one plugs in this map), then the amortization gap is also zero, and the total gap vanishes.
+\end{remark}
+
+\subsubsection{A tractable special case: the linear--Gaussian VAE}
+\label{subsubsec:linear_gaussian_case_legacy_disabled}
+
+This special case provides a setting in which the DGP is fully transparent and the exact posterior is available in closed form. It therefore serves to illustrate (i) how and when the ELBO gap can vanish (both variationally and through amortization) and (ii) how, under correct specification and standard regularity conditions, ELBO maximization inherits familiar consistency and asymptotic normality results from classical likelihood-based M-estimation. Throughout, let $z_i\in\mathbb{R}^L$, covariates $x_i=(x_i^p,x_i^c,x_i^s)$, modalities $w_{im}\in\mathbb{R}^{D_m}$, and continuous auxiliary outcomes $y_i:=(y_{i1},\ldots,y_{iK})\in\mathbb{R}^K$.
+
+\paragraph{Model.}
+Fix finite-dimensional feature maps $f_p(x_i^p)\in\mathbb{R}^{r_p}$, $f_c(x_i^c)\in\mathbb{R}^{r_c}$, and $f_s(x_i^s)\in\mathbb{R}^{r_s}$ (e.g., identity maps or spline bases). The generative model specializes Eq.~\eqref{eq:dgp_deeplatent2} to linear conditionals with Gaussian noise:
+\begin{equation}
+\label{eq:lg_dgp_main_legacy_disabled}
+\begin{aligned}
+&\textbf{Latent factors:}
+&& z_i\mid x_i^p \sim \mathcal{N}\big(\mu_0(x_i^p),\Sigma_0\big),\qquad \mu_0(x_i^p):=B_0 f_p(x_i^p),\\[0.35em]
+&\textbf{Modalities:}
+&& w_{im}\mid (z_i,x_i^c)\sim \mathcal{N}\big(b_m(x_i^c)+A_m(x_i^c)z_i,\Sigma_{w,m}\big),\quad m=1,\ldots,M,\\[0.35em]
+&\textbf{Auxiliary outcomes:}
+&& y_i:=(y_{i1},\ldots,y_{iK})^\top,\qquad y_i\mid (z_i,x_i^s)\sim \mathcal{N}\big(d(x_i^s)+C(x_i^s)z_i,\Sigma_y\big),
+\end{aligned}
+\end{equation}
+with conditional independence across modalities and outcomes given $(z_i,x_i)$; in particular, the conditional-independence structure in Eq.~\eqref{eq:dgp_deeplatent2} corresponds here to taking $\Sigma_y$ diagonal.
+Here $b_m(x_i^c)$ and $A_m(x_i^c)$ are affine functions of $f_c(x_i^c)$, and $d(x_i^s)$ and $C(x_i^s)$ are affine functions of $f_s(x_i^s)$ (full parameterization in Appendix~\ref{app:linear_gaussian_case}). Let $\vartheta=(\theta,\psi)$ collect the finite-dimensional coefficients and covariance parameters.
+
+\paragraph{Implications for variational inference and likelihood-based estimation.}
+This linear--Gaussian specification is fully tractable. For any subset of observed modalities $S$ (and with or without outcomes), the exact posterior $p_\vartheta(z_i\mid d_{i,S},x_i)$ is Gaussian with closed-form mean and covariance (Appendix~\ref{app:linear_gaussian_case}). Consequently, a Gaussian variational family with unrestricted covariance can match the exact posterior, implying that the variational gap is zero.
+
+The analytic posterior-parameter map $(d_{i,S},x_i)\mapsto (m_{i,S},V_{i,S})$ is smooth in this setting. Hence, if the encoder class can represent (or uniformly approximate) this map, amortization does not constrain inference and the amortization gap is also zero. Moreover, Bayes' rule and the conditional-independence structure of the model imply that the subset posterior aggregates information across modalities multiplicatively, with the prior factor entering exactly once. In the Gaussian case, this multiplicative aggregation implies a simple additive decomposition in terms of precision matrices. The fusion rule we introduce below in Eq.~\eqref{eq:corrected_poe2} is designed to mirror this multiplicative structure and is therefore exact in the present linear--Gaussian case when each unimodal encoder coincides with the corresponding unimodal posterior.
+
+Finally, exact posterior profiling yields the exact criterion for the
+\emph{generative} parameter in a fully identified chart.  The required gauge
+is model-specific and can include location, scale, shear, rotations,
+reflections, signs, ordering, and exclusions separating prevalence from
+direct measurement effects; an orthogonal-rotation quotient alone is not
+generally sufficient.  The active result in
+Theorem~\ref{thm:lg_profile_mle} gives the generative estimator's limit theory.
+It deliberately makes no consistency or central-limit claim for encoder
+weights, which may be nonunique even when the induced posterior density is
+unique.  The superseded nuisance-weight limit theorem and its proof have been
+deleted from this disabled source block.
+\fi
+
+\subsection{Practical modeling choices}
+\label{subsec:decoders_priors2}
+
+We discuss below the main modeling choices researchers face.
+
+\subsubsection{Encoders}
+
+The encoders specify the variational distribution used for approximate inference, such as $q_{\phi}^{(m)}(z_i\mid w_{im},x_i^p,x_i^c)$ in the unimodal case and the fused distribution $q_{\phi}(z_i\mid d_{i,S_i},y_{i,1:K},x_i)$ in the multimodal case. In contrast to the true posterior, which typically has no closed form in nonlinear models, the variational distribution is chosen to be tractable and differentiable. A common choice is a Gaussian family with diagonal covariance, because it admits efficient sampling and straightforward reparameterization. More expressive choices are possible (e.g., full-covariance Gaussians, mixtures, or normalizing flows), at the cost of additional computation. In all cases, the encoder network should be understood as an estimated mapping from observables to the parameters of $q_{\phi}$ (e.g., means and variances), not as a structural component of the DGP.
+
+From the perspective of Section~\ref{subsec:elbo_tight2}, the encoder class and its output distribution jointly define the variational family $\mathcal{Q}$. Thus, choosing a richer variational family is not only a ``modeling'' preference; it is precisely what makes the lower bound potentially tight by reducing (or eliminating) the variational gap.
+
+In multimodal settings, an additional modeling choice is how to construct a variational distribution that is well-defined for every subset $S_i\subseteq O_i$ of observed modalities. Define $d_{i,S_i}:=\{w_{im}: m\in S_i\}$. By Bayes' rule and the conditional independence structure of the DGP,
+\begin{equation}
+\label{eq:true_posterior_subset2}
+ p_{\theta,\psi}(z_i\mid d_{i,S_i}, y_{i,1:K}, x_i)
+ \;\propto\;
+ p_{\psi}(z_i\mid x_i^p)
+ \Bigg[\prod_{m\in S_i} p_{\theta_m}(w_{im}\mid z_i, x_i^c)\Bigg]
+ \Bigg[\prod_{k=1}^K p_{\theta_k}(y_{ik}\mid z_i, x_i^s)\Bigg].
+\end{equation}
+
+Equation~\eqref{eq:true_posterior_subset2} makes clear that the true posterior combines information across sources multiplicatively: one prior factor, one likelihood factor for each observed modality, and one factor for each outcome used for inference. This observation motivates a corrected product-of-experts variational family. The correction must count every source exactly once. A mixture-of-experts fusion rule instead combines source-specific posteriors additively and generally does not reproduce this Bayes factorization. This statement concerns fusion across sources; a mixture-of-Gaussians distribution produced by a joint or masked encoder can still be used as the within-subset variational family considered in Proposition~\ref{prop:mog_encoder_tightness}.
+
+This design choice is closely related to the multimodal VAE literature. Our approach most closely resembles \citet{wu2018multimodal}, who combine modality-specific approximate posteriors through a product. In contrast, \citet{suzuki2016joint} concatenate modality features into a single encoder, while \citet{shi2019variational} use a mixture-of-experts fusion rule.
+
+A natural strategy is to train modality encoders $q_{\phi}^{(m)}(z_i\mid w_{im},x_i)$ and, when outcomes are fed to the encoder, a separate outcome encoder $q_\phi^{(y)}(z_i\mid y_{i,1:K},x_i)$. We then use the corrected product-of-experts rule
+\begin{equation}
+\label{eq:corrected_poe2}
+q_\phi(z_i\mid d_{i,S_i}, y_{i,1:K}, x_i)
+\;\propto\;
+\frac{q_\phi^{(y)}(z_i\mid y_{i,1:K},x_i)
+\prod_{m\in S_i} q_\phi^{(m)}(z_i\mid w_{im},x_i)}
+{p_{\psi}(z_i\mid x_i^p)^{|S_i|}}.
+\end{equation}
+There are $|S_i|+1$ posterior experts in the numerator, so the denominator removes $|S_i|$ redundant copies of the prior. If outcomes are not used for inference, omit $q_\phi^{(y)}$ and instead divide the product of modality experts by $p_\psi^{|S_i|-1}$. These formulas mirror Eq.~\eqref{eq:true_posterior_subset2} without duplicating any outcome likelihood.
+
+When the source encoders are Gaussian, the PoE yields an explicit fusion rule in terms of precisions. Suppose
+\[
+ p_\psi(z_i\mid x_i^p)=\mathcal{N}(\mu_{0i},\Lambda_{0i}^{-1}),
+\]
+and each source encoder $j$ has the form
+\[
+ q_\phi^{(j)}(z_i\mid \text{source }j,\cdot)=\mathcal{N}\big(\mu_{ij},\ (\Lambda_{0i}+\Delta_{ij})^{-1}\big),
+\]
+where $\Delta_{ij}\succeq 0$ is the precision contributed by source $j$ beyond the prior. Then the fused encoder for subset $S_i$, including the outcome expert, is Gaussian with precision
+\[
+ \Lambda_{S_i}=\Lambda_{0i}+\Delta_{iy}+\sum_{m\in S_i}\Delta_{im},
+\]
+and mean obtained by aggregating natural parameters. If outcomes are excluded from the encoder, drop $\Delta_{iy}$. This makes clear that each included source contributes additively to information about $z_i$, a familiar structure in linear-Gaussian latent factor models.
+
+\subsubsection{Decoders}
+
+The generative model specifies conditional likelihoods for each modality and each auxiliary outcome:
+\[
+p_{\theta_m}(w_{im}\mid z_i, x_i^c), \quad m=1,\ldots,M,
+\qquad\text{and}\qquad
+p_{\theta_k}(y_{ik}\mid z_i, x_i^s), \quad k=1,\ldots,K.
+\]
+Here $\theta = \{\theta_m,\theta_k\}$ denotes the parameters of the decoder networks. The audited implementation does not provide a Poisson likelihood. Its normalized likelihood interpretations are: bag-of-words cross-entropy as a multinomial likelihood; embedding and image MSE as a fixed-variance Gaussian likelihood only after fixing and reporting its scale; vote loss as Bernoulli; discrete responses as categorical; and regression, binary, or multiclass outcomes as a normalized Gaussian NLL with learned clamped variance, Bernoulli, or categorical, respectively. The outcome interpretations require the global and per-label likelihood weights to equal one; arbitrary MSE scales, powered prediction losses, free bits, and MMD/WAE objectives are not the same likelihood ELBO. Both encoders and decoders may be parametrized as feed-forward neural networks, but this is not a requirement. For instance, in the case of images as data, researchers may want to specify convolutional neural networks \citep{tolstikhin2018wasserstein} or diffusion models \citep{ho2020denoising}. For text as data, natural choices are fully connected feed-forward neural networks for small datasets \citep{srivastava2022autoencoding, nan2019topic}, and transformers to model text sequences for larger datasets \citep{vaswani2017attention}. Of course, the decoder can also be a fully specified structural economic model that models unobserved heterogeneity as a continuous vector of latent variables.
+
+\subsubsection{Prior}
+
+The prior is parameterized as $p_\psi(z_i\mid x_i^p)$. Its parametrization depends on the researcher's goals. To recover the standard ideal point model, one can posit a standard normal. For a typical topic model, one can posit a standard logistic normal. To increase the prior's expressivity, it can also be conditioned on covariates, such that it is a normal or logistic normal with mean $\mu_\psi(x_i^p)$ and covariance $\Sigma_\psi(x_i^p)$ \citep{roberts2013structural}. It can also be modeled with more flexible parametric models---such as Gaussian mixtures or normalizing flows \citep[e.g.,][]{tomczak2018vae, gatopoulos2020super}. Learning a structured prior may be helpful if one wishes to generate new conditional samples from the decoders.
+
+\subsection{Estimation algorithm}
+\label{subsec:algo2}
+
+\subsubsection{The algorithm} 
+
+Table~\ref{tab:estimation_algorithm} summarizes the estimation procedure. We estimate parameters $(\theta,\phi,\psi)$ by stochastic gradient ascent on the objective in Eq.~\eqref{eq:training_objective_expectation2}. The ELBO involves expectations with respect to $q_{\phi}$, which we evaluate by Monte Carlo sampling. To differentiate through Monte Carlo draws, we use the reparameterization trick \citep{kingma2013auto}. For a Gaussian encoder, we can write
+\[
+ z_i = \mu_{\phi} + \Sigma_{\phi}^{1/2}\,\varepsilon,
+ \qquad \varepsilon\sim\mathcal{N}(0,I),
+\]
+so that randomness is carried by $\varepsilon$ rather than by $\phi$. This allows gradients of the ELBO to be computed by backpropagation. Each iteration draws a minibatch of units, draws a modality subset (one common subset per minibatch in the audited stock routine), forms the fused encoder using Eq.~\eqref{eq:corrected_poe2}, draws Monte Carlo samples of $z_i$ using the reparameterization trick, and updates parameters using an adaptive optimizer such as ADAM \citep{kingma2015adam}. Subsampling forces each modality-specific encoder to solve the inference problem even when other modalities are absent. Without subsampling, a common failure mode is that the training process concentrates inference capacity on the most informative modality and leaves other encoders weak, which then produces unreliable out-of-sample inference when only a ``non-dominant'' modality is observed.
+
+\begin{table}[ht!]
+    \centering
+    \caption{Estimation algorithm}
+    \label{tab:estimation_algorithm}
+    \setlength{\extrarowheight}{5pt}
+    \resizebox{0.8\textwidth}{!}{%
+    \begin{tabular}{l}
+    \toprule
+    \textbf{Input:} Dataset $\{(w_{i,1:M}, y_{i,1:K}, x_i)\}_{i=1}^N$ \\
+    \textbf{Initialize:} Modality encoders $\{\phi_m\}_{m=1}^M$; optional single outcome encoder $\phi_y$; decoders $\{\theta_m\}_{m=1}^M$; predictors $\{\theta_k\}_{k=1}^K$; prior $\psi$. \\
+    \midrule
+    \textbf{for} epoch $=1,\dots,E$ \textbf{do} \\
+    \quad \textbf{for} minibatch $\{(w_{i,1:M}, y_{i,1:K}, x_i)\}_{i=1}^n$ \textbf{do} \\
+    \quad\quad Draw a nonempty modality subset $S_i$ (stock: one common subset $S_b$ for the minibatch and set $S_i=S_b$). \\
+    \quad\quad For each $m \in S_i$, compute one modality expert $q_{\phi_m}(z_i \mid w_{im},x_i)$, with every required covariate input. \\
+    \quad\quad If outcomes are used for inference, compute one separate expert $q_{\phi_y}(z_i\mid y_{i,1:K},x_i)$. \\
+    \quad\quad Aggregate each source exactly once via PoE: \\
+    \quad\quad\quad $\displaystyle q_\phi(z_i \mid d_{i,S_i},y_i,x_i)
+        \;\propto\;
+        \frac{q_{\phi_y}(z_i\mid y_{i,1:K},x_i)\prod_{m \in S_i}q_{\phi_m}(z_i\mid w_{im},x_i)}
+             {\,p_\psi(z_i \mid x_i^p)^{\lvert S_i \rvert}}$; omit $q_{\phi_y}$ and use power $\lvert S_i\rvert-1$ for outcome-free inference. \\
+    \quad\quad Sample $\hat{z}_i$ from the fused $q_\phi$ above via reparameterization. \\
+    \quad\quad Evaluate $\log p_{\theta_m}(w_{im}\mid \hat{z}_i, x^c_i)$ only for $m\in S_i$, and $\log p_{\theta_k}(y_{ik}\mid \hat{z}_i, x^s_i)$ for all $k$. \\
+    \quad\quad Compute minibatch ELBO $\widehat{\mathcal{L}}$. \\
+    \quad\quad Update $(\{\phi_m\},\phi_y,\{\theta_m\},\{\theta_k\},\psi)$ (omitting inactive $\phi_y$) via SGD on $\widehat{\mathcal{L}}$. \\
+    \quad \textbf{end for} \\
+    \textbf{end for} \\
+    \bottomrule
+    \end{tabular}%
+    }
+\end{table}
+
+The outcome-expert row is a posterior-conditioning requirement and a planned
+repair.  In the audited stock path, optional labels are concatenated into each
+active modality encoder; multiplying those label-conditioned experts repeats
+the same outcome evidence.  A likelihood-faithful implementation must either
+omit outcomes from inference or construct the single $q_{\phi_y}$ factor once,
+as in the table.
+
+This estimation framework is computationally attractive relative to both MCMC and traditional (non-amortized) variational inference. Relative to MCMC, the approach avoids generating long correlated Markov chains for each dataset and instead uses cheap Monte Carlo samples inside minibatch stochastic gradients; training therefore scales well with $n$ through subsampling, is straightforward to parallelize on GPUs, and does not require repeated full-data posterior sweeps. Relative to classical variational inference that optimizes unit-specific variational parameters (e.g., per-document topic proportions) in an inner loop, amortization replaces iterative per-unit updates with a single forward pass through the encoder, so memory does not grow with $n$ and out-of-sample inference reduces to evaluating a trained network. As a result, we obtain an estimator that is well-suited to large samples and nonconjugate likelihoods while retaining a likelihood-based objective.
+
+\subsubsection{Posterior collapse} 
+
+A recurrent challenge in training VAEs is \emph{posterior collapse}. Posterior collapse occurs when the approximate posterior distribution learned by the encoder converges to the prior distribution regardless of the input data. In this case, the latent variables carry no information about the observations, and the decoder generates outputs almost entirely without using the latent code. The KL divergence term in the ELBO then approaches zero, signaling that the latent representation has become redundant. This undermines the purpose of the VAE, since the model no longer learns a meaningful mapping between data and latent space. In the linear Gaussian VAE setting, it can be shown that posterior collapse occurs when the model converges to a local minimum \citep{Lucas2019DontBlameELBO}. In fact, posterior collapse arises if and only if the latent factors are not identifiable---as is the case in the linear Gaussian VAE setting \citep{wang2023posterior}. 
+
+To mitigate posterior collapse, researchers have adopted various strategies. \cite{srivastava2017autoencoding} suggests training models with a high learning rate, a high momentum, and dropout. \cite{bowman2016generating} proposes KL-annealing, a procedure that gradually increases the weight on the KL divergence in the ELBO from zero to one as training progresses. One can also hardcode that the KL divergence should always exceed a threshold to prevent it from going to zero---a technique known as "free bits" \citep{kingma2016improved}. Finally, richer priors or more expressive variational families often reduce the odds of posterior collapse \citep{rezende2015variational, kingma2016improved, tomczak2018vae}. An alternative to the VAE is the Wasserstein Autoencoder \citep[WAE,][]{tolstikhin2018wasserstein}, which can be more stable in practice but comes at the expense of weaker likelihood-based guarantees (see Appendix \ref{app:wae}).
+
+\subsection{Useful extensions}
+
+We consider several natural extensions to the theoretical framework outlined above.
+
+\subsubsection{Weighted ELBO} A popular generalization of the ELBO is a weighted objective that weights the contributions of losses differently and scales the regularizer:
+\begin{equation}\label{eq:weighted_elbo}
+\begin{aligned}
+\mathcal{L}_{\beta,\gamma}(\theta,\phi,\psi;i)
+&= \sum_{m=1}^M \E_{q_\phi}\!\big[\log p_{\theta_m}(w_{im}\!\mid z_i,x_i^c)\big]
+ \;+\; \sum_{k=1}^K \gamma_k \,\E_{q_\phi}\!\big[\log p_{\theta_k}(y_{ik}\!\mid z_i,x_i^s)\big] \\
+&\quad - \beta \, \mathrm{KL}\!\Big(q_\phi(z_i\!\mid w_{i,1:M},y_{i,1:K},x_i)\,\big\|\,p_\psi(z_i\!\mid x_i^p)\Big),
+\end{aligned}
+\end{equation}
+with $0\!\le\!\gamma_k$ and $0\!<\!\beta$. When $\gamma_k\!=\!1$ and $\beta\!=\!1$ we recover the ELBO. For $\beta \neq 1$, the KL penalty is rescaled, no longer corresponding exactly to a likelihood bound, but can improve the interpretability of the latent space. $\beta>1$ strengthens the KL penalty in favor of the prior, whereas $\beta<1$ relaxes the regularization in favor of reconstruction accuracy \citep{higgins2017beta}. Theoretically, $\beta<1$ produces an objective that is no longer a guaranteed lower bound on the marginal likelihood.
+
+An instructive special case is when the reconstruction term corresponds to mean squared error, i.e., a Gaussian likelihood with fixed variance. Since maximizing $\mathcal{L}_{\beta,\gamma}$ is equivalent (up to scaling by $1/\beta$) to maximizing a tempered-likelihood ELBO with likelihood factor $p(w\mid z)^{1/\beta}$, in the Gaussian case this corresponds (up to additive constants) to an ELBO for a model with a different observation-noise variance. In this sense, $\beta<1$ can still be interpreted as a likelihood bound for a nearby Gaussian model with a tighter reconstruction term.
+
+Empirically, $\beta<1$ can mitigate posterior collapse and provide more interpretable latent factors (especially with restrictive variational families such as Gaussians). The weights $\gamma_k$ are included to control the weight given to the prediction loss. This is useful if researchers prioritize achieving high predictive accuracy over latent factor interpretability. Higher values will nudge the model to learn latent factors that are more predictive of the outcomes \citep{kingma2014semi}.
+
+\subsubsection{Transfer and cross-modal learning} 
+
+A natural extension of the standard VAE framework is to allow the encoder to condition on a different set of inputs than the variables appearing in the decoder likelihood. Fix a set of \emph{decoded targets} $S^{\text{dec}}\subseteq\{1,\ldots,M\}$, and let $u_i$ denote the information fed to the encoder (e.g., a different modality subset $w_{i,S^{\text{enc}}}$, or a learned / pre-trained representation such as an embedding). Consider the generative model for the decoded targets,
+\[
+p_{\theta,\psi}(w_{i,S^{\text{dec}}}\mid x_i)
+=\int p_\psi(z_i\mid x_i^p)\prod_{m\in S^{\text{dec}}}p_{\theta_m}(w_{im}\mid z_i,x_i^c)\,\diff z_i.
+\]
+For any variational family of the form $q_\phi(z_i\mid u_i,x_i)$, the corresponding objective
+\begin{equation}
+\label{eq:elbo_cross_modal}
+\mathcal{L}_i^{\text{cross}}(S^{\text{dec}};u_i)
+:=
+\E_{q_\phi(z_i\mid u_i,x_i)}\!\Bigg[\sum_{m\in S^{\text{dec}}}\log p_{\theta_m}(w_{im}\mid z_i, x_i^c)\Bigg]
+-\mathrm{KL}\!\Big(q_\phi(z_i\mid u_i,x_i)\,\big\|\,p_\psi(z_i\mid x_i^p)\Big)
+\end{equation}
+is an evidence lower bound (ELBO) on the marginal log likelihood of the decoded targets:
+\[
+\mathcal{L}_i^{\text{cross}}(S^{\text{dec}};u_i)
+\;\le\;
+\log p_{\theta,\psi}(w_{i,S^{\text{dec}}}\mid x_i).
+\]
+Intuitively, the encoder inputs $u_i$ act as side information that helps construct a good variational approximation for $z_i$, while the likelihood term evaluates model fit only for the decoded targets in $S^{\text{dec}}$. If one additionally includes likelihood terms for the encoder-side variables, this reduces to the standard multimodal ELBO for the joint likelihood over all modeled modalities.
+
+This framework covers two common use cases: \textit{transfer learning} and \textit{cross-modal prediction}. In transfer learning, $u_i$ is a representation (often pre-trained) that is designed to be comparable across domains, such as multilingual text embeddings. For example, \citet{bianchi2021cross} leverage multilingual text embeddings for `zero-shot'' topic modeling: they train a VAE on English documents using multilingual embeddings as encoder input, then predict topic shares for documents in other languages (e.g., German) at test time without retraining. The model generalizes across languages because the embeddings encode cross-lingual semantic similarity. In our notation, the decoder likelihood models an English document representation $w_{i,S^{\text{dec}}}$, while the encoder conditions on $u_i=e_i$ computed from any language. Equation~\eqref{eq:elbo_cross_modal} shows that training remains likelihood-based: the objective lower-bounds the marginal likelihood of the decoder targets. At test time, one can infer $z_i$ for out-of-domain inputs via $q_\phi(z_i\mid e_i,x_i)$; however, to generate samples in the new domain, one must also specify and train a decoder for that domain.
+
+In cross-modal prediction, $u_i$ consists of one or more modalities, and the decoded targets are different modalities. For instance, in legislative studies, one may encode the text of speeches and decode roll-call votes (a ``speech-to-vote'' model): $u_i=w_{i,S^{\text{enc}}}$ is speech text (or its embedding), and $S^{\text{dec}}$ indexes vote outcomes. The objective in Equation~\eqref{eq:elbo_cross_modal} is then an ELBO on the marginal likelihood of votes under a latent-factor model, with the latent representation $z_i$ constrained to be predictable from the encoded text and useful for explaining voting behavior. Similar setups arise when encoding product descriptions to decode consumer reviews, or encoding news text to decode market outcomes.
+
+When the modalities in $u_i$ are truly generated by the same latent factor $z_i$ and are conditionally independent given $z_i$ (as in our DGP), this cross-modal setup is conceptually coherent: regardless of which modality subset is observed, inference targets the same latent object, and (in expectation) different modality-specific encoders should agree on the posterior information about $z_i$.
+
+\section{Application 1: Speech polarization in the US Congress} \label{sec:us_congress}
+
+We now highlight the GTM's usefulness in an application to speech polarization on the floor of the US Congress. Understanding whether differences in speech between two groups are due to differences in the topics discussed or their respective framing is a recurring challenge in political and media economics. For instance, a well-established stylized fact in U.S. politics is that speech polarization between Republicans and Democrats has increased in recent decades. Is this increase driven by topic choice or framing? In other words, are Republicans and Democrats increasingly talking about different topics or talking about the same topics in different ways? The GTM offers a simple, disciplined, unsupervised approach to perform this decomposition exercise.
+
+\subsection{Data and methods}
+
+\paragraph{Data.}
+
+Our application uses the \textit{United States Congressional Record} for 1873---2016. The \textit{Record} is an exact transcript of speeches given on the House and Senate floor. The speeches up until 1993 are from HeinOnline. As they performed optical character recognition (OCR) on scanned print volumes, the text is of good quality overall but has misrecognition errors (some letters are sometimes mistaken for others). Since 1994, the speeches have been published in digital format by the U.S. Government Publishing Office (GPO), and the resulting texts tend to be of higher quality. We enrich the metadata associated with each speech (notably its time stamp and session) with the speaker's characteristics (in particular party affiliation). 
+
+We process the text as follows. We lowercase all words and keep proper nouns, common nouns, adjectives, and verbs. We drop a small, curated list of procedural terms. We tokenize speeches by segmenting words. We drop all speeches of less than 30 words as they are often uninformative, procedural comments. We construct unigrams, bigrams, and trigrams. Finally, we remove outlier words from the vocabulary that appear in less than 0.1\% or more than 1\% of speeches. The curated dataset represents approximately 3 million documents and a vocabulary of 14,503 unique words and phrases. 
+
+
+\paragraph{Estimation details.}
+
+In our baseline specification, we estimate the generalized topic model for 50 topics. We specify a Logistic Normal prior for document-topic shares, no hidden layer for the encoder, and a shallow neural network with one hidden layer and no activation function for the decoder. We allow topic choice and content to depend on the same set of covariates: the time of the speech (session or biennium), the speaker's party, and party-biennium interactions. 
+
+During training, a random sample of 400,000 training documents is selected with 100,000 documents reserved for validation. To mitigate overfitting, we include a dropout rate of 20\% while training. The weight on the MMD Loss is set to 10. We stop updating parameters when the validation loss fails to improve. 
+
+\subsection{Descriptive results}
+
+We begin with descriptive statistics on the estimated topics and embeddings. First, Table \ref{tab:topics} lists the fifty learned topics and their most representative words and human labels. Similar to the standard LDA model, the topics are easily interpretable. There are clear topics associated with economic and social policies---for example, labor market, taxation, pensions, education, public health, health insurance, and elections. To build some intuition for these topics, Figure \ref{fig:soft_clusters} shows a two-dimensional mapping of the speeches represented as vectors of topic shares. Each dot represents a speech with colors assigned according to their main topic. Ultimately, the topics simply constitute soft clusters of the speeches, as can be seen from their spatial distribution in the latent factor space.
+
+Next, we use the GTM to examine differences across Democrats and Republicans in their topic choice. Figure \ref{fig:topic_choice_partisanship} reports the marginal effect of being a Republican on the probability of mentioning a specific topic. We can see, for example, that legal matters and foreign aid topics tend to be discussed by Democrats. Issues related to banking and finance, or to military service and veterans, tend to be discussed by Republicans. Despite these differences, the vast majority of estimated topics are equally discussed by both parties. 
+
+Now we turn to the GTM's capacity to learn associations between wording and metadata. Table \ref{tab:year_words} displays the top words associated with various points in time. The displayed utility sets the topic-share input to zero and all metadata to zero except the relevant biennium indicator. Because a topic-share vector lies on the simplex, the zero vector is off support: these rankings are decoder diagnostics, not generated-word probabilities for a valid document. A model-consistent version would instead hold topic shares at a declared reference simplex mixture, such as the uniform mixture, while varying the biennium indicator. The first row---the words associated with the intercept term---similarly describes an additive decoder-logit baseline. Next, we have a row for a selection of years. They recapitulate distinctive events and policy priorities from the associated periods, including World War I and aftermath (1915-1921), the Great Depression and New Deal (1929-1931), World War II and aftermath (1939-1947), the Energy Crisis and Cold War (1973-1981), the War on Terror (2001-2007), and the Financial Crisis (2009-2011).
+
+The active linear GTM decoder has logits $B\theta+Dx^c+b$: metadata supply an additive logit tilt, not an explicit topic-by-content interaction term. After softmax normalization, however, the probability change induced by the same tilt depends on the reference topic mixture. Table \ref{tab:topic_deviations} reports these topic-conditioned probability-scale deviations for party metadata. For instance, at the reference mixture for the ``Welfare and Unemployment'' topic, Republicans emphasize money and pensions, while Democrats emphasize unemployment, food stamps, and poverty. In the ``Elections and Voting'' comparison, Republicans mention terms like precinct and elector, whereas Democrats focus on civil rights and equal protection. In the ``Labor Market'' comparison, Republicans emphasize laborers, whereas Democrats emphasize minimum-wage terms. In the ``Crime and Justice'' comparison, Republicans' largest probability shifts include alcohol and ``alien,'' whereas Democrats' include juvenile justice and drugs. These contrasts describe probability-scale dependence created by normalization; they should not be read as estimates of structural interaction coefficients.
+
+Finally, contrary to classical topic models, the GTM is ultimately a neural network and thus learns representations of the data in its hidden layers. For instance, with our parametrization, the decoder has a hidden layer of 256 dimensions. This layer jointly learns embeddings of documents, topics, words, and covariates. We show that the resulting embeddings space captures meaningful semantic information. Table \ref{tab:word_embeddings} presents the closest words---as measured by cosine similarity---to a set of common policy words in the decoder's embeddings space. The GTM has clearly learnt high-quality word embeddings in the sense that words with similar semantic meaning are located closer to one another. Going beyond these standard properties of word embeddings \citep[e.g.][]{rodriguez2022word}, the GTM also allows word representations to be directly compared to representations for documents, topics, and covariates. %Similar to \citet{rodriguez2023embedding}, moreover, the word-specific embeddings can themselves depend on topics and/or covariates. For example, the term ``taxation'' may have a different embeddings representation whether it is pronounced by a Republican or a Democrat. %Research in economics that has used embeddings models, rather than topic models, includes \citet{gennaro2022emotion} on emotionality in political speeches and \citet{ash2024gender} on gender stereotypes in the judiciary. The GTM could support this type of research with  clearer statistical foundations.
+
+
+\subsection{Decomposition of speech polarization}
+
+An attractive property of our structural generative model of speech is that it intuitively separates topic choice from topic content. Our approach is to generate pseudo-documents based on our estimated topic model and then estimate a speech polarization index based on these newly generated documents. By generating pseudo-documents, we can compare observed speech polarization levels with hypothetical counterfactuals: (i) one in which party affiliation only influences topic choice, and (ii) one in which party affiliation only influences topic content. As sanity checks, we consider two additional counterfactuals: (iii) one in which party affiliation influences both topic choice and topic content (which should closely mirror observed speech polarization levels if the topic model is well-estimated), and (iv) one in which party affiliation influences neither topic choice nor topic content (which should translate into no speech polarization if the speech polarization index is well-estimated).
+
+Following \cite{gentzkow2019measuring}, we define speech polarization as \textit{``the posterior probability that an observer with a neutral prior expects to assign to a speaker’s true party after hearing the speaker utter a single phrase.''} Formally, let $q_{jt}^R$ ($q_{jt}^D$) denote the probability of a Republican (Democrat) pronouncing the word $j$ in session $t$. The posterior belief that an observer
+with a neutral prior assigns to a speaker being Republican if the speaker chooses word $j$ in session $t$ is: 
+\begin{equation*}
+    \rho_{jt} = \frac{q_{jt}^R}{q_{jt}^R + q_{jt}^D}.  
+\end{equation*}
+We are interested in the vector of $\rho_{jt}$'s, $\boldsymbol{\rho_t}$, that averages this posterior belief across parties and phrases for session $t$. We take the estimated probability distributions of $q_t^R$ and $q_t^D$ from our topic model for each session. We generate 1000 speeches for each party and session under our four scenarios and compute $\boldsymbol{\rho_t}$. We do this exercise 200 times to construct confidence intervals (in practice, confidence intervals are small and therefore not shown).
+
+The probabilities $q_{jt}^D$ and $q_{jt}^R$ are unobserved and need to be estimated from the data. A naive MLE estimator of these probabilities drastically overestimates speech polarization levels. This is due to the high dimensionality of the choice set (the vocabulary of words to choose from) relative to the number of words spoken in a speech (the finite number of observed realizations). A central contribution of \cite{gentzkow2019measuring} is to propose two estimators that mitigate this finite-sample bias. The GTM is not sensitive to this bias because it outputs the entire estimated probability distribution over words when sampling from the prior. That is, we do not generate documents with a few words drawn from the distribution of words. Instead, we take the distribution directly to measure speech polarization. Thus, the only sampling uncertainty comes from sampling topics from the prior. Furthermore, the GTM is heavily regularized (with the dropout rate) when it learns partisan probability distributions over words, making it unlikely to capture spurious associations between party and word choice. This is reminiscent of \cite{gentzkow2019measuring}, given that their preferred estimator penalizes party loadings.
+
+The main result on topic decomposition is presented in Figure \ref{fig:speech_polarization}. Consistent with previous work, we find stable or even decreasing in polarization in the early years, followed by a significant increase starting in the 1990s. We find that framing (in blue) explains the entirety of the increased speech polarization (in red) in the time series. Differences in topic choice (green) have always been low, and have not changed much over the decades. This is broadly consistent with our descriptive results, which already suggested that topic choice was mostly nonpartisan.
+
+At the bottom of graph, the time series in grey gives a placebo test, where polarization is measured from simulated speeches without the party covariates turned on. The time series clearly displays nonexistent speech polarization levels, suggesting our speech polarization estimates are not spurious or otherwise due to finite-sample bias. This placebo gives us more confidence that the main polarization measures are valid. Finally, our estimates of total polarization closely mirror the estimates of \cite{gentzkow2019measuring} in levels and trends. That adds some additional confidence as it replicates results from another validated approach to measuring speech polarization. 
+
+
+\begin{landscape}
+\thispagestyle{empty}
+\begin{table}
+\caption{List of Estimated Topics from the \textit{U.S. Congressional Record}}
+\label{tab:topics}
+\setlength{\extrarowheight}{4pt}
+%
+\small
+\begin{tabular}{l|l}
+\toprule
+\textbf{Topic Label} & \textbf{Top Words} \\
+\midrule
+Welfare and Unemployment & food stamp, unemployment benefit, welfare reform, money borrow, poor people, unemployment \\
+Military Weapons & missile, ballistic missile, ballistic, submarine, silo, cruiser \\
+Education & pupil, school district, private school, vocational education, school, local school district \\
+Transportation and Infrastructure & passenger, airport, highway trust fund, highway trust, rail, mail service \\
+Human Rights & captive nation, polish people, genocide, human right, human right violation, anniversary independence \\
+Health Insurance & private insurance, health insurance, health plan, insurance company, premium, hospital care \\
+Budget and Appropriations & budget authority outlay, authority outlay, budget authority, amount recommend, budget estimate \\ %, recommend appropriation
+Land Entitlement & vessel, act entitle act, certain land, act entitle, subdivision, entitle act \\
+Condolences and Tribute & condolence, mourn, untimely death, eulogy, passing, sense humor \\
+Water and Navigation & navigable, nuclear waste, dam, flood control, basin, navigation \\
+Judiciary and Trials & jury trial, jury, trial jury, grand jury, district judge, defendant \\
+Trade and Industry & build ship, freedom independence, coastwise, farmer buy, cut taxis, coal miner \\
+Scientific Research & space station, space, shuttle, scientist engineer, basic research, library \\
+Postal Services & cent pound cent, pound cent, cent pound, postal employee, pound, advertising \\
+Pensions and Social Security & grant pension, pension, increase pension, widow, social security benefit, retirement system \\
+Banking and Finance & commercial bank, bank, national bank, silver dollar, loan association, depositor \\
+Banking Regulation & hold company, national bank, banking, bank bank, bank, loan association \\
+Foreign Aid & foreign aid, military assistance, military aid, military budget, economic aid, aid \\
+Agriculture and Farming & wheat, bushel, feed grain, cent bushel, percent parity, bale \\
+Elections and Voting & elector, ballot, vacancy, suffrage, legislative power, fill vacancy \\
+Tariffs and Public Service & protective tariff, law degree, career public, pastor, treasurer, farm organization \\
+Taxation & sale tax, property tax, tax income, property taxes, tax return, local taxes \\
+Trade and Textile & trade agreement, textile, fair trade, free trade, textile industry, export \\
+Public Buildings and Construction & circuit judge, cubic, public building, lieutenant, cadet, erection \\
+Military Service and Veterans & active duty, veteran, disabled veteran, enlisted, reservist, enlisted man \\
+Intelligence and Investigation & subpoena, grand jury, impeachment, investigation, intelligence agency, intelligence \\
+Campaign Finance & spending limit, campaign finance, electoral, finance reform, candidate, campaign finance reform \\
+\bottomrule
+\end{tabular}
+\end{table}
+\end{landscape}
+
+\begin{landscape}
+\thispagestyle{empty}
+\begin{table}
+\caption{List of Estimated Topics from the \textit{U.S. Congressional Record} (continued)}
+\label{tab:topics_continued}
+\setlength{\extrarowheight}{4pt}
+%
+\small
+\begin{tabular}{l|l}
+\toprule
+\textbf{Topic Label} & \textbf{Top Words} \\
+\midrule
+Labor Market & wage rate, minimum wage, increase minimum wage, wage worker, cent hour, farm labor \\
+Nuclear Treaties & nuclear test, nuclear arm, treaty, arm control, nuclear weapon, treaty treaty \\
+Oil and Energy & domestic oil, barrel day, barrel oil, crude oil, oil, barrel \\
+Public Health Risks & quarantine, ordnance, beverage, follow resolve, act entitle act, peace security \\
+National Forests & national forest, wilderness, acre, wilderness area, grazing, timber \\
+Legislative Process & unfinished business, divide control, general appropriation, unfinished, open hour, complete action \\
+Energy Policy & change exist law, free election, national energy policy, testimony hearing, change exist, debatable \\
+Capital Gains and Taxes & capital gain, gain tax, capital gain tax, tax rate, surtax, estate tax \\
+Military Construction & military assistance, military construction, new project, increase pension, complete project, river harbor \\
+Judicial and Highway Funding & district attorney, highway trust fund, highway trust, judgeship, parking, controller \\
+Fisheries and Maritime Activities & fishery, coastwise, merchant marine, vessel, fishing, canal \\
+Legal Claims & claimant, pay claim, claim claim, attorney fee, statute limitation, claim pay \\
+Public Health & home health, disease, heart disease, mental health, health center, dental \\
+Housing and Urban Development & affordable housing, public housing, urban renewal, housing unit, housing, voucher \\
+Law Enforcement & law enforcement officer, enforcement officer, absent, pair, prisoner war, enlisted man \\
+Forest Conservation & forest, rainfall, pest, timber, insect, acre \\
+Natural Disasters & earthquake, evacuate, parking, evacuation, flooding, fire department \\
+Crime and Justice & juvenile, crime, deport, firearm, violent crime, handgun \\
+Intellectual Property and Commerce & copyright, patent, common carrier, interstate commerce, plaintiff, antitrust \\
+War Negotiations & military aid, aggression, embargo, peace process, troop, peace \\
+Sports and Social Issues & championship, colored, basketball, colored people, abortion, coach \\
+Agricultural Commodities & butter, wool, pesticide, cent pound, cent pound cent, cent ad \\
+Debt and Budget & debt limit, increase debt, public debt, balance budget, debt increase, interest debt \\
+\bottomrule
+\end{tabular}
+\flushleft
+%\vspace{0.5cm}
+\footnotesize \textbf{Notes:} The 50 estimated GTM topics from the \textit{U.S. Congressional Record}. Labels are manually assigned based on the top words. The top words are the most likely words to appear in a document that is 100\% about said topic. 
+\end{table}
+\end{landscape}
+
+\begin{figure}
+    \begin{center}
+    \caption{Two-Dimensional Projection of Speeches via t-SNE}
+    \label{fig:soft_clusters}
+    \includegraphics[width=1\textwidth]{figures/topics_tsne_50.png}
+    \flushleft
+    \vspace{0.5cm}
+    \end{center}
+    \textbf{Notes:} 2-Dimensional projection via t-SNE of 20,000 randomly selected speeches from the \textit{U.S. Congressional Record} represented as vectors of topic shares. The GTM creates soft clusters of the documents which are then interpreted as topics. Each dot represents a document. Colors represent the main topic for each document. Larger dots represent documents with a larger topic share of said topic. 
+\end{figure}
+
+
+\begin{figure}%[h!]
+    \begin{center}
+    \caption{Partisan Topics in the \textit{U.S. Congressional Record}}
+    \label{fig:topic_choice_partisanship}
+    \includegraphics[width=0.85\textwidth]{figures/topic_deviations_for_republicans_50.png}
+    \end{center}
+    \vspace{-2cm}
+    \footnotesize \textbf{Notes:} Estimates of the coefficient in $\boldsymbol{\Gamma}$ associated with being Republican from the Logistic Normal prior. 95\% confidence intervals computed with the parametric bootstrap. In blue, typically Democrat topics. In red, typically Republican topics.
+\end{figure}
+
+\begin{landscape}
+\thispagestyle{empty}
+\begin{table}%[h!]
+\centering
+\caption{Content Associated with Covariates: Distinctive Words Over Time}
+\label{tab:year_words}
+\setlength{\extrarowheight}{4pt}
+\resizebox{1.4\textwidth}{!}{ %
+\begin{tabular}{ll}
+\toprule
+\textbf{Year of Congress} & \textbf{Top Words} \\
+\midrule
+Intercept & country, people, great, man, law, give \\
+1917 & conscription, prosecution war, win war, war measure, profiteer, present war \\
+1919 & profiteer, league, covenant, armistice, federal control, packer \\
+1921 & profiteer, armistice, prewar, bloc, tile, criticize \\
+1929 & stabilization, bus, care situation, human suffering, nitrogen, psychology \\
+1931 & moratorium, sale tax, commodity price, balancing, furlough, farm organization \\
+1939 & conscription, peacetime, national income, totalitarian, setup, airplane \\
+1941 & war effort, nondefense, defense industry, sabotage, defense effort, rubber \\
+1943 & war effort, postwar, parity price, win war, directive, print record part \\
+1945 & decontrol, atomic bomb, postwar, war effort, atomic energy, full employment \\
+1947 & atomic energy, atomic bomb, atomic, free enterprise, decontrol, ideology \\
+1973 & energy crisis, mass transit, legal service, energy problem, impact statement, environmental \\
+1975 & energy problem, service job, energy conservation, impact statement, food stamp, multinational \\
+1977 & energy problem, oversight hearing, economic stimulus, cruise missile, rate inflation, move opposition \\
+1979 & energy problem, oversight hearing, windfall profit, food stamp, inflation rate, auto industry \\
+1981 & regulatory reform, block grant, social security system, oversight hearing, auto industry, deferral \\
+1993 & health care reform, care reform, unfunded mandate, space station, deficit reduction, stimulus package \\
+2001 & war terrorism, homeland security, terrorist attack, economic stimulus, stimulus package, weapon mass destruction \\
+2003 & homeland security, war terror, war terrorism, terrorist attack, weapon mass destruction, terrorist \\
+2005 & war terror, homeland security, web site, border security, war terrorism, transparency \\
+2007 & transparency, war terror, homeland security, ensure, work bipartisan, urge reserve balance \\
+2009 & transparency, ensure, web site, stakeholder, job creation, health care reform \\
+2011 & transparency, job creation, job growth, infrastructure, ensure, bipartisan agreement \\
+\bottomrule
+\end{tabular}
+}
+\flushleft
+\footnotesize \textbf{Notes:} ``Top words'' ranks decoder logits after setting the topic-share input to the zero vector and activating the listed biennium indicator. The zero vector is outside the topic simplex, so this is an off-support decoder diagnostic, not a model-generated word distribution. A probability-scale version should instead declare and hold fixed a valid reference simplex mixture (for example, the uniform mixture).
+\end{table}
+\end{landscape}
+
+%\clearpage
+
+\begin{landscape}
+\thispagestyle{empty}
+\begin{table}%[h!]
+\caption{Topic-Conditioned Probability Shifts from Additive Party Metadata}
+\label{tab:topic_deviations}
+\setlength{\extrarowheight}{4pt}
+
+\resizebox{1.4\textwidth}{!}{ %
+\begin{tabular}{llll}
+\toprule
+\textbf{Topic Label} & \textbf{Type} & \textbf{Top Words} \\
+\midrule
+Welfare and Unemployment & Baseline & food stamp, unemployment benefit, welfare reform, money borrow, poor people, unemployment \\
+ & Republicans & money, man, pay, people, pension, come \\
+ & Democrats & unemployment, poor people, poverty, hungry, food stamp, unemployed \\
+ \midrule
+Elections and Voting & Baseline & elector, ballot, vacancy, suffrage, legislative power, fill vacancy \\
+ & Republicans & precinct, election, contestant, elector, ballot, seat \\
+ & Democrats & civil right, racial, equal protection, segregation, equal protection law, filibuster \\
+ \midrule
+Military Service and Veterans & Baseline & active duty, veteran, disabled veteran, enlisted, reservist, enlisted man \\
+ & Republicans & officer, man, soldier, enlistment, regiment, enlisted man \\
+ & Democrats & veteran, disabled veteran, personnel, care veteran, veteran family, veteran benefit \\
+ \midrule
+Campaign Finance & Baseline & spending limit, campaign finance, electoral, finance reform, candidate, campaign finance reform \\
+ & Republicans & election, candidate, party, money, postage, expenditure \\
+ & Democrats & campaign finance, spending limit, finance reform, campaign finance reform, campaign contribution, election campaign \\
+ \midrule
+Labor Market & Baseline & wage rate, minimum wage, increase minimum wage, wage worker, cent hour, farm labor \\
+ & Republicans & laborer, labor, man, railroad, workman, railway \\
+ & Democrats & minimum wage, wage worker, worker, increase minimum wage, cent hour, wage \\
+ \midrule
+Capital Gains and Taxes & Baseline & capital gain, gain tax, capital gain tax, tax rate, surtax, estate tax \\
+ & Republicans & taxation, cent, capital, taxis, pay, business \\
+ & Democrats & capital gain, income, tax, tax cut, income tax, excise \\
+ \midrule
+Legal Claims & Baseline & claimant, pay claim, claim claim, attorney fee, statute limitation, claim pay \\
+ & Republicans & claimant, claim, patent, treaty, property, land \\
+ & Democrats & insurance, insurance company, borrower, damage, mortgage, loan \\
+ \midrule
+Public Health & Baseline & home health, disease, heart disease, mental health, health center, dental \\
+ & Republicans & cord, care, service, hospital, physician, blood \\
+ & Democrats & health, mental health, health service, heart disease, cancer, public health \\
+ \midrule
+Crime and Justice & Baseline & juvenile, crime, deport, firearm, violent crime, handgun \\
+ & Republicans & officer, liquor, alien, consular, gun, intoxicate \\
+ & Democrats & juvenile, law enforcement, drug, enforcement, crime, criminal justice \\
+\bottomrule
+\end{tabular}
+}
+\flushleft
+%\vspace{-1cm}
+\footnotesize \textbf{Notes:} The 50 estimated topics. ``Baseline'' fixes a valid one-topic simplex vector and ranks its word probabilities. ``Democrat'' (``Republican'') ranks the largest probability changes after adding the corresponding party-content logit tilt while holding that topic vector fixed. Because the decoder is $B\theta+Dx^c+b$, these topic-conditioned probability changes arise through softmax normalization; there is no explicit topic-by-content interaction coefficient.
+\end{table}
+\end{landscape}
+
+\begin{table}[ht!]
+    \begin{center}
+    \caption{Quality of the Estimated Word Embeddings}
+    \label{tab:word_embeddings}
+    \resizebox{\textwidth}{!}{%
+    \begin{tabular}{l|l|l|l}
+    \toprule
+    \multicolumn{4}{c}{\textbf{Most Similar Phrases in Embeddings Space for:}} \\
+    \midrule
+    \textbf{taxation} & \textbf{immigration} & \textbf{war} & \textbf{health} \\
+    \midrule
+    levy tax & immigration reform & military & health care \\
+    burden taxation & immigration law & troop & medical \\
+    taxes impose & immigrant come & soldier & care \\
+    tax income & illegal immigration & war war & disease \\
+    tax power & deport & country & cancer \\
+    tax cent & immigrant & peace & drug \\
+    amount revenue & undocumented & man & hospital \\
+    taxes levy & deportation & nation & child \\
+    \midrule
+    \textbf{wage} & \textbf{election} & \textbf{regulation} & \textbf{fiscal} \\
+    \midrule
+    minimum wage & election hold & law & budget \\
+    wage increase & ballot & regulate & appropriation \\
+    increase minimum wage & election election & regulatory & fund \\
+    increase minimum & election law & federal regulation & fiscal fiscal \\
+    raise minimum & day election & propose regulation & authorization \\
+    wage worker & candidate & new regulation & increase \\
+    labor & general election & law regulation & expenditure \\
+    wage hour & voter & company & fiscal budget \\
+    \midrule
+    \textbf{debt} & \textbf{deficit} & \textbf{campaign} & \textbf{insurance} \\
+    \midrule
+    national debt & deficit reduction & candidate & insurance company \\
+    public debt & budget deficit & campaign contribution & private insurance \\
+    debt debt & reduce deficit & campaign finance & insurance industry \\
+    pay debt & deficit problem & election & insurance coverage \\
+    debt pay & cut deficit & presidential campaign & insurance premium \\
+    debt limit & deficit deficit & election campaign & insurer \\
+    increase debt & federal deficit & political campaign & premium \\
+    pay interest & increase deficit & editorial & insured \\
+    \midrule
+    \textbf{recession} & \textbf{growth} & \textbf{welfare} & \textbf{crime} \\
+    \midrule
+    recession & economic growth & welfare reform & fight crime \\
+    unemployment benefit & growth rate & welfare system & violent crime \\
+    unemployed worker & growth economy & people welfare & commit crime \\
+    economic stimulus & rate growth & welfare people & crime commit \\
+    people unemployed & economic & welfare country & gun control \\
+    jobless & job creation & dependency & criminal justice \\
+    unemployment percent & economy grow & child care & crime rate \\
+    unemployment insurance & capital & public welfare & murder \\
+    \bottomrule
+    \end{tabular}%
+    }
+    \end{center}
+    \footnotesize
+    \textbf{Notes:} Most similar phrases to specific words in embeddings space. The embeddings space we consider corresponds to the hidden layer of 256 units in the decoder. We measure similarity by cosine similarity. Overall, the GTM learns intuitive and interpretable word embeddings, where words with similar meanings are closer to one another in the embeddings space.
+\end{table}
+
+\begin{figure}[ht!]
+    \begin{center}
+    \caption{Trends in Speech Polarization in the US Congress (1873---2016)}
+    \label{fig:speech_polarization}
+    \includegraphics[width = \textwidth]{figures/trends_in_speech_polarization_with_CI_50.png}
+    \end{center}
+    \footnotesize
+    \textbf{Notes:} Estimates of speech polarization between Republicans and Democrats for each session of Congress. The red line is estimated by simulating speeches where partisanship affects topic choice and topic content. The blue line is estimated by simulating speeches where partisanship affects topic content but not topic choice. The green line is estimated by simulating speeches where partisanship affects topic choice but not topic content. The grey line is estimated by simulating speeches where partisanship does not affect topic choice and topic content. Standard errors are obtained via the parametric bootstrap.
+\end{figure}
+
+\section{Application 2: Predicting business cycles with business news} \label{sec:wsj}
+
+Several finance and macroeconomics papers have recently integrated topic shares in macroeconometric models \citep{larsen2019value, thorsrud2020words, bybee2024business}. They proceed in two steps. They first estimate topic shares via LDA and then use these topic shares as inputs for another econometric model. Conceptually, the main weakness of two-step approaches is that the downstream prediction model is not encouraged to learn topics that are predictive of the target outcomes. In contrast, GTM is encouraged to learn topics that lead both to a low reconstruction loss and a low mean-squared error in prediction. We show that the GTM allows researchers to effectively trade off better predictive power with topic interpretability.
+
+\subsection{Data and methods}
+
+\paragraph{Data.} We apply the GTM to the full-text of \textit{Wall Street Journal} articles published from 1984 to 2012. The dataset is provided as article-level counts of unigrams and bigrams. We lowercase, drop all digits, stopwords, tokens with strictly less than three characters, and tokens that appear in at least 1\% or in less than 0.1\% of documents. This leaves us with a vocabulary of 13,893 phrases. We use Industrial Production Growth as a macroeconomic indicator which we download from the Federal Reserve Economic Data (FRED). The variable is relatively volatile, so we take the log and use a three-month rolling average as our prediction target.
+
+\paragraph{Estimation details.} We specify 50 topics for all models. The encoder and decoder have one hidden layer of 256 dimensions. The predictor has no hidden layer and is a simple linear mapping from topics to the outcome. All hidden layers have rectified linear unit (ReLU) activations. For training, a random sample of 50,000 training documents is selected with 50,000 documents reserved for validation. To prevent overfitting, we include a dropout rate of 20\% while training. The weight of the MMD Loss is set to 10. We stop updating parameters when the validation loss fails to improve. 
+
+For comparison, we also implement two-stage approaches. We train a plain-vanilla Latent Dirichlet Allocation (LDA) model via Gibbs sampling. We then train a linear regression with an L1 penalty (LASSO) selected via cross-validation to predict the same macroeconomic indicators. 
+
+\paragraph{Discussion.} 
+
+Before presenting our main results, two remarks are in order. First, our supervised learning task is formulated at the document-level. That is, we attempt to predict the smoothed Log Industrial Production Growth in month $t$ by observing one article published in month $t-1$, which we represent as a vector of topic shares. This is an extremely challenging prediction task, as most articles don't mention industrial growth, so we do not expect the model to have high predictive accuracy. 
+
+Second, we do not use any external information for the prediction task (such as previous values of the target outcome). We are aware that actual macroeconometric algorithms aggregate topic shares within periods and use additional covariates for nowcasting. We consider this simple setup because it allows us to illustrate the GTM by (i) limiting to the predictive power of texts, and (ii) highlighting the potential benefits of modeling topics and outcomes jointly for supervised learning tasks. Our tools and insights are easily portable to more sophisticated architectures such as autoregressive models.
+
+\subsection{Forecasting macroeconomic indicators} 
+
+\begin{table}%[ht]
+    \begin{center}
+    \caption{Forecasting Performance and Topic Diversity Across Models}
+    \label{tab:wsj_performance}
+    \resizebox{\textwidth}{!}{%
+    \begin{tabular}{l|c|c|c|c}
+    \toprule
+    \textbf{Approach} & \textbf{Prediction Loss Weight ($\lambda_1$)} & \textbf{$R^2$ Training Set} & \textbf{$R^2$ Test Set} & \textbf{Topic Diversity} \\
+    \midrule
+    LDA + LASSO & - & 0.030 & 0.023 & 0.74 \\
+    \midrule
+    GTM & 0 & - & - & 0.464 \\
+     & 10 000 000 & 0.659 & 0.025 & 0.372\\
+     & 50 000 000 & 0.699 & 0.051 & 0.244 \\
+     & 100 000 000 & 0.626 & 0.066 & 0.248 \\
+     & 1 000 000 000 & 0.321 & 0.076 & 0.098 \\
+    \bottomrule
+    \end{tabular}%
+    }
+    \end{center}
+    \footnotesize
+    \textbf{Notes:} This table compares the forecasting performance and topic quality of various models. We measure forecasting performance with the R-squared on the training and testing sets. Topic diversity is a measure of topic quality, where higher scores suggest better topics.     
+\end{table}
+
+
+Table \ref{tab:wsj_performance} presents the performance of different modeling strategies for predicting economic outcomes from news articles. The two-stage approach based on LDA and LASSO predicts smoothed Log Industrial Production Growth with an R-squared of 0.030 on the training set and 0.023 on the test set. The GTM improves predictive performance across the specifications. When putting heavy weight on the prediction loss objective (the $\lambda_1$ values reported in Table~\ref{tab:wsj_performance}), test-set $R^2$ goes as high as 0.076, more than triple the explanatory power of LDA.
+
+The predictive lift from GTM is further illustrated in Figure \ref{fig:wsj_smoothed_predictions}. In particular, in Panel C, we can see that lasso (red) fails to capture the negative swings in the target variable. GTM (in green) is different, as it much better captures these negative dips in production growth.
+
+Next, we assess topic quality. Topic diversity measures the overlap of phrases across topics in the top phrases associated with each topic. In general, higher values suggest better topics. As seen in the last column of Table \ref{tab:wsj_performance}, vanilla LDA is a proper topic model and displays a high value of topic diversity, suggesting the model captures a broad range of diverse topics. GTM gets worse topic quality than LDA. Further, as we increase the weight given on the prediction loss, we observe a progressive decline in GTM's topic diversity, suggesting higher predictive accuracy may come at the expense of topic interpretability.
+
+As an alternative visual representation of topic quality, Figure \ref{fig:wsj_soft_clusters} plots topic representations of documents on a two-dimensional space via t-SNE. In general, well-delimited and relatively small clusters suggest better topics. Overall, the visual results reflect the topic diversity numbers. For GTM, the document clusters appear less and less clearly as we increase the weight of the prediction loss. %One can graphically notice that models with prediction loss weights of 10M and 50M are still clustering documents together, and thus preserve the interpretability of classical topic models. 
+
+Hence, when increasing the prediction loss weight further, the GTM sacrifices the learning of topics for higher predictive accuracy. Such an apparent trade-off suggests that a grid-search approach on $\lambda_1$ may be an effective strategy for researchers wishing to strike the right balance between predictive performance and model interpretability. 
+
+
+\begin{figure}
+    \begin{center}
+    \caption{Time Series of Forecasts for Log Industrial Production Growth}
+    \label{fig:wsj_smoothed_predictions}
+    \begin{tabular}{c}
+    Panel A: Log Industrial Production Growth Over Time \\
+       \includegraphics[width=0.7\linewidth]{figures/wsj_smoothed_IPG.png} \\
+    Panel B: Predictions in the Training Set \\
+    \includegraphics[width=0.7\linewidth]{figures/wsj_smoothed_IPG_training_set.png}\\
+    Panel C: Predictions in the Test Set \\
+    \includegraphics[width=0.7\linewidth ]{figures/wsj_smoothed_IPG_testing_set.png} \\
+    \end{tabular}
+    \end{center}
+\footnotesize
+    \textbf{Notes:} These figures compares the true values of Log Industrial Production Growth and the predicted values from LDA + LASSO and GTM with $\lambda_1 = 50 000 000$. Panel A shows the true target variable and the the 3-month rolling average. Panels B and C compare the predictions of LDA + LASSO (red) and GTM (green) for the training set (Panel B) and test set (Panel C). 
+\end{figure}
+
+
+\begin{figure}
+    \begin{center}
+    \caption{Two-dimensional Visualization of the \textit{Wall Street Journal} Articles via t-SNE}
+    \label{fig:wsj_soft_clusters}
+    \begin{tabular}{cc}
+    LDA & GTM ($\lambda_1 = 0$)\\
+       \includegraphics[width=0.45\linewidth]{figures/wsj_lda_t_sne.png}  &  \includegraphics[width=0.45\linewidth]{figures/wsj_articles_t_sne_weight_0_seed_1.png} \\
+    GTM ($\lambda_1 = 10000000$) & GTM ($\lambda_1 = 50000000$) \\
+    \includegraphics[width=0.45\linewidth]{figures/wsj_articles_t_sne_weight_10000000_seed_1.png}  &  \includegraphics[width=0.45\linewidth]{figures/wsj_articles_t_sne_weight_50000000_seed_1.png} \\
+    GTM ($\lambda_1 = 100000000$) & GTM ($\lambda_1 = 1000000000$) \\
+    \includegraphics[width=0.45\linewidth ]{figures/wsj_articles_t_sne_weight_100000000_seed_1.png} & \includegraphics[width=0.45\linewidth]{figures/wsj_articles_t_sne_weight_1000000000_seed_1.png} \\
+    \end{tabular}
+    \end{center}
+\footnotesize
+    \textbf{Notes:} These figures present the resulting document clusters resulting from the estimation of LDA or the GTM with different weights assigned to the supervised prediction loss. The two dimensions are obtained via t-SNE. Each dot represents a document. Documents are colored based on their main topic. The document clusters appear less and less clearly as we increase the weight of the prediction loss $\lambda_1$.
+\end{figure}
+
+\section{Application 3: Racial biases in texts and images of US newspapers}  \label{sec:newspapers}
+
+XXX
+
+\section{Application 4: Learning vote-based ideal points from political speeches} \label{sec:ideal_points}
+
+XXX
+
+\section{Application 5: An Image-Text topic model for political messaging on Facebook} \label{sec:facebook}
+
+This section shows the multimodal features of GTM by analyzing a joint corpus of text and images. Our data source is  Meta's former public analysis tool CrowdTangle. We collected the universe of public Facebook posts by U.S. Congress from the years 2010 through 2022. 
+
+We analyze the set of posts with both an image and associated text snippet. We pre-process the data by removing posts with non-English text, removing hyperlinks from the texts, and keeping only verbs, nouns, and adjectives that are neither common English words nor part of a manually-created stop-word list to produce cleaned documents for the decoder. The final dataset consists of 553K image-text pairs.
+
+We embed the texts and images using the multimodal encoder Long-CLIP \citep{zhang2024long}. CLIP is a deep learning model that learns a multimodal representation by training image-text pairs, optimizing the objective of predicting the matching image given the text and vice versa. \textit{Long}-CLIP is an extension that allows for longer context lengths for the associated text documents, allowing up to 128 tokens. Luckily, the documents in our corpus are short and after cleaning, less than 1\% of documents are more than 128 tokens. 
+
+We experimented with several GTM models using the CLIP embeddings, systematically varying the prior, the number of topics, the depth and width of the coder and decoder, and the content and prevalence covariates. The quality of the fit was assessed by the coherence of the top words per topic and the top documents. For the analysis below, we used a model with twenty topics, a hidden layer of 256 dimensions for both the encoder and decoder, a Dirichlet prior of one, and including covariates (all fixed effects) for time (year-month), state, and politician.  %We obtain topic distributions for the in-sample and out-of-sample text and image embeddings. 
+
+\begin{table}[]
+    \centering
+    \caption{Joint Text-Image Topics in Congress Member Facebook Posts}
+    \label{tab:facebook-topics}
+    
+\begin{tabular}{@{}lp{4.5cm}p{10cm}@{}}
+\toprule
+\textbf{Topic} & \textbf{Label} & \textbf{Representative Words} \\
+\midrule
+0 & Sports and Competitions & game, win, luck, fun, team, young, football, congrat \\
+1 & Holidays and Awards & wish, family, present, love, dad, mom, hope, free \\
+2 & Voting System & vote, voting, election, democracy, state, abortion, fight, ballot \\
+3 & Military Honors & present, woman, man, man woman, brave, medal, hero, military \\
+4 & Gun Violence & gun, gun violence, violence, border, statement, vote, action, shooting \\
+5 & COVID-19 Health Services & vaccine, site, free, test, health, 19, covid, covid 19 \\
+6 & Natural Disasters & storm, fire, update, damage, evacuation, stay, stay safe, area \\
+7 & Clean Energy \& Infrastructure & energy, infrastructure, clean, create, project, water, bridge, economy \\
+8 & Campaign Volunteering \& Outreach & volunteer, check, constituent, campaign, update, hope, lot, folk \\
+9 & Tragedy \& Mourning & lose, forget, world, love, fight, man, prayer, attack \\
+10 & Women’s Rights & woman, fight, equality, equal, vote, earn, legacy, woman vote \\
+11 & Voting Encouragement & vote, voting, early, polling, poll, early voting, ballot, location \\
+12 & Taxes   & tax, plan, health, cost, taxis, insurance, tax cut, bill \\
+13 & Business Openings & facility, grand, manufacturing, economy, opening, company, grow, grand opening \\
+14 & Public Health & fire, damage, funding, health, flood, recovery, project, flooding \\
+15 & Military Sacrifice \& Remembrance & man, brave, man woman, woman, ultimate, ultimate sacrifice, forget, hero \\
+16 & Economy & tax, american, economy, growth, create, code, energy, cost \\
+17 & Farming \& Small Business & farmer, facility, manufacturing, economy, company, industry, product, grow \\
+18 & Schools & teacher, school, class, young, education, bright, app, classroom \\
+19 & Immigration \& Border Control & border, illegal, southern border, southern, illegal immigrant, statement, immigrant, crisis \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+
+% Figure environment
+\begin{figure}%[htbp]
+    \centering
+     \caption{Top Images for each of the 20 Topics} \label{fig:image_grid}
+
+    % Row 1 (images 00-03)
+    \begin{subfigure}[b]{0.24\textwidth}
+        \includegraphics[width=\textwidth]{figures/topic_images/00_275953023599863868847201714714774395171.jpg}
+    \end{subfigure}
+    \hfill
+    \begin{subfigure}[b]{0.24\textwidth}
+        \includegraphics[width=\textwidth]{figures/topic_images/01_108070772572752882768354742360495235027.jpg}
+    \end{subfigure}
+    \hfill
+    \begin{subfigure}[b]{0.24\textwidth}
+        \includegraphics[width=\textwidth]{figures/topic_images/02_109011718066820045503936830895557874157.jpg}
+    \end{subfigure}
+    \hfill
+    \begin{subfigure}[b]{0.24\textwidth}
+        \includegraphics[width=\textwidth]{figures/topic_images/03_109776504095751578340350737422394634895.jpg}
+    \end{subfigure}
+
+    \vspace{1ex}
+    
+    % Row 2 (images 04-07)
+    \begin{subfigure}[b]{0.24\textwidth}
+        \includegraphics[width=\textwidth]{figures/topic_images/04_103589694087498204460936285680959681785.jpg}
+    \end{subfigure}
+    \hfill
+    \begin{subfigure}[b]{0.24\textwidth}
+        \includegraphics[width=\textwidth]{figures/topic_images/05_139095462709637660765241563307388617408.jpg}
+    \end{subfigure}
+    \hfill
+    \begin{subfigure}[b]{0.24\textwidth}
+        \includegraphics[width=\textwidth]{figures/topic_images/06_173927176407297753363643553720435507912.jpg}
+    \end{subfigure}
+    \hfill
+    \begin{subfigure}[b]{0.24\textwidth}
+        \includegraphics[width=\textwidth]{figures/topic_images/07_114161965708287100659798232445550350224.jpg}
+    \end{subfigure}
+
+    \vspace{1ex}
+    
+    % Row 3 (images 08-11)
+    \begin{subfigure}[b]{0.24\textwidth}
+        \includegraphics[width=\textwidth]{figures/topic_images/08_117072605826099916000507721073528467454.jpg}
+    \end{subfigure}
+    \hfill
+    \begin{subfigure}[b]{0.24\textwidth}
+        \includegraphics[width=\textwidth]{figures/topic_images/09_10399336571558656266434178926374171986.jpg}
+    \end{subfigure}
+    \hfill
+    \begin{subfigure}[b]{0.24\textwidth}
+        \includegraphics[width=\textwidth]{figures/topic_images/10_179990111013954791685266640312790378672.jpg}
+    \end{subfigure}
+    \hfill
+    \begin{subfigure}[b]{0.24\textwidth}
+        \includegraphics[width=\textwidth]{figures/topic_images/11_214966129131782054113641309280616760819.jpg}
+    \end{subfigure}
+
+    \vspace{1ex}
+    
+    % Row 4 (images 12-15)
+    \begin{subfigure}[b]{0.24\textwidth}
+        \includegraphics[width=\textwidth]{figures/topic_images/12_154274787302087693491927909881064602298.jpg}
+    \end{subfigure}
+    \hfill
+    \begin{subfigure}[b]{0.24\textwidth}
+        \includegraphics[width=\textwidth]{figures/topic_images/13_268707044761335262672997407772219230692.jpg}
+    \end{subfigure}
+    \hfill
+    \begin{subfigure}[b]{0.24\textwidth}
+        \includegraphics[width=\textwidth]{figures/topic_images/14_1727345420820791096744252176873763395.jpg}
+    \end{subfigure}
+    \hfill
+    \begin{subfigure}[b]{0.24\textwidth}
+        \includegraphics[width=\textwidth]{figures/topic_images/15_181291557039159738308339605753021248408.jpg}
+    \end{subfigure}
+
+    \vspace{1ex}
+    
+    % Row 5 (images 16-19)
+    \begin{subfigure}[b]{0.24\textwidth}
+        \includegraphics[width=\textwidth]{figures/topic_images/16_129013889059899839109422289615437570162.jpg}
+    \end{subfigure}
+    \hfill
+    \begin{subfigure}[b]{0.24\textwidth}
+        \includegraphics[width=\textwidth]{figures/topic_images/17_149061045231339624620370121844008520452.jpg}
+    \end{subfigure}
+    \hfill
+    \begin{subfigure}[b]{0.24\textwidth}
+        \includegraphics[width=\textwidth]{figures/topic_images/18_112023242018016906631925332941658578003.jpg}
+    \end{subfigure}
+    \hfill
+    \begin{subfigure}[b]{0.24\textwidth}
+        \includegraphics[width=\textwidth]{figures/topic_images/19_235598891669359968198267362412730178431.jpg}
+    \end{subfigure}
+    
+\end{figure}
+
+The list of top words associated with each of the 20 topics are shown in Table \ref{tab:facebook-topics}. The first column includes a topic label assigned by use based on the top-ranked topic words, top-ranked documents, and top-ranked images. Figure \ref{fig:image_grid} shows representative images for each of the 20 topics (in the same order as the table). Overall, we see coherent topics that describe how Congress Members spend their time and how they communicate on social media. There are a number of topics about interacting with constituents, including  celebrating holidays, get-out-the-vote, tributes to the military, and supporting local businesses. Further, there are a number of interesting policy topics, including guns, public health, environment, energy, women's rights, taxes, the economy, schools, and immigration.  Both the words and images are intuitively related to the specified topic label. 
+
+\begin{table}[]    
+\centering  
+    \caption{Topic Prevalence in Text and Images}
+    \label{tab:text-image-topics}
+    \begin{tabular}{@{}rlp{2cm}p{2cm}c@{}}
+\toprule
+\textbf{Topic Code} & \textbf{Topic Label} & \textbf{Prevalence (Text)} & \textbf{Prevalence (Image)} & \textbf{Image – Text (\%)} \\
+\midrule
+5  & Gun Violence                         & 0.045 & 0.081 & 80.30  \\
+2  & Holidays and Awards                  & 0.047 & 0.084 & 77.27  \\
+3  & Voting System                        & 0.023 & 0.039 & 71.94  \\
+10 & Tragedy \& Mourning                  & 0.041 & 0.066 & 61.10  \\
+20 & Immigration \& Border Control        & 0.039 & 0.060 & 53.90  \\
+11 & Women’s Rights                       & 0.051 & 0.074 & 45.10  \\
+12 & Voting Encouragement                 & 0.061 & 0.083 & 36.68  \\
+19 & Schools                              & 0.084 & 0.106 & 25.99  \\
+4  & Military Honors                      & 0.055 & 0.050 & -9.45  \\
+9  & Campaign Volunteering \& Outreach    & 0.080 & 0.070 & -12.20 \\
+6  & COVID-19 Health Services             & 0.053 & 0.046 & -12.76 \\
+7  & Natural Disasters                    & 0.051 & 0.044 & -13.99 \\
+1  & Sports and Competitions              & 0.060 & 0.051 & -14.66 \\
+16 & Military Sacrifice \& Remembrance    & 0.041 & 0.034 & -15.53 \\
+14 & Business Openings                    & 0.042 & 0.030 & -30.04 \\
+17 & Economy                              & 0.050 & 0.022 & -55.54 \\
+18 & Farming \& Small Business            & 0.046 & 0.017 & -61.83 \\
+8  & Clean Energy \& Infrastructure       & 0.048 & 0.018 & -62.06 \\
+13 & Taxes                                & 0.045 & 0.015 & -65.42 \\
+15 & Public Health                        & 0.039 & 0.008 & -79.01 \\
+\bottomrule
+\end{tabular}
+
+\end{table}
+
+How prevalent are these topics in the texts and images? Table \ref{tab:text-image-topics} gives the share of topics that occur in text (third column) and images (fourth column). The shares are quite evenly distributed with topics taking up between 1\% and 10\% of the posts for both modalities. In the fifth column, we show the percent difference of the image share relative to the text share, and this is also the sorting metric. Interestingly, somewhat emotive and divisive topics such as gun violence, immigration, and women's rights, and schools are featured in images. Instead, relatively dry topics such as public health, taxes, infrastructure, small businesses, and the economy are communicated through text.  
+
+\begin{figure}
+    \centering
+    \caption{Slant by Topic for Texts and Images}
+    \label{fig:image-text-slant}
+    \includegraphics[width=0.9\linewidth]{figures/image-text-lean.png}
+\end{figure}
+
+Now we analyze how topics are related to partisanship. Figure \ref{fig:image-text-slant} gives a scatter plot of the 20 topics, with each mark labeled. The horizontal axis is the left-right spectrum going from topics that are used more by Democrats in the texts to topics that are used more by Republicans in the texts. Correspondingly, the vertical axis is the image slant, going from more Republican at the top to more Democrat at the bottom. We can see that, overall, the text and image slant of topics is highly correlated. Overall, the level of slant is similar in the text and images, with text documents slightly more slanted. We don't see any topics that are more slanted among images except the holidays and awards topic, which tends to be more slanted toward Republicans in the image space.
+
+Finally, we look at whether the topics in Facebook posts became more polarized over the 2010-2022 time period. As a simple descriptive exercise, we ran logistic regressions to predict the political party of a congressman from the topic shares, separately for texts and images. We then formed the predicted values and plotted the share of "true" predictions over time, which gives an idea of how well someone can guess party from the topics covered in texts and images.  
+
+\begin{figure}
+    \centering
+    \caption{Topic-Predicted Slant Over Time for Texts and Images}
+    \label{fig:pred-slant-year}
+    \includegraphics[width=0.9\linewidth]{figures/pred_own_year.pdf}
+\end{figure}
+
+These predicted values over time are shown in figure is shown in Figure \ref{fig:pred-slant-year}. As can be seen, topics are predictive of party and that predictiveness increases over the time period, for both text (in blue) and images (in red). The predictiveness of text topics for party has increased relatively more. That suggests that increasing political polarization over this time period is through language rather than imagery.  
+
+\section{Conclusion} \label{sec:conclusion}
+
+In this paper, we proposed a general class of deep latent factor models for unstructured data. Our estimation approach extends a regularized autoencoder architecture, which relies on deep learning to approximate the posterior distribution of latent factors given a dataset and a research prior. Our algorithm is fast, scalable, and performs well in Monte Carlo simulations. As a concrete implementation example, we developed the Generalized Topic Model (GTM), a neural topic model tailored explicitly for applied empirical research. It shares the advantageous speed and scalability of previous neural topic models while flexibly incorporating document metadata in topic estimation. The model can be used for exploration, causal inference, and prediction tasks on large multimodal corpora. We illustrated the model's workings and usefulness by applying the GTM to 150 years of speeches from the \textit{U.S. Congressional Record}, 13 years of Congress Member Facebook posts (texts and images), and over 30 years of \textit{Wall Street Journal} articles. These first applications set the stage for various other substantive applications in economics and other social sciences. 
+
+\clearpage
+
+\putbib
+
+\clearpage
+
+\appendix
+
+\section{Notation}
+\label{app:notation}
+
+\begin{table}[ht!]
+\centering
+\small
+\caption{Summary of notation}
+\label{tab:notation}
+\begin{tabular}{ll}
+\toprule
+\textbf{Symbol} & \textbf{Description} \\
+\midrule
+\multicolumn{2}{l}{\textit{Indices and dimensions}} \\
+$i \in \{1,\ldots,n\}$ & Unit (observation) index \\
+$m \in \{1,\ldots,M\}$ & Modality index \\
+$k \in \{1,\ldots,K\}$ & Auxiliary outcome index \\
+$L$ & Dimension of the latent space \\
+$V$ & Vocabulary size (for text data) \\
+$D$ & Dimension of observed data (e.g., in PPCA) \\
+\midrule
+\multicolumn{2}{l}{\textit{Observed variables}} \\
+$w_{im}$ & Response variable for unit $i$, modality $m$ \\
+$w_{i,S}$ & Response variables for unit $i$, modality subset $S$ \\
+$y_{ik}$ & Auxiliary outcome $k$ for unit $i$ \\
+$x_i$ & Covariates for unit $i$ \\
+$x_i^p$ & Prevalence covariates (shift prior distribution) \\
+$x_i^c$ & Content covariates (shift modality likelihoods) \\
+$x_i^s$ & Supervision covariates (shift outcome likelihoods) \\
+$d_{i,S}$ & Observed data: $(w_{i,S}, y_{i,1:K})$ \\
+$O_i$ & Set of observed modalities for unit $i$ \\
+$S_i$ & Subset of modalities used for training/inference \\
+\midrule
+\multicolumn{2}{l}{\textit{Latent variables}} \\
+$z_i \in \mathcal{Z} \subseteq \mathbb{R}^L$ & Latent factor vector for unit $i$ \\
+\midrule
+\multicolumn{2}{l}{\textit{Model parameters}} \\
+$\psi$ & Prior parameters \\
+$\theta_m$ & Decoder parameters for modality $m$ \\
+$\theta_k$ & Predictor parameters for outcome $k$ \\
+$\theta = \{\theta_m, \theta_k\}$ & All decoder/predictor parameters \\
+$\phi$ & Encoder (variational) parameters \\
+$\vartheta = (\theta, \psi)$ & All generative model parameters \\
+\midrule
+\multicolumn{2}{l}{\textit{Distributions}} \\
+$p_\psi(z_i \mid x_i^p)$ & Prior distribution over latent factors \\
+$p_{\theta_m}(w_{im} \mid z_i, x_i^c)$ & Likelihood for modality $m$ \\
+$p_{\theta_k}(y_{ik} \mid z_i, x_i^s)$ & Likelihood for auxiliary outcome $k$ \\
+$q_\phi(z_i \mid \cdot)$ & Variational (approximate posterior) distribution \\
+$q_\phi^{(m)}(z_i \mid w_{im}, \cdot)$ & Modality-specific encoder \\
+$r(\cdot \mid O_i)$ & Modality subsampling distribution \\
+\midrule
+\multicolumn{2}{l}{\textit{Inference quantities}} \\
+$\mathcal{L}_i(S; q)$ & Evidence lower bound (ELBO) for unit $i$, subset $S$ \\
+$\mathcal{L}_i^\star(S)$ & Optimal ELBO within variational family $\mathcal{Q}$ \\
+$\mathcal{J}(\theta, \phi, \psi)$ & Training objective (sum of expected ELBOs) \\
+$\mathrm{KL}(q \| p)$ & Kullback--Leibler divergence from $p$ to $q$ \\
+\midrule
+\multicolumn{2}{l}{\textit{Weighted ELBO hyperparameters}} \\
+$\beta$ & Weight on KL divergence term \\
+$\gamma_k$ & Weight on auxiliary outcome $k$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\clearpage
+
+\section{Special cases and notation mapping}
+\label{app:special-cases}
+
+This appendix records several common latent factor models as special cases of the data-generating process in Eq.~\eqref{eq:dgp_deeplatent2}. Throughout, we keep the notation $(z_i, x_i^p, x_i^c, x_i^s, w_{im}, y_{ik})$ fixed and specify how each special case sets $M$, $K$, the prior $p_\psi(\cdot)$, and the conditional distributions $p_{\theta_m}(\cdot)$ and $p_{\theta_k}(\cdot)$.
+
+\subsection{Probabilistic PCA (PPCA)}
+
+Probabilistic PCA \citep{tipping1999probabilistic} is a classical latent factor model for continuous data. It assumes that high-dimensional observations are generated by a linear transformation of low-dimensional latent factors plus Gaussian noise. Set $M=1$, $K=0$, $x_i^p$ degenerate (or empty), and denote $w_{i1}\equiv w_i\in\mathbb{R}^D$. Let $z_i\in\mathbb{R}^L$ with $L < D$.
+\begin{align*}
+z_i &\sim p_\psi(z_i\mid x_i^p)=\mathcal{N}(0,I_L),\\
+w_{i1} &\sim p_{\theta_1}(w_{i1}\mid z_i,x_i^c)=\mathcal{N}(W z_i+\mu,\sigma^2 I_D),
+\end{align*}
+where $\theta_1=(W,\mu,\sigma^2)$ consists of a $D\times L$ loading matrix $W$, a mean vector $\mu\in\mathbb{R}^D$, and a noise variance $\sigma^2>0$.
+
+\subsection{Structural Topic Model}
+
+The Structural Topic Model \citep{roberts2016model} extends latent Dirichlet allocation by allowing document-level covariates to influence topic prevalence and topic content. It is widely used in political science and computational social science. Set $M=1$, $K=0$, and let $w_{i1}\equiv w_i$ be the document word-count vector of length $V$ (vocabulary size) with total word count $N_i=\sum_{v=1}^V w_{iv}$. Let the prevalence covariates be $x_i^p\equiv X_i$. The STM uses a logistic-normal prior on topic proportions:
+\begin{align*}
+z_i &\sim p_\psi(z_i\mid x_i^p)=\mathrm{LN}(\Gamma'X_i,\Sigma),\\
+w_{i1} &\sim p_{\theta_1}(w_{i1}\mid z_i,x_i^c)=\mathrm{Multinomial}\big(N_i,\ f_{\theta_1}(z_i, x_i^c)\big),
+\end{align*}
+where $\mathrm{LN}(\cdot,\cdot)$ denotes the logistic-normal distribution, $\Gamma$ is a matrix of prevalence coefficients, $\Sigma$ is the topic covariance, and $f_{\theta_1}(z_i,x_i^c)$ returns word probabilities in the simplex $\Delta^{V-1}$.
+
+\subsection{Supervised Topic Model}
+
+The Supervised Topic Model \citep{mcauliffe2007supervised} augments a topic model with a prediction task: the latent topic proportions are used to predict an auxiliary outcome such as a document rating or label. Set $M=1$, $K=1$, let $w_{i1}\equiv w_i$ denote the document word counts, and let $y_{i1}\equiv y_i$ be an auxiliary outcome.
+\begin{align*}
+z_i &\sim p_\psi(z_i\mid x_i^p)=\mathrm{LN}(0,I),\\
+w_{i1} &\sim p_{\theta_1}(w_{i1}\mid z_i,x_i^c)=\mathrm{Multinomial}(N_i,\Phi z_i),\\
+y_{i1} &\sim p_{\theta_1^{(y)}}(y_{i1}\mid z_i,x_i^s),
+\end{align*}
+where $\Phi$ is a $V\times L$ matrix of topic--word probabilities and the outcome distribution $p_{\theta_1^{(y)}}$ is task-dependent.
+
+
+\subsection{Multimodal Image--Text Model}
+
+Multimodal VAEs learn a shared latent representation from multiple data modalities, such as images and their captions. The key idea is that the same latent factors should explain variation in both modalities. Set $M=2$, with $w_{i1}$ the text modality (e.g., caption word counts or embeddings) and $w_{i2}$ the image modality (e.g., pixel values or CNN features). The model is:
+\begin{align*}
+z_i &\sim p_\psi(z_i\mid x_i^p),\\
+w_{i1} &\sim p_{\theta_1}(w_{i1}\mid z_i,x_i^c),\\
+w_{i2} &\sim p_{\theta_2}(w_{i2}\mid z_i,x_i^c),
+\end{align*}
+where $p_{\theta_1}$ and $p_{\theta_2}$ are instantiated using likelihoods and decoder architectures appropriate to each modality. For text, $p_{\theta_1}$ might be a categorical distribution over words decoded by an LSTM or Transformer; for images, $p_{\theta_2}$ might be a Gaussian distribution over pixels decoded by a convolutional neural network.
+
+\section{An alternative model: The Wasserstein Autoencoder (WAE)} \label{app:wae}
+
+The Wasserstein autoencoder (WAE) addresses variational inference from an optimal transport perspective \citep{tolstikhin2018wasserstein}. The Wasserstein distance between the data distribution $P_W$ and the generative model distribution $P_G$ can be written as
+\[
+W_c(P_W, P_G) = \inf_{\Gamma \in \Pi(P_W, P_G)} \E_{(W,\hat{W}) \sim \Gamma}[c(W,\hat{W})],
+\]
+where $\Pi(P_W, P_G)$ is the set of couplings with marginals $P_W$ and $P_G$. Direct minimization of $W_c(P_W, P_G)$ is intractable in high dimensions. Introducing an encoder distribution $Q(Z|W)$ and a decoder $G(Z)$ yields an upper bound to the transport cost:
+\[
+W_c(P_W, P_G) \leq \E_{P_W}\E_{Q(Z|W)}[c(W,G(Z))] + D(Q_Z, P_Z).
+\]
+This reformulation reveals the WAE objective as a \emph{penalized optimal transport} (POT) problem. The first term corresponds to the cost of transporting observed data $W$ through the encoder--decoder pipeline, while the second term enforces that the aggregate posterior $Q_Z$ matches the prior $P_Z$. This differs from the variational autoencoder (VAE), where $Q(Z|W)$ is regularized against $P_Z$ for each data point, often leading to over-constrained encodings. In contrast, the WAE only enforces \emph{aggregate} matching, which allows greater flexibility in the learned representations while still nudging them toward the prior.
+
+Ultimately, we can recast the problem as a Lagrangian:
+\begin{equation} \label{WAE_minimization}
+\inf_{G \in \mathcal{G}, Q(Z | W) \in \mathcal{Q}} \E_{P_W} \E_{Q(Z | W)} [c(W,G(Z))] + \lambda D(Q_{Z}, P_{Z})
+\end{equation}
+where $c(\cdot)$ is a cost function,\footnote{In practice, if $W$ is continuous, the reconstruction loss is often the mean squared error between the observation's representation $W$ and the predicted value from the autoencoder network. If $W$ is categorical, the reconstruction loss for the autoencoder is often the negative cross-entropy loss.} $Q_{Z} = \E_{P_W} Q(Z | W)$ is the aggregated posterior, $D(Q_{Z}, P_{Z})$ is a divergence metric between $Q_{Z}$ and $P_{Z}$, and $0\le \lambda$ is a hyperparameter controlling the degree of regularization of the encodings distribution. Reminiscent of standard Bayesian inference, Equation (\ref{WAE_minimization}) consists of a reconstruction term and a regularization term. The reconstruction term pushes the autoencoder to closely reconstruct the original target distribution $P_W$. The regularization term pushes the encoding distribution $Q_{Z}$ to remain close to the prior distribution $P_{Z}$. 
+
+As a divergence metric $D(\cdot)$, \cite{tolstikhin2018wasserstein} propose the Maximum Mean Discrepancy (MMD). Let $\mathcal{H}$ denote the Reproducing Kernel Hilbert Space of real-valued functions mapping $\mathcal{Z}$ to $\mathds{R}$ \citep{berlinet2011reproducing}. For a kernel function $k: \mathcal{Z} \times \mathcal{Z} \rightarrow \mathds{R}$, the MMD is defined as:
+\begin{equation*}
+    \text{MMD}_k(Q_Z, P_Z) = || \int_{\mathcal{Z}} k(z, \cdot)dP_{Z}(z) - \int_{\mathcal{Z}} k(z, \cdot)dQ_{Z}(z) \ ||_{\mathcal{H}_k},
+\end{equation*}
+and can be unbiasedly estimated using $m$ samples drawn from $Q_Z$ and $P_Z$:
+\begin{equation*}
+    \widehat{\text{MMD}}_k^2(x,y) = \frac{1}{m(m-1)} \sum_{i \neq j}^m k(x_i, x_j) + \frac{1}{m(m-1)} \sum_{i \neq j}^n k(y_i, y_j) - \frac{2}{m^2} \sum_{i=1}^m \sum_{j=1}^m k(x_i, y_j).
+\end{equation*}
+
+\cite{chakrabortystatistical} provide statistical encoding and decoding guarantees for WAEs. Under mild regularity and smoothness assumptions, they prove that the estimated encoded distribution converges to the true latent distribution:
+\begin{equation*}
+    \frac{1}{n} \sum_{k=0}^n Q(Z|w_k) \xrightarrow{d} P_Z.
+\end{equation*}
+Furthermore, the generator can almost surely map back the encoded points to the original data as the number of observations grows to infinity. However, since the MMD loss matches the aggregate posterior, there is no guarantee that the model converges in probability. Despite these weaker theoretical guarantees, the WAE enjoys very stable training relative to its maximum likelihood counterparts, can accommodate any prior distribution, and its MMD divergence is fast to compute relative to other divergence metrics. It is also straightforward to extend it to multiple modalities, auxiliary outcomes, and covariates---as our main text model.
+
+
+\section{Proofs}
+\label{app:proofs}
+
+\subsection{Derivation of the ELBO}
+\label{app:elbo-derivation}
+
+We derive the evidence lower bound stated in Equation~\eqref{eq:elbo_lowerbound_subset2}. Fix a unit $i$ and a subset of modalities $S\subseteq\{1,\ldots,M\}$. Starting from the log marginal likelihood, we introduce the variational distribution $q(z_i)$ via importance sampling and apply Jensen's inequality:
+\begin{align*}
+\log p_{\theta,\psi}(w_{i,S}, y_{i,1:K}\mid x_i)
+&= \log \int p_\psi(z_i\mid x_i^p)
+    \Bigg[\prod_{m\in S} p_{\theta_m}\!\big(w_{im}\mid z_i, x_i^c\big)\Bigg]
+    \Bigg[\prod_{k=1}^K p_{\theta_k}\!\big(y_{ik}\mid z_i, x_i^s\big)\Bigg]
+\,dz_i \\
+&= \log \int
+\frac{q(z_i)}{q(z_i)} \,
+p_\psi(z_i\mid x_i^p)
+\prod_{m\in S} p_{\theta_m}(w_{im}\mid z_i, x_i^c)
+\prod_{k=1}^K p_{\theta_k}(y_{ik}\mid z_i, x_i^s)
+\,dz_i \\
+&= \log \,\E_{q}\!\left[
+    \frac{ p_\psi(z_i\mid x_i^p) \,
+           \prod_{m\in S} p_{\theta_m}(w_{im}\mid z_i, x_i^c) \,
+           \prod_{k=1}^K p_{\theta_k}(y_{ik}\mid z_i, x_i^s)
+    }{ q(z_i)  }
+\right] \\
+\end{align*}
+By Jensen's inequality (since $\log$ is concave),
+\begin{equation*}
+\E_{q}\!\left[
+    \log \frac{ p_\psi(z_i\mid x_i^p) \,
+           \prod_{m\in S} p_{\theta_m}(w_{im}\mid z_i, x_i^c) \,
+           \prod_{k=1}^K p_{\theta_k}(y_{ik}\mid z_i, x_i^s)
+    }{ q(z_i)  }
+\right]
+\;\le\;
+\log p_{\theta,\psi}(w_{i,S}, y_{i,1:K}\mid x_i).
+\end{equation*}
+Expanding the logarithm and rearranging terms yields
+\begin{align*}
+\mathcal{L}_i(S; q)
+&:= \E_{q}\!\Big[
+    \log p_\psi(z_i\mid x_i^p) 
+    + \sum_{m\in S} \log p_{\theta_m}(w_{im}\mid z_i, x_i^c)
+    + \sum_{k=1}^K \log p_{\theta_k}(y_{ik}\mid z_i, x_i^s)
+    - \log q(z_i) 
+\Big] \\
+&= \sum_{m\in S} \E_{q}\!\big[\log p_{\theta_m}(w_{im}\mid z_i, x_i^c)\big]
+ + \sum_{k=1}^K \E_{q}\!\big[\log p_{\theta_k}(y_{ik}\mid z_i, x_i^s)\big] \\
+&\qquad
+ - \mathrm{KL}\!\Big(q(z_i)\,\big\|\,p_\psi(z_i\mid x_i^p)\Big).
+\end{align*}
+Combining the previous display with Jensen's inequality implies
+\[\mathcal{L}_i(S; q)\;\le\;\log p_{\theta,\psi}(w_{i,S}, y_{i,1:K}\mid x_i).\]
+
+
+Moreover, the gap between the log marginal likelihood and the ELBO equals the Kullback--Leibler divergence between the variational distribution and the true posterior:
+\[
+\log p_{\theta,\psi}(w_{i,S}, y_{i,1:K}\mid x_i)
+= \mathcal{L}_i(S; q)
++ \mathrm{KL}\!\Big(q(z_i)\,\big\|\,p_{\theta,\psi}(z_i\mid w_{i,S}, y_{i,1:K}, x_i)\Big).
+\]
+Since the Kullback--Leibler divergence is nonnegative, this confirms the lower-bound property and shows that the bound is tight if and only if $q(z_i)$ coincides with the true posterior almost surely.
+
+\input{theory_proofs}
+
+\iffalse
+\subsection{Our model is a simple hierarchical model.}
+\label{app:shm-condition-iii}
+
+We verify that our model is a \emph{simple hierarchical model} (SHM), and explain why SHMs satisfy condition~(iii) in Proposition~\ref{prop:elbo_tightness_uat} under the regularity assumptions in \citet{MargossianBlei2024}. The key observation is that our model can be written in the form
+\[
+p(\vartheta)\prod_{i=1}^n p(z_i\mid \vartheta,x_i)\,p(d_{i,S}\mid z_i,\vartheta,x_i),
+\]
+where $\vartheta:=(\theta,\psi)$ collects all global parameters. This factorization shows that, conditional on the global parameters $\vartheta$ and covariates $x_i$, the local variables $(z_i, d_{i,S})$ are independent across units $i$. Models with this structure are called \emph{simple hierarchical models} (SHMs). By \citet{MargossianBlei2024}, simple hierarchical models admit an ideal inference function: there exists a mapping $\mathcal{I}_S^\star$ from each unit's data $(d_{i,S}, x_i)$ to variational parameters $\lambda_i^\star(S)\in\Lambda$ such that $q_{\lambda_i^\star(S)}$ achieves the variational optimum $\mathcal{L}_i^\star(S)$. Moreover, under mild regularity conditions, one can select (exact or $\delta$-approximate) optimizers as continuous functions on compact domains, which yields the continuous near-optimal selector required by condition~(iii).
+
+In our notation, since $\mathcal{L}_i(S;q)=\log p_\vartheta(d_{i,S}\mid x_i)-\mathrm{KL}(q\|p_\vartheta(\cdot\mid d_{i,S},x_i))$, maximizing the ELBO over $\mathcal{Q}$ is equivalent to minimizing $\mathrm{KL}(q\|p_\vartheta(\cdot\mid d_{i,S},x_i))$ over $\mathcal{Q}$. Thus, continuity of an (approximate) ELBO optimizer yields exactly the continuous near-optimal selector required by condition~(iii).
+
+\section{Extended linear--Gaussian case: posterior and fusion algebra}
+\label{app:linear_gaussian_case}
+
+This appendix records the closed-form subset posterior and the Gaussian fusion algebra used in Section~\ref{subsec:elbo_tight2}. We work throughout with the extended conditional linear--Gaussian case (multimodal, covariates, continuous outcomes) and a fixed subset $S\subseteq\{1,\ldots,M\}$.
+
+\paragraph{Subset posterior via completing the square.}
+Recall the model:
+\begin{align*}
+z_i\mid x_i^p &\sim \mathcal{N}(\mu_0(x_i^p),\Sigma_0),
+\\
+w_{im}\mid (z_i,x_i^c) &\sim \mathcal{N}(b_m(x_i^c)+A_m(x_i^c)z_i,\Sigma_{w,m}),\quad m\in S,
+\\
+y_i:=(y_{i1},\ldots,y_{iK})^\top,\qquad y_i\mid (z_i,x_i^s) &\sim \mathcal{N}(d(x_i^s)+C(x_i^s)z_i,\Sigma_y),
+\end{align*}
+with conditional independence across $m$ and between $(w_{i,S})$ and $y_i$ given $(z_i,x_i)$. Consistency with the factorization in Eq.~\eqref{eq:dgp_deeplatent2} corresponds to taking $\Sigma_y$ diagonal. Define residuals $\widetilde w_{im}:=w_{im}-b_m(x_i^c)$ and $\widetilde y_i:=y_i-d(x_i^s)$. Up to an additive constant independent of $z_i$, the conditional log posterior is
+\begin{align*}
+\log p_\vartheta(z_i\mid w_{i,S},y_i,x_i)
+&= -\tfrac12 (z_i-\mu_0)^\top\Sigma_0^{-1}(z_i-\mu_0)
+\\
+&\quad -\tfrac12\sum_{m\in S} (\widetilde w_{im}-A_m z_i)^\top\Sigma_{w,m}^{-1}(\widetilde w_{im}-A_m z_i)
+\\
+&\quad -\tfrac12 (\widetilde y_i-C z_i)^\top\Sigma_y^{-1}(\widetilde y_i-C z_i),
+\end{align*}
+where we suppress $(x_i^p,x_i^c,x_i^s)$ in $\mu_0,A_m,C$ for readability. Expanding and collecting terms in $z_i$ yields a quadratic form
+\[
+\log p_\vartheta(z_i\mid w_{i,S},y_i,x_i)
+=-\tfrac12 z_i^\top V_{i,S}^{-1} z_i + z_i^\top V_{i,S}^{-1} m_{i,S} + \text{const},
+\]
+with
+\begin{align*}
+V_{i,S}^{-1}
+&=\Sigma_0^{-1} + \sum_{m\in S} A_m^\top\Sigma_{w,m}^{-1}A_m + C^\top\Sigma_y^{-1}C,
+\\
+V_{i,S}^{-1}m_{i,S}
+&=\Sigma_0^{-1}\mu_0 + \sum_{m\in S} A_m^\top\Sigma_{w,m}^{-1}\widetilde w_{im} + C^\top\Sigma_y^{-1}\widetilde y_i.
+\end{align*}
+Completing the square gives
+\[
+z_i\mid (w_{i,S},y_i,x_i)\sim \mathcal{N}(m_{i,S},V_{i,S}).
+\]
+
+\paragraph{Modalities-only posterior and posterior predictive for outcomes.}
+Dropping the outcome term yields $z_i\mid (w_{i,S},x_i)\sim\mathcal{N}(m_{i,S}^{(w)},V_{i,S}^{(w)})$ with
+\[
+V_{i,S}^{(w)-1}=\Sigma_0^{-1}+\sum_{m\in S} A_m^\top\Sigma_{w,m}^{-1}A_m,
+\qquad
+m_{i,S}^{(w)}=V_{i,S}^{(w)}\Big(\Sigma_0^{-1}\mu_0+\sum_{m\in S} A_m^\top\Sigma_{w,m}^{-1}\widetilde w_{im}\Big).
+\]
+Since $y_i\mid (z_i,x_i^s)$ is Gaussian and linear in $z_i$, integrating out $z_i\mid (w_{i,S},x_i)$ yields
+\[
+y_i\mid (w_{i,S},x_i)
+\sim
+\mathcal{N}\Big(d(x_i^s)+C(x_i^s)m_{i,S}^{(w)},\ \Sigma_y + C(x_i^s)V_{i,S}^{(w)}C(x_i^s)^\top\Big).
+\]
+
+\paragraph{Gaussian fusion and corrected product-of-experts exactness.}
+For a single modality $m$, the unimodal posterior is $p_\vartheta(z_i\mid w_{im},x_i)=\mathcal{N}(m_{im},V_{im})$ with
+\[
+V_{im}^{-1}=\Sigma_0^{-1}+A_m^\top\Sigma_{w,m}^{-1}A_m,
+\qquad
+V_{im}^{-1}m_{im}=\Sigma_0^{-1}\mu_0 + A_m^\top\Sigma_{w,m}^{-1}\widetilde w_{im}.
+\]
+Define increments $\Delta_{im}:=A_m^\top\Sigma_{w,m}^{-1}A_m$ and $h_{im}:=A_m^\top\Sigma_{w,m}^{-1}\widetilde w_{im}$. Then the exact subset posterior (modalities only) satisfies
+\[
+V_{i,S}^{(w)-1}=\Sigma_0^{-1}+\sum_{m\in S}\Delta_{im},
+\qquad
+V_{i,S}^{(w)-1}m_{i,S}^{(w)}=\Sigma_0^{-1}\mu_0+\sum_{m\in S} h_{im}.
+\]
+Now consider the corrected product-of-experts rule from Eq.~\eqref{eq:corrected_poe2}, specialized to Gaussian unimodal encoders that match the unimodal posteriors. Each unimodal posterior already contains one copy of the prior factor $p_\psi(z_i\mid x_i^p)$; multiplying $|S|$ such terms duplicates the prior $|S|$ times. Dividing by $p_\psi(\cdot\mid x_i^p)^{|S|-1}$ removes the redundant prior factors, leaving exactly the prior times the product of the $|S|$ likelihood contributions. Since all factors are Gaussian in $z_i$, the resulting density is Gaussian and the precision algebra above shows it coincides with the exact subset posterior.
+
+\subsection{Proof of Proposition~\ref{prop:elbo_tightness_uat}}
+\label{app:proof-elbo-tightness}
+
+\begin{proof}
+Fix $\varepsilon > 0$. By the ELBO gap identity, for any $(d,x) \in \mathcal{D}_S \times \mathcal{X}$ and any $\lambda \in \Lambda$,
+\begin{equation}
+\log p_\vartheta(d \mid x) - \mathcal{L}(S; q_\lambda) = \mathrm{KL}\!\Big(q_\lambda \,\big\|\, p_\vartheta(\cdot \mid d, x)\Big).
+\label{eq:gap_identity_app}
+\end{equation}
+Thus it suffices to show there exists $\phi$ such that $\mathrm{KL}(q_{g_\phi(d,x)} \| p_\vartheta(\cdot \mid d,x)) \leq \varepsilon$ uniformly over $(d,x) \in \mathcal{D}_S \times \mathcal{X}$.
+
+\medskip
+\noindent\textbf{Step 1: Construct a continuous near-optimal selector.}
+
+Define the best-in-family KL gap
+\[
+\Delta_\mathcal{Q}(d,x) := \inf_{\lambda \in \Lambda} \mathrm{KL}\!\Big(q_\lambda \,\big\|\, p_\vartheta(\cdot \mid d,x)\Big).
+\]
+By condition (ii), $\Delta_\mathcal{Q}(d,x) = 0$ for all $(d,x) \in \mathcal{D}_S \times \mathcal{X}$.
+
+By condition (iii), there exists a continuous function $\lambda^{\varepsilon/2}: \mathcal{D}_S \times \mathcal{X} \to \Lambda$ such that
+\[
+\mathrm{KL}\!\Big(q_{\lambda^{\varepsilon/2}(d,x)} \,\big\|\, p_\vartheta(\cdot \mid d,x)\Big) \leq \Delta_\mathcal{Q}(d,x) + \frac{\varepsilon}{2} = \frac{\varepsilon}{2}
+\]
+for all $(d,x) \in \mathcal{D}_S \times \mathcal{X}$.
+
+\medskip
+\noindent\textbf{Step 2: Establish uniform continuity.}
+
+Since $\mathcal{D}_S \times \mathcal{X}$ is compact and $\lambda^{\varepsilon/2}$ is continuous, the image
+\[
+K := \lambda^{\varepsilon/2}(\mathcal{D}_S \times \mathcal{X}) \subseteq \Lambda
+\]
+is compact. Define the set
+\[
+K_\eta := \{\lambda \in \Lambda : \mathrm{dist}(\lambda, K) \leq \eta\}
+\]
+for $\eta > 0$. For $\eta$ sufficiently small, $K_\eta$ is compact (as a closed $\eta$-neighborhood of a compact set in $\mathbb{R}^p$).
+
+By condition (iv), the map $(\lambda, d, x) \mapsto \mathrm{KL}(q_\lambda \| p_\vartheta(\cdot \mid d,x))$ is continuous. Since $K_1 \times \mathcal{D}_S \times \mathcal{X}$ is compact, this map is uniformly continuous on $K_1 \times \mathcal{D}_S \times \mathcal{X}$.
+
+Therefore, there exists $\eta \in (0, 1)$ such that for all $(d,x) \in \mathcal{D}_S \times \mathcal{X}$ and all $\lambda, \lambda' \in K_1$ with $\|\lambda - \lambda'\| < \eta$,
+\begin{equation}
+\Big| \mathrm{KL}\!\Big(q_\lambda \,\big\|\, p_\vartheta(\cdot \mid d,x)\Big) - \mathrm{KL}\!\Big(q_{\lambda'} \,\big\|\, p_\vartheta(\cdot \mid d,x)\Big) \Big| < \frac{\varepsilon}{2}.
+\label{eq:uniform_cont_app}
+\end{equation}
+
+\medskip
+\noindent\textbf{Step 3: Approximate the selector with the encoder.}
+
+By condition (v), the encoder class can uniformly approximate the continuous selector $\lambda^{\varepsilon/2}: \mathcal{D}_S \times \mathcal{X} \to \Lambda$. Therefore there exists an encoder parameterization $\phi$ such that
+\[
+\big\| g_\phi(d,x) - \lambda^{\varepsilon/2}(d,x) \big\| < \eta
+\quad \text{for all } (d,x) \in \mathcal{D}_S \times \mathcal{X}.
+\]
+
+\medskip
+\noindent\textbf{Step 4: Combine the bounds.}
+
+Fix any $(d,x) \in \mathcal{D}_S \times \mathcal{X}$. Let $\lambda' = \lambda^{\varepsilon/2}(d,x) \in K \subseteq K_1$ and $\lambda = g_\phi(d,x)$. By the choice of $\phi$ in Step 3, $\|\lambda - \lambda'\| < \eta < 1$, so $\lambda \in K_1$.
+
+Applying the triangle inequality and the bounds from Steps 1 and 2:
+\begin{align*}
+\mathrm{KL}\!\Big(q_{g_\phi(d,x)} \,\big\|\, p_\vartheta(\cdot \mid d,x)\Big)
+&\leq \mathrm{KL}\!\Big(q_{\lambda^{\varepsilon/2}(d,x)} \,\big\|\, p_\vartheta(\cdot \mid d,x)\Big) \\
+&\quad + \Big| \mathrm{KL}\!\Big(q_{g_\phi(d,x)} \,\big\|\, p_\vartheta(\cdot \mid d,x)\Big) - \mathrm{KL}\!\Big(q_{\lambda^{\varepsilon/2}(d,x)} \,\big\|\, p_\vartheta(\cdot \mid d,x)\Big) \Big| \\
+&\leq \frac{\varepsilon}{2} + \frac{\varepsilon}{2} = \varepsilon.
+\end{align*}
+
+Since $(d,x)$ was arbitrary, this bound holds uniformly over $\mathcal{D}_S \times \mathcal{X}$. Combined with identity~\eqref{eq:gap_identity_app} and the nonnegativity of KL divergence, we obtain
+\[
+0 \leq \log p_\vartheta(d \mid x) - \mathcal{L}(S; q_{g_\phi(d,x)}) \leq \varepsilon
+\]
+for all $(d,x) \in \mathcal{D}_S \times \mathcal{X}$.
+\end{proof}
+
+% The superseded nuisance-weight limit argument was removed.  The
+% active generative-parameter profiling proof, with a complete affine gauge
+% and no encoder-weight CLT, is in theory_proofs.tex.
+\fi
+
+\section{Simulations}
+
+\subsection{Probabilistic PCA}
+
+XXX
+
+% IRT model (ex-post alignment with ground truth) ==> unimodal + multimodal + cross-modal + increasing depth of the encoder/decoder
+
+\subsection{Topic model with a logistic normal prior}
+
+XXX
+
+% Topic model (Logistic Normal, with anchor words) ==> unimodal + multimodal + cross-modal + increasing depth of the encoder/decoder
+
+\subsection{Decomposing topics vs. slant}
+
+XXX
+
+% Decomposition exercise (topics vs slant)
+
+\subsection{Colored MNIST}
+
+XXX
+
+% Colored MNIST
+
+\section{Implementation details for each application}
+
+XXX
+
+\end{bibunit}
+
+\end{document}
