@@ -838,6 +838,30 @@ class DeepLatent:
             else:
                 doc_latents = z  # real-valued (deterministic for ae_type="ae")
 
+            # A hard categorical MoG draw has no pathwise gradient with respect to
+            # mixture probabilities. For the VAE likelihood, Rao-Blackwellize over the
+            # component index instead: draw once from every Gaussian component and
+            # weight every conditional NLL by its (differentiable) mixture probability.
+            # This is the exact sum_c pi_c E_{N_c}[log p(data | z)] estimator described
+            # in VARIATIONAL_FAMILIES.md. The ordinary sampled `doc_latents` remains the
+            # public encoder output, while training uses these component-wise latents.
+            mog_component_z = None
+            mog_component_latents = None
+            mog_component_weights = None
+            if self.ae_type == "vae" and self.vi_type == "mixture_of_gaussians":
+                mog_info = mu_logvar if isinstance(mu_logvar, tuple) else mu_logvar[-1]
+                _, mog_means, mog_covariance_params, mog_component_weights = mog_info
+                mog_component_z = self.encoder._mog_component_samples(
+                    mog_means, mog_covariance_params
+                )  # [B,C,D]
+                B_mog, C_mog, D_mog = mog_component_z.shape
+                if self.latent_factor_prior in {"dirichlet", "logistic_normal"}:
+                    mog_component_latents = self.encoder.latent_to_theta(
+                        mog_component_z.reshape(B_mog * C_mog, D_mog)
+                    ).reshape(B_mog, C_mog, -1)
+                else:
+                    mog_component_latents = mog_component_z
+
             # -------------------- DECODERS --------------------
             # Reconstruction is the per-document negative log-likelihood (summed over
             # the tokens/votes/features within a document, averaged over the batch).
@@ -846,11 +870,31 @@ class DeepLatent:
             # Per-token averaging would down-weight the likelihood by ~document length
             # relative to the KL and cause posterior collapse at w_prior=1.
             reconstruction_loss = 0.0
-            theta_input = (
-                torch.cat([doc_latents, content_covariates], dim=1)
-                if content_covariates is not None
-                else doc_latents
-            )
+            if mog_component_latents is not None:
+                B_mog, C_mog, latent_dim_mog = mog_component_latents.shape
+                decoder_doc_latents = mog_component_latents.reshape(
+                    B_mog * C_mog, latent_dim_mog
+                )
+                if content_covariates is not None:
+                    decoder_content_covariates = (
+                        content_covariates.unsqueeze(1)
+                        .expand(-1, C_mog, -1)
+                        .reshape(B_mog * C_mog, -1)
+                    )
+                    theta_input = torch.cat(
+                        [decoder_doc_latents, decoder_content_covariates], dim=1
+                    )
+                else:
+                    decoder_content_covariates = None
+                    theta_input = decoder_doc_latents
+            else:
+                decoder_doc_latents = doc_latents
+                decoder_content_covariates = content_covariates
+                theta_input = (
+                    torch.cat([doc_latents, content_covariates], dim=1)
+                    if content_covariates is not None
+                    else doc_latents
+                )
 
             for key, decoder in self.decoders.items():
                 # Skip inactive modalities during training with modality masking
@@ -866,13 +910,33 @@ class DeepLatent:
                     target_images = modality_data.to(self.device)
 
                     # For image decoder, we need to pass content covariates separately
-                    reconstructed_images = decoder(doc_latents, content_covariates)
+                    reconstructed_images = decoder(
+                        decoder_doc_latents, decoder_content_covariates
+                    )
 
                     # Per-document Gaussian NLL: summed over pixels, averaged over the batch.
-                    recon_loss = (
-                        F.mse_loss(reconstructed_images, target_images, reduction="sum")
-                        / target_images.shape[0]
-                    )
+                    if mog_component_weights is not None:
+                        target_expanded = (
+                            target_images.unsqueeze(1)
+                            .expand(-1, C_mog, *target_images.shape[1:])
+                            .reshape(B_mog * C_mog, *target_images.shape[1:])
+                        )
+                        component_nll = (
+                            (reconstructed_images - target_expanded)
+                            .pow(2)
+                            .reshape(B_mog, C_mog, -1)
+                            .sum(-1)
+                        )
+                        recon_loss = (
+                            mog_component_weights * component_nll
+                        ).sum() / B_mog
+                    else:
+                        recon_loss = (
+                            F.mse_loss(
+                                reconstructed_images, target_images, reduction="sum"
+                            )
+                            / target_images.shape[0]
+                        )
                     reconstruction_loss += recon_loss
 
                 elif view_type == "discrete_choice":
@@ -882,7 +946,20 @@ class DeepLatent:
                         x_out = modality_data[question].to(self.device)
                         logits = question_decoder(theta_input)
                         targets = x_out.argmax(dim=-1)
-                        reconstruction_loss += F.cross_entropy(logits, targets)
+                        if mog_component_weights is not None:
+                            targets_expanded = (
+                                targets.unsqueeze(1)
+                                .expand(-1, C_mog)
+                                .reshape(B_mog * C_mog)
+                            )
+                            component_nll = F.cross_entropy(
+                                logits, targets_expanded, reduction="none"
+                            ).reshape(B_mog, C_mog)
+                            reconstruction_loss += (
+                                mog_component_weights * component_nll
+                            ).sum() / B_mog
+                        else:
+                            reconstruction_loss += F.cross_entropy(logits, targets)
 
                 else:
                     target = (
@@ -893,23 +970,57 @@ class DeepLatent:
                     recon = decoder(theta_input)
 
                     if view_type == "bow":
-                        log_probs = F.log_softmax(recon, dim=1)
-                        # Per-document multinomial NLL: summed over the vocabulary,
-                        # averaged over the batch.
-                        recon_loss = -torch.sum(target * log_probs) / target.shape[0]
+                        if mog_component_weights is not None:
+                            log_probs = F.log_softmax(
+                                recon.reshape(B_mog, C_mog, -1), dim=2
+                            )
+                            component_nll = -(target.unsqueeze(1) * log_probs).sum(-1)
+                            recon_loss = (
+                                mog_component_weights * component_nll
+                            ).sum() / B_mog
+                        else:
+                            log_probs = F.log_softmax(recon, dim=1)
+                            # Per-document multinomial NLL: summed over the vocabulary,
+                            # averaged over the batch.
+                            recon_loss = (
+                                -torch.sum(target * log_probs) / target.shape[0]
+                            )
 
                     elif view_type == "embedding":
                         # Per-document Gaussian NLL: summed over feature dims, averaged over batch.
-                        recon_loss = (
-                            F.mse_loss(recon, target, reduction="sum") / target.shape[0]
-                        )
+                        if mog_component_weights is not None:
+                            component_nll = (
+                                (recon.reshape(B_mog, C_mog, -1) - target.unsqueeze(1))
+                                .pow(2)
+                                .sum(-1)
+                            )
+                            recon_loss = (
+                                mog_component_weights * component_nll
+                            ).sum() / B_mog
+                        else:
+                            recon_loss = (
+                                F.mse_loss(recon, target, reduction="sum")
+                                / target.shape[0]
+                            )
 
                     elif view_type == "vote":
                         mask = ~modality_data["mask"].to(self.device)
                         loss_fn = nn.BCEWithLogitsLoss(reduction="none")
-                        losses = loss_fn(recon, target)
-                        # Per-document Bernoulli NLL: summed over observed votes, averaged over batch.
-                        recon_loss = torch.sum(losses * mask) / target.shape[0]
+                        if mog_component_weights is not None:
+                            recon_reshaped = recon.reshape(B_mog, C_mog, -1)
+                            losses = loss_fn(
+                                recon_reshaped,
+                                target.unsqueeze(1).expand_as(recon_reshaped),
+                            )
+                            component_nll = (losses * mask.unsqueeze(1)).sum(-1)
+                            recon_loss = (
+                                mog_component_weights * component_nll
+                            ).sum() / B_mog
+                        else:
+                            losses = loss_fn(recon, target)
+                            # Per-document Bernoulli NLL: summed over observed votes,
+                            # averaged over the batch.
+                            recon_loss = torch.sum(losses * mask) / target.shape[0]
 
                     else:
                         raise ValueError(f"Unsupported view type: {view_type}")
@@ -1208,22 +1319,23 @@ class DeepLatent:
                         kl_raw = kl_raw_total  # [B] for regular processing
 
                 elif self.vi_type == "mixture_of_gaussians":
-                    # MC estimate of KL( sum_c pi_c N(mu_c, diag) || p(z) ), Rao-Blackwellized
-                    # over the component index: one reparameterized draw per component,
-                    # weighted by pi. log q is the full mixture density (logsumexp over c').
-                    _, means, logvars, pi = mu_logvar_fused  # [B,C,K],[B,C,K],[B,C]
+                    # MC estimate of KL(sum_c pi_c N_c || p(z)), Rao-Blackwellized over
+                    # the component index. Corrected MoG-PoE components can have full
+                    # covariance; ordinary MoG/MoE components remain diagonal.
+                    _, means, covariance_params, pi = mu_logvar_fused
                     B_, C_, D_ = means.shape
-                    std = torch.exp(0.5 * logvars)
-                    z_c = means + torch.randn_like(std) * std  # [B,C,K]
+                    z_c = (
+                        mog_component_z
+                        if mog_component_z is not None
+                        else self.encoder._mog_component_samples(
+                            means, covariance_params
+                        )
+                    )  # [B,C,K]
 
-                    # log q(z_c) = logsumexp_{c'} [ log pi_c' + sum_k log N(z_c; mu_c', var_c') ]
-                    z_e = z_c.unsqueeze(2)  # [B,C,1,K]
-                    m_e = means.unsqueeze(1)  # [B,1,C,K]
-                    lv_e = logvars.unsqueeze(1)  # [B,1,C,K]
-                    log_N = -0.5 * (
-                        (z_e - m_e) ** 2 / torch.exp(lv_e) + lv_e + np.log(2 * np.pi)
-                    )
-                    log_N = log_N.sum(-1)  # [B,C,C]
+                    # log q(z_c) = logsumexp_{c'} [log pi_c' + log N_c'(z_c)]
+                    log_N = self.encoder._mog_component_log_prob(
+                        z_c, means, covariance_params
+                    )  # [B,C,C]
                     log_pi = torch.log(pi + 1e-12).unsqueeze(1)  # [B,1,C]
                     log_q = torch.logsumexp(log_pi + log_N, dim=2)  # [B,C]
 
@@ -1280,7 +1392,22 @@ class DeepLatent:
 
             # -------------------- PREDICTION (multi-label) --------------------
             if target_labels is not None and self.labels_info:
-                predictions = self.predictor(doc_latents, prediction_covariates)
+                if mog_component_latents is not None:
+                    prediction_latents = mog_component_latents.reshape(
+                        B_mog * C_mog, -1
+                    )
+                    prediction_covariates_expanded = (
+                        prediction_covariates.unsqueeze(1)
+                        .expand(-1, C_mog, -1)
+                        .reshape(B_mog * C_mog, -1)
+                        if prediction_covariates is not None
+                        else None
+                    )
+                    predictions = self.predictor(
+                        prediction_latents, prediction_covariates_expanded
+                    )
+                else:
+                    predictions = self.predictor(doc_latents, prediction_covariates)
                 prediction_loss = 0.0
                 self.per_label_losses = {}
 
@@ -1301,18 +1428,48 @@ class DeepLatent:
                         log_var = self.predictor.noise_log_var[label_name].clamp(
                             -12.0, 4.0
                         )
-                        sq_err = (pred.squeeze() - target) ** 2
+                        if mog_component_weights is not None:
+                            sq_err = (
+                                pred.reshape(B_mog, C_mog) - target.unsqueeze(1)
+                            ).pow(2)
+                            mean_sq_err = (mog_component_weights * sq_err).sum() / B_mog
+                        else:
+                            mean_sq_err = (pred.squeeze() - target).pow(2).mean()
                         label_loss = 0.5 * (
-                            torch.exp(-log_var) * sq_err.mean()
+                            torch.exp(-log_var) * mean_sq_err
                             + log_var
                             + np.log(2 * np.pi)
                         )
                     elif label_type == "binary":
-                        label_loss = F.binary_cross_entropy_with_logits(
-                            pred.squeeze(), target
-                        )
+                        if mog_component_weights is not None:
+                            component_nll = F.binary_cross_entropy_with_logits(
+                                pred.reshape(B_mog, C_mog),
+                                target.unsqueeze(1).expand(-1, C_mog),
+                                reduction="none",
+                            )
+                            label_loss = (
+                                mog_component_weights * component_nll
+                            ).sum() / B_mog
+                        else:
+                            label_loss = F.binary_cross_entropy_with_logits(
+                                pred.squeeze(), target
+                            )
                     elif label_type == "multiclass":
-                        label_loss = F.cross_entropy(pred, target.long())
+                        if mog_component_weights is not None:
+                            target_expanded = (
+                                target.long()
+                                .unsqueeze(1)
+                                .expand(-1, C_mog)
+                                .reshape(B_mog * C_mog)
+                            )
+                            component_nll = F.cross_entropy(
+                                pred, target_expanded, reduction="none"
+                            ).reshape(B_mog, C_mog)
+                            label_loss = (
+                                mog_component_weights * component_nll
+                            ).sum() / B_mog
+                        else:
+                            label_loss = F.cross_entropy(pred, target.long())
                     else:
                         raise ValueError(f"Unknown label type: {label_type}")
 
@@ -2093,9 +2250,9 @@ class DeepLatent:
         if num_workers is None:
             num_workers = self.num_workers
 
-        # Mixture-of-Gaussians posteriors are fused as a concatenated mixture (MoE),
-        # not via per-modality precision weighting, so the precision-based modality
-        # weights are not defined. Report the (equal) MoE-average weights.
+        # A scalar precision-based modality weight is not defined for a Gaussian
+        # mixture: MoE concatenates components, while corrected PoE assigns weights
+        # to Cartesian component tuples. Report equal descriptive modality weights.
         if self.vi_type == "mixture_of_gaussians":
             N = len(dataset)
             M = len(self.encoder.encoders)
@@ -2732,12 +2889,11 @@ class DeepLatent:
             log_q0 = Normal(mu, torch.exp(0.5 * logvar)).log_prob(z0).sum(1)
             return log_q0 - log_det_j  # change-of-variables density of the flow output
         elif self.vi_type == "mixture_of_gaussians":
-            _, means, logvars, pi = info
-            z_e = z.unsqueeze(1)  # [B,1,K]
-            logN = -0.5 * (
-                (z_e - means) ** 2 / torch.exp(logvars) + logvars + np.log(2 * np.pi)
-            ).sum(
-                -1
+            _, means, covariance_params, pi = info
+            logN = self.encoder._mog_component_log_prob(
+                z.unsqueeze(1), means, covariance_params
+            ).squeeze(
+                1
             )  # [B,C]
             return torch.logsumexp(torch.log(pi + 1e-12) + logN, dim=1)  # [B]
         else:

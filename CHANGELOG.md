@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- Exact corrected Product-of-Experts fusion for `vi_type="mixture_of_gaussians"`.
+  The implementation analytically expands the Cartesian product to `C^M` Gaussian
+  components, computes their overlap-adjusted weights in log space, supports learned
+  full-covariance Gaussian priors, and warns about exponential time/memory growth.
+- Rao-Blackwellized reconstruction and supervised likelihoods for Gaussian mixtures,
+  preserving gradients through component probabilities and overlap-dependent parameters.
+- Numerical density-identity, gradient, component-count, and training-simulation checks
+  for corrected MoG-PoE fusion.
+
 ## [0.2.0] - 2026-07-02
 
 ### Changed

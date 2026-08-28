@@ -147,11 +147,16 @@ model = IdealPointNN(
 | Argument         | Description                                  |
 | ---------------- | -------------------------------------------- |
 | `ae_type`        | `"wae"` (Wasserstein autoencoder) or `"vae"` (variational autoencoder) or `"ae"` (plain autoencoder) |
-| `fusion`         | `"poe"` (Product of Experts), `"moe_gating"` (Mixture of Experts), or `"moe_average"` (Simple averaging across modalities) |
+| `vi_type`        | `"mean_field"`, `"full_rank"`, `"iaf"`, or `"mixture_of_gaussians"` (`mixture_components` controls its size) |
+| `fusion`         | `"corrected_poe"` (prior-corrected Product of Experts), `"poe"`, `"moe_gating"`, `"moe_learned"`, or `"moe_average"` |
 | `update_prior`   | Learn a structured prior conditioned on `prevalence` covariates                    |
 | `w_prior`        | Strength of prior alignment for `wae`              |
 | `w_pred_loss`    | Weight of supervised loss predicting `label`                   |
 | `kl_annealing_*` | Strength of prior alignment for `vae`. Helps preventing posterior collapse.    |
+
+With `vi_type="mixture_of_gaussians"`, corrected PoE is exact but expands `C`
+components from each of `M` modalities into `C^M` components. DeepLatent warns when
+this configuration is constructed because its time and memory cost can grow rapidly.
 
 ---
 

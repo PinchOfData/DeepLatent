@@ -3,6 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
 import math
+import warnings
 from typing import List, Optional, Tuple, Dict, Callable, Union
 from .priors import FixedGaussianPrior, FixedLogisticNormalPrior, FixedDirichletPrior
 from .utils import contrast_basis
@@ -733,15 +734,27 @@ class MultiModalEncoder(nn.Module):
                 "Cannot use both gating and PoE. Choose one fusion method."
             )
 
-        # A mixture-of-Gaussians posterior is not a Gaussian, so a Product-of-Experts
-        # fusion (which multiplies Gaussian densities) does not apply: the product of
-        # M C-component mixtures is a mixture with C^M components. Use Mixture-of-Experts
-        # fusion (which keeps the result a mixture) with vi_type="mixture_of_gaussians".
-        if self.vi_type == "mixture_of_gaussians" and self.poe:
+        # Exact corrected-PoE fusion is closed over finite Gaussian mixtures, but the
+        # Cartesian expansion has C^M components. Keep uncorrected MoG-PoE disabled:
+        # modality encoders represent posteriors (and therefore each contain the prior),
+        # so corrected PoE is the coherent multimodal combination.
+        if self.vi_type == "mixture_of_gaussians" and self.poe == "uncorrected":
             raise ValueError(
-                "vi_type='mixture_of_gaussians' is incompatible with Product-of-Experts "
-                "fusion (the product of mixtures is not a tractable mixture). Use a "
-                "Mixture-of-Experts fusion: fusion in {'moe_average','moe_gating','moe_learned'}."
+                "vi_type='mixture_of_gaussians' supports exact fusion only with "
+                "fusion='corrected_poe'. Uncorrected PoE duplicates the prior; use "
+                "'corrected_poe' or a Mixture-of-Experts fusion."
+            )
+        if self.vi_type == "mixture_of_gaussians" and self.poe == "corrected":
+            expanded_components = self.mixture_components ** self.num_modalities
+            warnings.warn(
+                "Exact corrected Product-of-Experts fusion for a mixture of Gaussians "
+                f"expands {self.num_modalities} modality mixtures with "
+                f"{self.mixture_components} components each to "
+                f"{expanded_components} components "
+                f"({self.mixture_components}^{self.num_modalities}). This cost grows "
+                "exponentially and can exhaust memory or make training very slow.",
+                RuntimeWarning,
+                stacklevel=2,
             )
 
         # Initialize IAF flow if needed (single shared flow for all modalities)
@@ -993,6 +1006,171 @@ class MultiModalEncoder(nn.Module):
 
         return mu_S, L_S
 
+    def product_of_experts_mog(
+        self,
+        mixtures: List[Tuple[torch.Tensor, torch.Tensor, torch.Tensor]],
+        prevalence_covariates: Optional[torch.Tensor] = None,
+    ) -> Tuple[str, torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Exactly combine diagonal Gaussian mixtures with corrected PoE.
+
+        Each modality supplies ``C`` component means, raw log precision-increment
+        parameters, and mixing probabilities.  For component ``c`` of modality
+        ``m`` the unimodal posterior precision is parameterized as
+
+            Lambda_mc = Lambda_0 + diag(exp(-raw_mc)),
+
+        which guarantees that every component in the corrected Cartesian product
+
+            prod_m q_m(z | x_m) / p_0(z) ** (M - 1)
+
+        is normalizable.  The exact result contains ``prod_m C_m`` full-covariance
+        Gaussian components.  Full covariance is required even though the increments
+        are diagonal because the prior itself may have learned correlations.
+
+        Returns:
+            ``("mog_full", means, scale_trils, weights)`` with shapes
+            ``[B,T,D]``, ``[B,T,D,D]``, and ``[B,T]`` where
+            ``T = prod_m C_m``.
+        """
+        if self.poe != "corrected":
+            raise ValueError("product_of_experts_mog requires corrected PoE fusion.")
+        if self.prior is None:
+            raise ValueError("Corrected mixture PoE requires a Gaussian prior.")
+        if not mixtures:
+            raise ValueError("At least one modality mixture is required.")
+
+        batch_size, _, dim = mixtures[0][0].shape
+        device = mixtures[0][0].device
+        dtype = mixtures[0][0].dtype
+
+        # All Gaussian/logistic-normal priors used by a VAE expose their covariance.
+        try:
+            mu_0, Sigma_0 = self.prior.get_prior_params(
+                prevalence_covariates, return_full_cov=True
+            )
+        except TypeError as exc:
+            raise ValueError(
+                "Corrected mixture PoE requires a Gaussian prior with full-covariance "
+                "parameters."
+            ) from exc
+
+        mu_0 = mu_0.to(device=device, dtype=dtype)
+        Sigma_0 = Sigma_0.to(device=device, dtype=dtype)
+        if mu_0.size(0) == 1 and batch_size > 1:
+            mu_0 = mu_0.expand(batch_size, -1)
+        if Sigma_0.dim() == 2:
+            Sigma_0 = Sigma_0.unsqueeze(0).expand(batch_size, -1, -1)
+        elif Sigma_0.size(0) == 1 and batch_size > 1:
+            Sigma_0 = Sigma_0.expand(batch_size, -1, -1)
+        if mu_0.shape != (batch_size, dim) or Sigma_0.shape != (
+            batch_size,
+            dim,
+            dim,
+        ):
+            raise ValueError(
+                "Prior parameters do not match the mixture batch/latent dimensions: "
+                f"mu={tuple(mu_0.shape)}, Sigma={tuple(Sigma_0.shape)}, "
+                f"expected ({batch_size}, {dim}) and "
+                f"({batch_size}, {dim}, {dim})."
+            )
+
+        chol_0 = torch.linalg.cholesky(Sigma_0)
+        Lambda_0 = torch.cholesky_inverse(chol_0)
+        eta_0 = torch.matmul(Lambda_0, mu_0.unsqueeze(-1)).squeeze(-1)
+        logdet_Lambda_0 = -2.0 * torch.log(
+            torch.diagonal(chol_0, dim1=-2, dim2=-1)
+        ).sum(-1)
+        prior_const = (
+            0.5 * logdet_Lambda_0
+            - 0.5 * (mu_0 * eta_0).sum(-1)
+            - 0.5 * dim * math.log(2.0 * math.pi)
+        )  # [B]
+
+        modality_increments = []
+        modality_etas = []
+        modality_consts = []
+        component_counts = []
+
+        for means_m, raw_m, pi_m in mixtures:
+            if means_m.dim() != 3 or raw_m.shape != means_m.shape:
+                raise ValueError(
+                    "Each mixture must provide means and raw precision increments "
+                    "with shape [B,C,D]."
+                )
+            if means_m.size(0) != batch_size or means_m.size(2) != dim:
+                raise ValueError("All modality mixtures must share batch and latent dimensions.")
+            if pi_m.shape != means_m.shape[:2]:
+                raise ValueError("Mixture weights must have shape [B,C].")
+
+            # raw_m follows the existing corrected mean-field convention: exp(-raw)
+            # is a positive precision increment, not a posterior variance.
+            Delta_m = torch.diag_embed(torch.exp(-raw_m))  # [B,C,D,D]
+            Lambda_m = Lambda_0.unsqueeze(1) + Delta_m
+            eta_m = torch.matmul(Lambda_m, means_m.unsqueeze(-1)).squeeze(-1)
+            chol_Lambda_m = torch.linalg.cholesky(Lambda_m)
+            logdet_Lambda_m = 2.0 * torch.log(
+                torch.diagonal(chol_Lambda_m, dim1=-2, dim2=-1)
+            ).sum(-1)
+            const_m = (
+                0.5 * logdet_Lambda_m
+                - 0.5 * (means_m * eta_m).sum(-1)
+                - 0.5 * dim * math.log(2.0 * math.pi)
+            )
+
+            modality_increments.append(Delta_m)
+            modality_etas.append(eta_m)
+            modality_consts.append(const_m)
+            component_counts.append(means_m.size(1))
+
+        num_modalities = len(mixtures)
+        index_axes = [torch.arange(c, device=device) for c in component_counts]
+        combinations = torch.cartesian_prod(*index_axes).reshape(-1, num_modalities)
+        num_combined = combinations.size(0)
+
+        # Lambda_t = Lambda_0 + sum_m Delta_m,c_m is algebraically identical to
+        # sum_m Lambda_m,c_m - (M-1)Lambda_0, but avoids cancellation and guarantees
+        # a positive-definite precision by construction.
+        Lambda_t = Lambda_0.unsqueeze(1).expand(-1, num_combined, -1, -1).clone()
+        eta_t = -(num_modalities - 1) * eta_0.unsqueeze(1)
+        selected_const = torch.zeros(batch_size, num_combined, device=device, dtype=dtype)
+        log_component_weight = torch.zeros_like(selected_const)
+
+        for m, (_, _, pi_m) in enumerate(mixtures):
+            idx = combinations[:, m]
+            Lambda_t = Lambda_t + modality_increments[m][:, idx]
+            eta_t = eta_t + modality_etas[m][:, idx]
+            selected_const = selected_const + modality_consts[m][:, idx]
+            log_component_weight = log_component_weight + torch.log(
+                pi_m[:, idx].clamp_min(torch.finfo(dtype).tiny)
+            )
+
+        chol_Lambda_t = torch.linalg.cholesky(Lambda_t)
+        means_t = torch.cholesky_solve(
+            eta_t.unsqueeze(-1), chol_Lambda_t
+        ).squeeze(-1)
+        Sigma_t = torch.cholesky_inverse(chol_Lambda_t)
+        scale_trils_t = torch.linalg.cholesky(Sigma_t)
+
+        logdet_Lambda_t = 2.0 * torch.log(
+            torch.diagonal(chol_Lambda_t, dim1=-2, dim2=-1)
+        ).sum(-1)
+        fused_const = (
+            0.5 * logdet_Lambda_t
+            - 0.5 * (means_t * eta_t).sum(-1)
+            - 0.5 * dim * math.log(2.0 * math.pi)
+        )
+
+        # The overlap/normalizing factor for each tuple is the difference between
+        # the canonical constants before and after completing the square.
+        log_overlap = (
+            selected_const
+            - (num_modalities - 1) * prior_const.unsqueeze(1)
+            - fused_const
+        )
+        weights_t = F.softmax(log_component_weight + log_overlap, dim=1)
+
+        return "mog_full", means_t, scale_trils_t, weights_t
+
     def _mog_unpack(self, z_raw: torch.Tensor):
         """Split a raw encoder output into mixture-of-Gaussians parameters.
 
@@ -1000,7 +1178,8 @@ class MultiModalEncoder(nn.Module):
             z_raw: [B, C*(2K+1)] encoder output.
         Returns:
             means   [B, C, K]
-            logvars [B, C, K]
+            logvars [B, C, K]. With corrected PoE these raw values instead
+                parameterize positive precision increments ``exp(-raw)``.
             pi      [B, C]  (mixing weights, softmax of the last C logits)
         """
         B = z_raw.size(0)
@@ -1017,18 +1196,78 @@ class MultiModalEncoder(nn.Module):
         pi = F.softmax(pi_logits, dim=1)
         return means, logvars, pi
 
-    def _mog_sample(
-        self, means: torch.Tensor, logvars: torch.Tensor, pi: torch.Tensor
+    def _mog_component_samples(
+        self, means: torch.Tensor, covariance_params: torch.Tensor
     ) -> torch.Tensor:
-        """Draw one reparameterized sample from the mixture q(z) = sum_c pi_c N(mu_c, diag).
+        """Draw one reparameterized sample from every mixture component."""
+        eps = torch.randn_like(means)
+        if covariance_params.dim() == 3:
+            return means + eps * torch.exp(0.5 * covariance_params)
+        if covariance_params.dim() == 4:
+            return means + torch.matmul(
+                covariance_params, eps.unsqueeze(-1)
+            ).squeeze(-1)
+        raise ValueError(
+            "MoG covariance parameters must be diagonal log-variances [B,C,D] "
+            "or Cholesky factors [B,C,D,D]."
+        )
+
+    def _mog_component_log_prob(
+        self,
+        samples: torch.Tensor,
+        means: torch.Tensor,
+        covariance_params: torch.Tensor,
+    ) -> torch.Tensor:
+        """Evaluate every Gaussian component at every supplied sample.
+
+        Args:
+            samples: ``[B,S,D]`` points.
+            means: ``[B,C,D]`` component means.
+            covariance_params: diagonal log-variances ``[B,C,D]`` or covariance
+                Cholesky factors ``[B,C,D,D]``.
+        Returns:
+            Component log densities with shape ``[B,S,C]``.
+        """
+        diff = samples.unsqueeze(2) - means.unsqueeze(1)  # [B,S,C,D]
+        if covariance_params.dim() == 3:
+            logvars = covariance_params.unsqueeze(1)  # [B,1,C,D]
+            return -0.5 * (
+                diff.pow(2) / torch.exp(logvars)
+                + logvars
+                + math.log(2.0 * math.pi)
+            ).sum(-1)
+        if covariance_params.dim() == 4:
+            solved = torch.linalg.solve_triangular(
+                covariance_params.unsqueeze(1),
+                diff.unsqueeze(-1),
+                upper=False,
+            ).squeeze(-1)
+            logdet = 2.0 * torch.log(
+                torch.diagonal(covariance_params, dim1=-2, dim2=-1)
+            ).sum(-1)
+            return -0.5 * (
+                solved.pow(2).sum(-1)
+                + logdet.unsqueeze(1)
+                + means.size(-1) * math.log(2.0 * math.pi)
+            )
+        raise ValueError(
+            "MoG covariance parameters must be diagonal log-variances [B,C,D] "
+            "or Cholesky factors [B,C,D,D]."
+        )
+
+    def _mog_sample(
+        self, means: torch.Tensor, covariance_params: torch.Tensor, pi: torch.Tensor
+    ) -> torch.Tensor:
+        """Draw one sample from a diagonal- or full-covariance Gaussian mixture.
 
         The component index is sampled from pi (non-differentiable), then the Gaussian
-        draw is reparameterized, so gradients reach the selected component's (mu, logvar).
+        draw is reparameterized, so gradients reach the selected component parameters.
+        This is used for public posterior draws; VAE training Rao-Blackwellizes its
+        likelihood over every component in ``DeepLatent.step_batch`` so mixture-weight
+        gradients are not taken through this categorical sample.
         """
         B = means.size(0)
-        std = torch.exp(0.5 * logvars)
-        eps = torch.randn_like(std)
-        z_all = means + eps * std  # [B, C, K]
+        z_all = self._mog_component_samples(means, covariance_params)  # [B,C,K]
         # Defensive: guarantee a valid categorical for torch.multinomial even if an
         # upstream non-finite value slips through (it raises a hard device-side assert
         # on inf/nan/negative weights otherwise).
@@ -1122,9 +1361,19 @@ class MultiModalEncoder(nn.Module):
                     z_sample = zk
 
                 elif self.vi_type == "mixture_of_gaussians":
-                    means, logvars, pi = self._mog_unpack(z_raw)
-                    mu_logvar_info = [("mog", means, logvars, pi)]
-                    z_sample = self._mog_sample(means, logvars, pi)
+                    means, covariance_params, pi = self._mog_unpack(z_raw)
+                    if self.poe == "corrected":
+                        fused = self.product_of_experts_mog(
+                            [(means, covariance_params, pi)],
+                            prevalence_covariates=prevalence_covariates,
+                        )
+                        _, means, covariance_params, pi = fused
+                        mu_logvar_info = [fused]
+                    else:
+                        mu_logvar_info = [
+                            ("mog", means, covariance_params, pi)
+                        ]
+                    z_sample = self._mog_sample(means, covariance_params, pi)
 
             else:  # WAE or plain AE
                 mu_logvar_info = [(z_raw,)]
@@ -1250,10 +1499,12 @@ class MultiModalEncoder(nn.Module):
                     modality_outputs.append((mu, logvar))
 
                 elif self.vi_type == "mixture_of_gaussians":
-                    means, logvars, pi = self._mog_unpack(z_raw)
+                    means, covariance_params, pi = self._mog_unpack(z_raw)
                     # Keep the per-modality mixture; fused into a bigger mixture below.
-                    mu_logvar_info.append(("mog", means, logvars, pi))
-                    modality_outputs.append((means, logvars, pi))
+                    mu_logvar_info.append(
+                        ("mog", means, covariance_params, pi)
+                    )
+                    modality_outputs.append((means, covariance_params, pi))
 
             else:  # WAE or plain AE
                 mu_logvar_info.append((z_raw,))  # Wrap in tuple for consistency
@@ -1338,6 +1589,17 @@ class MultiModalEncoder(nn.Module):
                             else "cpu"
                         ),
                     )
+
+            elif self.vi_type == "mixture_of_gaussians":
+                fused = self.product_of_experts_mog(
+                    modality_outputs,
+                    prevalence_covariates=prevalence_covariates,
+                )
+                _, combined_means, combined_covariance_params, combined_pi = fused
+                z_final = self._mog_sample(
+                    combined_means, combined_covariance_params, combined_pi
+                )
+                mu_logvar_info = [fused]
 
         else:
             # Mixture of Experts fusion

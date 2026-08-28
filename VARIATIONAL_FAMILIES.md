@@ -114,14 +114,22 @@ is **exact (unbiased) and low-variance**; gradients flow to `μ_c, Σ_c` (repara
 
 - **Head (diagonal components, simplest first version):** `C·2K` (means + log-vars) `+ C` mixing logits → `π = softmax`. Full-rank components later: `C·(K + K(K+1)/2) + C`.
 - **Touch points** (the `vi_type` branches): encoder `final_dim` (`models.py:179–224`), `MultiModalEncoder.forward` sampling + the single-modality path, the KL block in `step_batch`, and the two diagnostics. ~the same surface the IAF branch already occupies; mechanical but spread across ~6 sites.
-- **Fusion caveat (important):** a product of `C`-component mixtures across `M` modalities is a mixture with `Cᴹ` components → use **MoE fusion (or single modality)** with MoG, **not PoE**. A mixture-of-experts naturally *stays* a mixture (concatenate components, renormalize weights), so MoG + MoE is principled; MoG + PoE is not. Guard or document this, analogous to the Dirichlet/VAE guard.
+- **Fusion caveat (important):** a product of `C`-component mixtures across `M`
+  modalities is exactly a mixture with `Cᴹ` components. DeepLatent implements this
+  Cartesian expansion for **corrected PoE**, including the analytic overlap weights and
+  prior correction. It emits a runtime warning because decoder work grows as `Cᴹ` and
+  mixture-density evaluation can grow as `C²ᴹ`. Use modest `C`/`M`, or use MoE fusion
+  when the different evidence-combination semantics are acceptable.
 
 ---
 
 ## 5. Recommendations (priority order)
 
 1. **Add a marginal-likelihood estimator (IWAE; optionally AIS).** Without it the paper cannot *quantify* "tightly approximates the marginal likelihood." Reuse each family's existing `log q(z|x)`. Also enables IWAE *training* bounds (which tighten with sample count for any family). — highest value, lowest effort.
-2. **Add the Mixture-of-Gaussians family** (`vi_type="mog"`) with the reparameterized π-weighted ELBO above; start with diagonal components + MoE/single-modality; guard against PoE. Strong theoretical guarantee + targets the multimodality these models exhibit.
+2. **Add the Mixture-of-Gaussians family** (`vi_type="mog"`) with the reparameterized
+   π-weighted ELBO above; use diagonal components for MoE/single-modality and the exact
+   Cartesian expansion for corrected PoE at modest `C`/`M`. Strong theoretical guarantee +
+   targets the multimodality these models exhibit.
 3. **Relax IAF's expressiveness caps**: make the conditioner log-scale range configurable/unbounded-but-clamped, allow more flows, and support multi-sample KL — so IAF can actually approach the bound when the posterior is non-Gaussian.
 4. **Design at least one benchmark with a known non-Gaussian/multimodal posterior** (e.g. a symmetric ideal-point setup) and report `ELBO` vs `IWAE`-estimated `log p(x)` across {mean_field, full_rank, iaf, mog}. That figure *is* the paper's central claim, made measurable.
 
@@ -138,9 +146,11 @@ All numbers above reproduce via `audit/verify_variational_families.py`.
    mixing logits). KL is the Rao-Blackwellized MC estimate `Σ_c π_c [log q(z_c) − log p(z_c)]`
    with one reparameterized draw per component and `log q` the full-mixture log-density
    (logsumexp over components). New knob `mixture_components` (default 10). Wired through the
-   encoder, the KL, and the diagnostics; guarded against PoE (a product of mixtures is not a
-   tractable mixture — use MoE fusion). Log-variances are clamped to `[-8, 8]` for numerical
-   stability (an early version blew up to NaN on real data; fixed).
+   encoder, the KL, and the diagnostics. Corrected PoE is supported through an exact
+   `Cᴹ`-component expansion; each component uses a positive precision increment over the
+   prior so the prior-corrected product remains normalizable. Uncorrected PoE stays blocked.
+   Log-variances are clamped to `[-8, 8]` for numerical stability (an early version blew up
+   to NaN on real data; fixed).
 2. **`estimate_marginal_log_likelihood(dataset, n_samples=S)`** — the IWAE estimator,
    supporting all four families; returns per-document (or corpus-mean) `IWAE_S` and `ELBO`.
 

@@ -78,7 +78,7 @@ Diagnostics: `estimate_marginal_log_likelihood()` (IWAE — measures bound tight
 ## Key Configuration Options
 
 - **`ae_type`**: `"vae"` (variational — use this for likelihood-based work), `"wae"` (Wasserstein/MMD), `"ae"` (plain). VAE+Dirichlet prior is intentionally blocked (KL would be computed in the wrong space).
-- **`vi_type`**: `"mean_field"`, `"full_rank"`, `"iaf"`, **`"mixture_of_gaussians"`** (universal variational family; `mixture_components`, default 10). MoG requires MoE-style fusion — it is incompatible with PoE (product of mixtures is intractable).
+- **`vi_type`**: `"mean_field"`, `"full_rank"`, `"iaf"`, **`"mixture_of_gaussians"`** (universal variational family; `mixture_components`, default 10). MoG supports exact `corrected_poe` fusion through the `C^M` Cartesian component expansion (with a runtime explosion warning); uncorrected PoE is blocked.
 - **`fusion`**: `"poe"`, `"corrected_poe"` (exact in the linear–Gaussian case: divides out duplicated prior factors), `"moe_gating"`, `"moe_average"`, `"moe_learned"`.
 - **`labels_in_encoder`** (default False): concatenates outcomes y to encoder inputs so q(z|x,y) can target the supervised posterior p(z|x,y). True y at training, zeros at inference. This is the switch that makes supervised training genuinely joint.
 - **`learn_prior_cov`** (default True): learn the logistic-normal prior Σ vs pin Σ=I. See "Temperature degeneracy" below before changing it.

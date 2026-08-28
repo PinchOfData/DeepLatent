@@ -18,6 +18,7 @@ figs/*
 data/*
 src2/*
 tests/*
+!tests/test_mog_corrected_poe.py
 __pycache__/
 *.ckpt
 *.mem
