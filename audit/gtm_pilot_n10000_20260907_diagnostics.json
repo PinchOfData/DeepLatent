@@ -1,0 +1,20 @@
+{
+  "joint": {
+    "heldout_docs": 256,
+    "draws_per_doc": 1024,
+    "conditioning": "words, covariates, outcome",
+    "encoder_elbo": -127.48782348632812,
+    "iwae_1024": -127.4337158203125,
+    "estimated_gap_nats_per_doc": 0.054107666015625,
+    "max_package_vs_readout_log_density_error": 9.5367431640625e-07
+  },
+  "two_step": {
+    "heldout_docs": 256,
+    "draws_per_doc": 1024,
+    "conditioning": "words, covariates",
+    "encoder_elbo": -126.0860824584961,
+    "iwae_1024": -126.03974914550781,
+    "estimated_gap_nats_per_doc": 0.04633331298828125,
+    "max_package_vs_readout_log_density_error": 9.5367431640625e-07
+  }
+}

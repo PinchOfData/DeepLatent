@@ -1,0 +1,447 @@
+\documentclass[11pt]{article}
+
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath,amssymb,amsthm,mathtools,bm}
+\usepackage{microtype}
+
+\DeclareMathOperator{\KL}{KL}
+\DeclareMathOperator*{\argmaxop}{arg\,max}
+\DeclareMathOperator{\proj}{proj}
+\newcommand{\E}{\mathbb{E}}
+\newcommand{\R}{\mathbb{R}}
+\newcommand{\N}{\mathcal{N}}
+\newcommand{\trans}{\mathsf{T}}
+
+\newtheorem{lemma}{Lemma}
+\newtheorem{proposition}{Proposition}
+\theoremstyle{remark}
+\newtheorem{remark}{Remark}
+
+\begin{document}
+
+\subsection{The Linear--Gaussian Special Case}
+
+For a latent-variable model $p_\vartheta(w,z)=p_\vartheta(w\mid z)p(z)$ and an amortized variational family $q_\phi(z\mid w)$, the sample ELBO
+\begin{equation}
+\mathcal{L}_n(\vartheta,\phi)
+=
+\frac{1}{n}\sum_{i=1}^n
+\left\{
+\E_{q_\phi(z\mid w_i)}\!\left[\log p_\vartheta(w_i\mid z)\right]
+-
+\KL\!\left(q_\phi(z\mid w_i)\,\|\,p(z)\right)
+\right\}
+\tag{1}
+\end{equation}
+admits the exact decomposition
+\begin{equation}
+\mathcal{L}_n(\vartheta,\phi)
+=
+\ell_n(\vartheta)
+-
+\frac{1}{n}\sum_{i=1}^n
+\KL\!\left(q_\phi(z\mid w_i)\,\|\,p_\vartheta(z\mid w_i)\right),
+\qquad
+\ell_n(\vartheta)=\frac{1}{n}\sum_{i=1}^n\log p_\vartheta(w_i).
+\tag{2}
+\end{equation}
+Suppose that for every $\vartheta$ there exists $\phi^\star(\vartheta)$ such that
+$q_{\phi^\star(\vartheta)}(\cdot\mid w)=p_\vartheta(\cdot\mid w)$ for every $w$. In words, the variational family is rich enough to contain the exact posterior, and the amortization map is flexible enough to realize it. Under this hypothesis, the KL penalty in (2) vanishes at $\phi^\star(\vartheta)$ for every $\vartheta$, the variational and amortization gaps are identically zero, and maximizing the ELBO is maximum likelihood. The linear--Gaussian model makes this explicit.
+
+Consider the model
+\begin{equation}
+z_i\sim\N(0,I_L),
+\qquad
+w_i\mid z_i\sim\N(b+Az_i,\sigma^2 I_D),
+\qquad
+L<D,
+\tag{3}
+\end{equation}
+with $w_i\in\R^D$ and $z_i\in\R^L$, where the parameter is $\vartheta=(b,A)$ and the noise variance $\sigma^2>0$ is known. This model is probabilistic PCA (Tipping and Bishop, 1999). We observe $w_1,\ldots,w_n$ drawn i.i.d. from (3) at a true parameter $\vartheta_0=(b_0,A_0)$. Marginally,
+$w_i\sim\N(b,AA^\trans+\sigma^2I_D)$, so the marginal law depends on $A$ only through $AA^\trans$. The matrix $A$ is therefore identified only up to right rotations $A\mapsto AR$ with $R\in O(L)$, and asymptotic statements below concern the identified quantities $(b,AA^\trans)$.
+
+Gaussian conditioning gives
+\begin{equation}
+p_\vartheta(z\mid w)
+=
+\N\!\left(M_A^{-1}A^\trans(w-b),\,\sigma^2M_A^{-1}\right),
+\qquad
+M_A=A^\trans A+\sigma^2I_L.
+\tag{4}
+\end{equation}
+The posterior mean is affine in $w$, and the posterior covariance does not depend on $w$. The posterior therefore lies, for every $\vartheta$, in the affine Gaussian family
+\[
+q_\phi(z\mid w)=\N(Bw+c,V),
+\qquad
+\phi=(B,c,V),
+\qquad
+V\succ0.
+\]
+Concretely, define $\phi^\star(\vartheta)=(B^\star,c^\star,V^\star)$ by
+\begin{equation}
+B^\star=M_A^{-1}A^\trans,
+\qquad
+c^\star=-M_A^{-1}A^\trans b,
+\qquad
+V^\star=\sigma^2M_A^{-1}.
+\tag{5}
+\end{equation}
+Comparison with (4) shows that
+$q_{\phi^\star(\vartheta)}(z\mid w)=p_\vartheta(z\mid w)$ for every $w$ and every $\vartheta$, so the hypothesis of the opening paragraph holds.
+
+\begin{lemma}[ELBO maximization is maximum likelihood]
+For every $\vartheta$,
+\[
+\sup_\phi\mathcal{L}_n(\vartheta,\phi)=\ell_n(\vartheta),
+\]
+and the supremum is attained at $\phi^\star(\vartheta)$. Consequently,
+\[
+\proj_\vartheta\argmaxop_{\vartheta,\phi}\mathcal{L}_n(\vartheta,\phi)
+=
+\argmaxop_\vartheta\ell_n(\vartheta).
+\]
+Moreover, for each $n\geq D+1$, almost surely every joint maximizer
+$(\widehat\vartheta_n,\widehat\phi_n)$ satisfies
+$\widehat\phi_n=\phi^\star(\widehat\vartheta_n)$. The estimated encoder is then the exact posterior of the estimated model at every $w\in\R^D$.
+\end{lemma}
+
+\begin{proof}
+The KL terms in (2) are nonnegative, and by (5) they vanish at
+$\phi=\phi^\star(\vartheta)$. This proves the value identity and shows that the supremum is attained. Next, if $(\widehat\vartheta,\widehat\phi)$ maximizes $\mathcal{L}_n$, then
+\[
+\ell_n(\widehat\vartheta)
+\geq
+\mathcal{L}_n(\widehat\vartheta,\widehat\phi)
+\geq
+\mathcal{L}_n\!\left(\vartheta,\phi^\star(\vartheta)\right)
+=
+\ell_n(\vartheta)
+\qquad\text{for every }\vartheta,
+\]
+so $\widehat\vartheta$ maximizes $\ell_n$. Conversely, if $\widehat\vartheta$ maximizes $\ell_n$, then
+$(\widehat\vartheta,\phi^\star(\widehat\vartheta))$ maximizes $\mathcal{L}_n$. Together these two implications prove the argmax identity. Finally, at a joint maximum, taking $\vartheta=\widehat\vartheta$ in the display above gives
+$\mathcal{L}_n(\widehat\vartheta,\widehat\phi)=\ell_n(\widehat\vartheta)$, so every KL term in (2) vanishes and
+$q_{\widehat\phi}(\cdot\mid w_i)=p_{\widehat\vartheta}(\cdot\mid w_i)$ for all $i$. Matching the covariances gives
+$V=\sigma^2M_{\widehat A}^{-1}$. Matching the means forces the affine maps
+\[
+w\longmapsto Bw+c
+\qquad\text{and}\qquad
+w\longmapsto M_{\widehat A}^{-1}\widehat A^\trans(w-\widehat b)
+\]
+to agree on $w_1,\ldots,w_n$, and two affine maps that agree on a set that affinely spans $\R^D$ agree everywhere. Because the marginal law of $w$ is absolutely continuous, the sample affinely spans $\R^D$ almost surely whenever $n\geq D+1$. On that event,
+$\widehat\phi=\phi^\star(\widehat\vartheta)$.
+\end{proof}
+
+\begin{remark}[Classical consequences]
+By Lemma 1, the VAE estimator is the maximum-likelihood estimator of a Gaussian factor model, so its asymptotic theory is classical. In particular,
+$(\widehat b_n,\widehat A_n\widehat A_n^\trans)$ is consistent for
+$(b_0,A_0A_0^\trans)$, and if $A_0$ has full column rank, it is also
+$\sqrt n$-asymptotically normal and efficient (Anderson and Rubin, 1956; Anderson, 1963; Tipping and Bishop, 1999). Amortization costs nothing. The likelihood landscape is favorable: every stationary point of $\ell_n$ other than a global maximizer is a saddle point (Tipping and Bishop, 1999, App.~A). Lucas et al.\ (2019) give the corresponding landscape analysis for the linear VAE itself. Finally, under the affine-spanning condition in Lemma 1, exact inference is a finite-sample identity rather than an asymptotic statement: the estimated encoder is the estimated posterior at every $w$.
+\end{remark}
+
+\subsection{The Multimodal Linear--Gaussian Model with Covariates}
+
+We now extend the preceding argument to the case relevant for a multimodal ideal-point model with observed covariates. Let $x_i\in\R^K$ be observed unit-level covariates, treated as fixed throughout. For each unit, let $\mathcal{O}_i\subseteq\{1,\ldots,M\}$ be the nonempty set of observed modalities. The observation patterns are treated as fixed (or ignorable), and all likelihood statements below condition on them. Consider
+\begin{equation}
+\begin{aligned}
+z_i\mid x_i
+&\sim \N(\Gamma x_i,I_L),\\
+w_{im}\mid z_i
+&\sim \N(b_m+A_mz_i,\Psi_m),
+\qquad m\in\mathcal{O}_i,
+\end{aligned}
+\tag{6}
+\end{equation}
+where the modalities are conditionally independent given $z_i$,
+$w_{im}\in\R^{D_m}$,
+$A_m\in\R^{D_m\times L}$,
+$b_m\in\R^{D_m}$,
+$\Gamma\in\R^{L\times K}$, and the matrices $\Psi_m\succ0$ are known. The isotropic specification $\Psi_m=\sigma_m^2I_{D_m}$ is a special case. Write
+\[
+\vartheta=\left(\Gamma,\{b_m,A_m\}_{m=1}^M\right).
+\]
+For a nonempty modality set $S$, define
+\begin{equation}
+H_S
+=
+I_L+\sum_{m\in S}A_m^\trans\Psi_m^{-1}A_m,
+\qquad
+h_S(x,w_S)
+=
+\Gamma x+\sum_{m\in S}A_m^\trans\Psi_m^{-1}(w_m-b_m).
+\tag{7}
+\end{equation}
+Completing the square in the joint Gaussian density gives
+\begin{equation}
+p_\vartheta(z\mid x,w_S)
+=
+\N\!\left(H_S^{-1}h_S(x,w_S),\,H_S^{-1}\right).
+\tag{8}
+\end{equation}
+Thus the posterior mean is affine in the covariates and in every observed modality, while its covariance depends only on the observed modality set.
+
+For a single modality $m$, (8) becomes
+\begin{equation}
+p_\vartheta(z\mid x,w_m)
+=
+\N\!\left(
+H_m^{-1}\!\left[\Gamma x+A_m^\trans\Psi_m^{-1}(w_m-b_m)\right],
+H_m^{-1}
+\right),
+\quad
+H_m=I_L+A_m^\trans\Psi_m^{-1}A_m.
+\tag{9}
+\end{equation}
+Bayes' rule and conditional independence imply the exact corrected product identity
+\begin{equation}
+p_\vartheta(z\mid x,w_S)
+\propto
+\frac{\displaystyle\prod_{m\in S}p_\vartheta(z\mid x,w_m)}
+{\displaystyle p_\Gamma(z\mid x)^{|S|-1}},
+\qquad
+p_\Gamma(z\mid x)=\N(\Gamma x,I_L).
+\tag{10}
+\end{equation}
+Indeed, each unimodal posterior contributes one copy of the prior and one modality likelihood; division by $p_\Gamma^{|S|-1}$ leaves exactly one prior factor.
+
+The Gaussian encoder family can be parameterized directly in information form. For each modality, let
+\begin{equation}
+q_{\phi}^{(m)}(z\mid x,w_m)
+=
+\N\!\left(
+H_{\phi m}^{-1}(C_mx+R_mw_m+r_m),
+H_{\phi m}^{-1}
+\right),
+\qquad
+H_{\phi m}=I_L+\Delta_m,
+\quad
+\Delta_m\succeq0,
+\tag{11}
+\end{equation}
+where $C_m\in\R^{L\times K}$ and $\phi$ collects
+$\{\Delta_m,C_m,R_m,r_m\}_{m=1}^M$. Fuse the encoders by
+\begin{equation}
+q_{\vartheta,\phi,S}(z\mid x,w_S)
+\propto
+\frac{\displaystyle\prod_{m\in S}q_{\phi}^{(m)}(z\mid x,w_m)}
+{\displaystyle p_\Gamma(z\mid x)^{|S|-1}}.
+\tag{12}
+\end{equation}
+Adding Gaussian natural parameters shows that this distribution is always proper and equals
+\begin{equation}
+q_{\vartheta,\phi,S}(z\mid x,w_S)
+=
+\N\!\left(
+H_{\phi S}^{-1}h_{\vartheta,\phi,S}(x,w_S),
+H_{\phi S}^{-1}
+\right),
+\tag{13}
+\end{equation}
+where
+\begin{equation}
+H_{\phi S}=I_L+\sum_{m\in S}\Delta_m,
+\qquad
+h_{\vartheta,\phi,S}(x,w_S)
+=
+\left[\sum_{m\in S}C_m-(|S|-1)\Gamma\right]x
++\sum_{m\in S}(R_mw_m+r_m).
+\tag{14}
+\end{equation}
+For every generative parameter $\vartheta$, define $\phi^\star(\vartheta)$ by
+\begin{equation}
+\Delta_m^\star=A_m^\trans\Psi_m^{-1}A_m,
+\qquad
+C_m^\star=\Gamma,
+\qquad
+R_m^\star=A_m^\trans\Psi_m^{-1},
+\qquad
+r_m^\star=-A_m^\trans\Psi_m^{-1}b_m,
+\quad m=1,\ldots,M.
+\tag{15}
+\end{equation}
+Equations (7), (13), and (14) then give
+\begin{equation}
+q_{\vartheta,\phi^\star(\vartheta),S}(z\mid x,w_S)
+=
+p_\vartheta(z\mid x,w_S)
+\tag{16}
+\end{equation}
+for every $x$, every $w_S$, and every nonempty modality set $S$. Hence the corrected product family simultaneously contains the exact posterior for all missing-modality patterns.
+
+Define the conditional marginal log likelihood
+\begin{equation}
+\ell_n(\vartheta)
+=
+\frac{1}{n}\sum_{i=1}^n
+\log p_\vartheta(w_{i,\mathcal{O}_i}\mid x_i),
+\quad
+p_\vartheta(w_{i,\mathcal{O}_i}\mid x_i)
+=
+\int p_\Gamma(z\mid x_i)
+\prod_{m\in\mathcal{O}_i}p_{\vartheta_m}(w_{im}\mid z)\,dz,
+\tag{17}
+\end{equation}
+and the sample ELBO
+\begin{equation}
+\begin{aligned}
+\mathcal{L}_n(\vartheta,\phi)
+=\frac{1}{n}\sum_{i=1}^n
+\Bigg\{&
+\E_{q_{\vartheta,\phi,\mathcal{O}_i}(z\mid x_i,w_{i,\mathcal{O}_i})}
+\left[
+\sum_{m\in\mathcal{O}_i}\log p_{\vartheta_m}(w_{im}\mid z)
+\right]\\
+&-
+\KL\!\left(
+q_{\vartheta,\phi,\mathcal{O}_i}(z\mid x_i,w_{i,\mathcal{O}_i})
+\,\|\,
+p_\Gamma(z\mid x_i)
+\right)
+\Bigg\}.
+\end{aligned}
+\tag{18}
+\end{equation}
+
+\begin{lemma}[Multimodal ELBO maximization is maximum likelihood]
+For every $\vartheta$,
+\[
+\sup_\phi\mathcal{L}_n(\vartheta,\phi)=\ell_n(\vartheta),
+\]
+and the supremum is attained at $\phi^\star(\vartheta)$. If the marginal likelihood has at least one global maximizer, then
+\[
+\proj_\vartheta\argmaxop_{\vartheta,\phi}\mathcal{L}_n(\vartheta,\phi)
+=
+\argmaxop_\vartheta\ell_n(\vartheta).
+\]
+At every joint global maximizer $(\widehat\vartheta,\widehat\phi)$,
+\[
+q_{\widehat\vartheta,\widehat\phi,\mathcal{O}_i}
+(\cdot\mid x_i,w_{i,\mathcal{O}_i})
+=
+p_{\widehat\vartheta}
+(\cdot\mid x_i,w_{i,\mathcal{O}_i})
+\qquad\text{for every }i.
+\]
+\end{lemma}
+
+\begin{proof}
+For each observation, the usual posterior-KL identity yields
+\begin{equation}
+\mathcal{L}_n(\vartheta,\phi)
+=
+\ell_n(\vartheta)
+-
+\frac{1}{n}\sum_{i=1}^n
+\KL\!\left(
+q_{\vartheta,\phi,\mathcal{O}_i}(z\mid x_i,w_{i,\mathcal{O}_i})
+\,\|\,
+p_\vartheta(z\mid x_i,w_{i,\mathcal{O}_i})
+\right).
+\tag{19}
+\end{equation}
+The KL terms are nonnegative, and by (16) they all vanish at
+$\phi=\phi^\star(\vartheta)$. This proves the value identity and attainment. The argmax identity follows by the same two inequalities used in Lemma 1. Finally, at any joint global maximum, (19) must equal $\ell_n(\widehat\vartheta)$; since the displayed sum contains only nonnegative terms, every term vanishes individually. Equality of the corresponding Gaussian laws gives the final assertion.
+\end{proof}
+
+\begin{proposition}[Finite-sample exactness of the fused affine encoder]
+Fix a nonempty modality pattern $S$ and let
+$I_S=\{i:\mathcal{O}_i=S\}$, $n_S=|I_S|$, and
+$D_S=\sum_{m\in S}D_m$. Suppose a joint global maximizer exists and the vectors
+\[
+u_{iS}=
+\begin{pmatrix}
+x_i\\ w_{iS}\end{pmatrix}
+\in\R^{K+D_S},
+\qquad i\in I_S,
+\]
+affinely span $\R^{K+D_S}$. Then every joint global maximizer
+$(\widehat\vartheta,\widehat\phi)$ satisfies
+\[
+q_{\widehat\vartheta,\widehat\phi,S}(\cdot\mid x,w_S)
+=
+p_{\widehat\vartheta}(\cdot\mid x,w_S)
+\qquad
+\text{for every }(x,w_S)\in\R^{K+D_S}.
+\]
+For a fixed covariate design, a sufficient almost-sure condition is
+\[
+\operatorname{rank}[\bm{1},X_S]=K+1
+\qquad\text{and}\qquad
+n_S\geq K+D_S+1,
+\]
+where $X_S$ has rows $x_i^\trans$, $i\in I_S$.
+\end{proposition}
+
+\begin{proof}
+Lemma 2 gives equality of the fitted fused posterior and the fitted exact posterior at every observation in $I_S$. Their covariance matrices do not depend on $(x,w_S)$, so equality at any one such observation matches the covariances. Their means are affine maps from $\R^{K+D_S}$ to $\R^L$. Since those maps agree on an affinely spanning set, they agree everywhere.
+
+For the sufficient condition, stack the observations in a matrix $W_S$ and project its rows onto the orthogonal complement of the column space of $[\bm{1},X_S]$. Under (6), the projected conditional mean is zero, while the projected noise has a continuous Gaussian density and row dimension $n_S-K-1$. Because
+$\operatorname{Var}(w_{iS}\mid x_i)=A_SA_S^\trans+\Psi_S\succ0$, the projected matrix has column rank $D_S$ almost surely whenever $n_S-K-1\geq D_S$. This is equivalent to the asserted affine-spanning property.
+\end{proof}
+
+\begin{remark}[Fused and unimodal exactness are different claims]
+If the training objective contains only the fully observed pattern $S=\{1,\ldots,M\}$, Lemma 2 and Proposition 1 identify the fused posterior, not necessarily each unimodal expert. In (14), the fused covariance depends on the modality-specific information increments only through $\sum_m\Delta_m$, the covariate natural parameter depends on the encoder coefficients only through $\sum_m C_m$, and the constant natural parameter depends on the intercept increments only through $\sum_m r_m$. Small opposite perturbations of two $\Delta_m$'s, $C_m$'s, or $r_m$'s can therefore leave the fused distribution unchanged while altering the unimodal distributions. If singleton-pattern ELBO terms are available and the spanning condition in Proposition 1 holds separately for each modality, then every unimodal encoder is the exact fitted unimodal posterior; equation (12) then gives exact inference for every modality subset.
+\end{remark}
+
+\begin{remark}[Identification]
+When all modalities are observed, stack
+\[
+w_i=
+\begin{pmatrix}w_{i1}\\ \vdots\\ w_{iM}\end{pmatrix},
+\qquad
+b=
+\begin{pmatrix}b_1\\ \vdots\\ b_M\end{pmatrix},
+\qquad
+A=
+\begin{pmatrix}A_1\\ \vdots\\ A_M\end{pmatrix},
+\qquad
+\Psi=\operatorname{blockdiag}(\Psi_1,\ldots,\Psi_M).
+\]
+Then
+\begin{equation}
+w_i\mid x_i
+\sim
+\N\!\left(b+A\Gamma x_i,\,AA^\trans+\Psi\right).
+\tag{20}
+\end{equation}
+The conditional marginal law depends on $(A,\Gamma)$ through the combinations
+\[
+C=A\Gamma,
+\qquad
+K=AA^\trans.
+\]
+Under a full-rank covariate design and the intercept normalization described below, $(b,C,K)$ are the identified marginal quantities.
+For every orthogonal matrix $R\in O(L)$, the transformation
+$A_m\mapsto A_mR$ and $\Gamma\mapsto R^\trans\Gamma$ leaves (20) unchanged. Thus asymptotic and substantive statements should concern $(b,C,K)$ unless an orientation normalization is imposed. If $x_i$ contains a constant, the prior intercept is also confounded with $b$; centering the covariates and excluding a constant from $x_i$ removes this additional ambiguity. With incomplete modalities, identification of cross-modal blocks $A_mA_\ell^\trans$ additionally requires enough joint observation or an appropriate overlap condition.
+\end{remark}
+
+\begin{remark}[Existence and asymptotics]
+The supremum identity in Lemma 2 does not require the likelihood to attain its supremum, but the argmax and finite-sample statements do. Unlike ordinary probabilistic PCA, the factorization $A\Gamma$ can generate noncompact sequences. In the scalar case, for example, $a_t=t\downarrow0$ and $\gamma_t=c/t\to\infty$ keep the covariate coefficient $a_t\gamma_t=c$ fixed while the factor contribution to the variance tends to zero. A compact parameter space or another coercive restriction is therefore useful when a finite-sample existence theorem is required. Under such an existence condition, fixed dimensions, a full-rank covariate design, $\operatorname{rank}(A_0)=L$, and the usual interior and identification conditions, standard Gaussian maximum-likelihood theory applies to local coordinates for the identified quantities $(b,C,K)$. It yields consistency and $\sqrt n$-asymptotic normality; the ambient covariance for $K$ is singular because $K$ lies on the rank-$L$ positive-semidefinite manifold. These likelihood conclusions do not, by themselves, imply a benign optimization landscape for the covariate model.
+\end{remark}
+
+\section*{References}
+
+\begingroup
+\setlength{\parindent}{0pt}
+\setlength{\parskip}{0.8em}
+
+\hangindent=1.5em
+Anderson, T. W. (1963). Asymptotic theory for principal component analysis.
+\emph{Annals of Mathematical Statistics}, 34(1), 122--148.
+
+\hangindent=1.5em
+Anderson, T. W. and Rubin, H. (1956). Statistical inference in factor analysis.
+In \emph{Proceedings of the Third Berkeley Symposium on Mathematical Statistics and Probability}, Vol.~5, pp.~111--150. University of California Press.
+
+\hangindent=1.5em
+Lucas, J., Tucker, G., Grosse, R., and Norouzi, M. (2019). Don't blame the ELBO! A linear VAE perspective on posterior collapse. \emph{Advances in Neural Information Processing Systems}, 32.
+
+\hangindent=1.5em
+Tipping, M. E. and Bishop, C. M. (1999). Probabilistic principal component analysis.
+\emph{Journal of the Royal Statistical Society: Series B (Statistical Methodology)}, 61(3), 611--622.
+
+\endgroup
+
+\end{document}

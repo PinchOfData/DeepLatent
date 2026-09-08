@@ -1,0 +1,1104 @@
+\documentclass[11pt]{article}
+
+\usepackage[letterpaper,margin=1in]{geometry}
+\usepackage{amsmath,amssymb,amsthm,mathtools,bm}
+\usepackage{booktabs,array,tabularx}
+\usepackage{enumitem}
+\usepackage{xcolor}
+\usepackage{microtype}
+\usepackage{hyperref}
+\usepackage[nameinlink,capitalise]{cleveref}
+
+\hypersetup{
+  colorlinks=true,
+  linkcolor=blue!55!black,
+  citecolor=blue!55!black,
+  urlcolor=blue!55!black
+}
+
+\setlist[itemize]{leftmargin=1.6em,itemsep=0.25em,topsep=0.35em}
+\setlist[enumerate]{leftmargin=1.8em,itemsep=0.25em,topsep=0.35em}
+\allowdisplaybreaks
+
+\newtheorem{theorem}{Theorem}[section]
+\newtheorem{proposition}[theorem]{Proposition}
+\newtheorem{lemma}[theorem]{Lemma}
+\newtheorem{corollary}[theorem]{Corollary}
+\newtheorem{assumption}[theorem]{Assumption}
+\theoremstyle{definition}
+\newtheorem{definition}[theorem]{Definition}
+\newtheorem{remark}[theorem]{Remark}
+
+\crefname{theorem}{Theorem}{Theorems}
+\Crefname{theorem}{Theorem}{Theorems}
+\crefname{proposition}{Proposition}{Propositions}
+\Crefname{proposition}{Proposition}{Propositions}
+\crefname{lemma}{Lemma}{Lemmas}
+\Crefname{lemma}{Lemma}{Lemmas}
+\crefname{corollary}{Corollary}{Corollaries}
+\Crefname{corollary}{Corollary}{Corollaries}
+\crefname{assumption}{Assumption}{Assumptions}
+\Crefname{assumption}{Assumption}{Assumptions}
+\crefname{definition}{Definition}{Definitions}
+\Crefname{definition}{Definition}{Definitions}
+\crefname{remark}{Remark}{Remarks}
+\Crefname{remark}{Remark}{Remarks}
+
+\newcommand{\R}{\mathbb R}
+\newcommand{\E}{\mathbb E}
+\newcommand{\Pp}{\mathbb P}
+\newcommand{\KL}{\operatorname{KL}}
+\newcommand{\Var}{\operatorname{Var}}
+\newcommand{\Cov}{\operatorname{Cov}}
+\newcommand{\argmax}{\operatorname*{arg\,max}}
+\newcommand{\argmin}{\operatorname*{arg\,min}}
+\newcommand{\op}{o_{\Pp}}
+\newcommand{\Op}{O_{\Pp}}
+\newcommand{\dd}{\,\mathrm d}
+\newcommand{\trans}{\mathsf T}
+\newcommand{\norm}[1]{\left\lVert #1\right\rVert}
+\newcommand{\abs}[1]{\left\lvert #1\right\rvert}
+\newcommand{\ind}{\mathbf 1}
+\newcommand{\cL}{\mathcal L}
+\newcommand{\cQ}{\mathcal Q}
+\newcommand{\cG}{\mathcal G}
+\newcommand{\cO}{\mathcal O}
+\newcommand{\cP}{\mathcal P}
+\newcommand{\cN}{\mathcal N}
+
+\title{Sieve-ELBO Theory for Multimodal Latent-Factor Models\\with Intractable Posteriors}
+\author{Draft for adversarial review}
+\date{\today}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+This note develops a frequentist theory for a raw amortized-ELBO estimator in a restricted class of multimodal latent-factor models with analytically intractable posteriors. The latent factor is Gaussian and low-dimensional; each observed modality belongs to a finite-support canonical exponential family with a linear latent index. The posterior is nonconjugate, but it is a bounded exponential tilt of one smooth, strongly log-concave base density. This structure yields a simple Gaussian-mixture encoder: a base location mixture is transformed across observations by affine shifts of its component means and softmax changes in its weights. Under a uniform finite-mixture approximation condition, the reverse-KL gap decreases at a model-specific rate. The one-sided ELBO identity then gives consistency, an explicit convergence rate, and root-$n$ equivalence to maximum likelihood when the mixture sieve grows sufficiently quickly. A mixture-based Fisher--Louis covariance estimator is also shown to be consistent, yielding Wald confidence intervals with asymptotically correct coverage. The note is explicit about the main point requiring close technical review: uniformizing existing Gaussian-mixture approximation results over the compact family of base posteriors in the exponentially weighted metric needed for reverse KL after tilting.
+\end{abstract}
+
+\section{Purpose, scope, and proof status}
+
+The objective is to extend the exact linear--Gaussian argument to a case in which the posterior is not analytically tractable. We study the \emph{raw} ELBO estimator: there is no importance-sampling correction, no MCMC correction, and no post-estimation Newton step. Optimization error is set to zero by assumption.
+
+The logical structure is
+\[
+\begin{aligned}
+&\text{smooth categorical latent-factor posterior}
+\\[-0.15em]
+&\quad\Longrightarrow\quad
+\text{uniform Gaussian-mixture reverse-KL approximation}
+\\[-0.15em]
+&\quad\Longrightarrow\quad
+\text{profiled ELBO uniformly close to the likelihood}
+\\[-0.15em]
+&\quad\Longrightarrow\quad
+\text{consistency and an explicit estimator rate}
+\\[-0.15em]
+&\quad\Longrightarrow\quad
+\text{MLE-equivalent asymptotic normality under undersmoothing.}
+\end{aligned}
+\]
+
+The proof has three types of ingredients.
+
+\begin{center}
+\begin{tabularx}{0.96\textwidth}{>{\bfseries}p{0.22\textwidth}X}
+\toprule
+Status & Ingredient \\
+\midrule
+Exact algebra & ELBO decomposition; exponential-tilt representation; closure of common-covariance Gaussian mixtures under tilting; likelihood-regret inequality. \\
+Standard likelihood theory & Identification in local coordinates, consistency and local asymptotic normality of the marginal MLE, nonsingular information. These are stated as assumptions rather than hidden under the approximation argument. \\
+Main approximation step & A uniform finite-Gaussian-mixture approximation of the compact family of base posteriors in an exponentially weighted Hellinger metric, together with a polynomial likelihood-ratio bound. Existing normal-mixture results supply the single-density construction and finite discretization; uniformization over the present posterior family is the step most deserving adversarial review. \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+The main theorem is therefore stated under an explicit approximation condition. A model-specific verification is then given, with the imported and new steps separated.
+
+\section{Model}
+\label{sec:model}
+
+For unit $i$, let $X_i\in\R^{d_x}$ denote observed covariates, let $Z_i\in\R^L$ denote a latent ideal point, and let
+\[
+W_i=(W_{i1},\ldots,W_{iM})
+\]
+collect $M$ observed modalities. We take $L$, $M$, and all modality dimensions to be fixed.
+
+The covariate-dependent latent prior is
+\begin{equation}
+Z_i\mid X_i=x_i\sim\cN(\Gamma x_i,I_L).
+\label{eq:prior}
+\end{equation}
+Conditional on $Z_i$, the modalities are independent. Modality $m$ has a finite-support canonical exponential-family likelihood
+\begin{equation}
+p_{\theta_m}(w_m\mid z)
+=
+ h_m(w_m)
+\exp\!\left\{
+T_m(w_m)^{\trans}(\alpha_m+B_m z)
+-A_m(\alpha_m+B_m z)
+\right\}.
+\label{eq:expfam}
+\end{equation}
+This includes binary logit and finite multinomial logit. Gaussian and Poisson modalities are intentionally excluded from the first theorem: Gaussian observations are unbounded, while the Poisson log-partition has unbounded curvature.
+
+Write
+\[
+\theta=(\Gamma,\theta_1,\ldots,\theta_M),
+\qquad
+Y_i=(X_i,W_i).
+\]
+The conditional marginal density is
+\begin{equation}
+p_\theta(w\mid x)
+=
+\int p_\theta(z\mid x)
+\prod_{m=1}^M p_{\theta_m}(w_m\mid z)\dd z,
+\label{eq:marginal}
+\end{equation}
+and the normalized sample log likelihood is
+\begin{equation}
+\ell_n(\theta)
+=
+\frac1n\sum_{i=1}^n\log p_\theta(W_i\mid X_i).
+\label{eq:loglik}
+\end{equation}
+
+\subsection{Basic restrictions}
+
+\begin{assumption}[Bounded fixed-dimensional model]
+\label{ass:model}
+The observations $(Y_i)_{i=1}^n$ are i.i.d. The support of $X_i$ is compact. The support of each $W_{im}$ is finite, and $T_m(W_{im})$ is bounded. The parameter space $\Theta$ is compact. The true parameter is an interior point after identification. The log-partition functions $A_m$ are infinitely differentiable and, for all admissible natural-parameter values (in particular, globally for binary and multinomial logit),
+\[
+0\preceq \nabla^2 A_m(v)\preceq C_m I.
+\]
+Their gradients are uniformly bounded. The number of modalities and all dimensions are fixed.
+\end{assumption}
+
+The latent coordinate system is not generally identified. For example, an orthogonal transformation of $Z_i$, accompanied by the corresponding transformations of $\Gamma$ and the loading matrices, leaves the observed distribution unchanged. Let $\cG$ denote this trivial reparameterization group.
+
+\begin{assumption}[Identification and local coordinates]
+\label{ass:id}
+The observed-data law identifies the equivalence class $[\theta]=\{g\theta:g\in\cG\}$. There is a smooth local chart
+\[
+\eta=\chi([\theta])\in\R^p
+\]
+around the true class $[\theta_0]$. All derivatives and asymptotic statements below are taken in these identified coordinates.
+\end{assumption}
+
+This formulation avoids pretending that a particular loading matrix is consistently estimable when only its rotation class is identified. Equivalently, the results may be stated directly for smooth rotation-invariant functionals.
+
+\section{The posterior is a low-dimensional exponential-tilt family}
+\label{sec:tilt}
+
+The observation vector may be high-dimensional, but the posterior depends on it through an $L$-dimensional index.
+
+\begin{proposition}[Exponential-tilt representation]
+\label{prop:tilt}
+Under \cref{eq:prior,eq:expfam}, define
+\begin{equation}
+u_\theta(y)
+=
+\Gamma x+\sum_{m=1}^M B_m^{\trans}T_m(w_m).
+\label{eq:u}
+\end{equation}
+Then
+\begin{equation}
+\pi_\theta(z\mid y)
+:=p_\theta(z\mid x,w)
+=
+\frac{e^{u_\theta(y)^{\trans}z}\,p_{\theta,0}(z)}
+{M_{\theta,0}\{u_\theta(y)\}},
+\label{eq:posterior-tilt}
+\end{equation}
+where
+\begin{align}
+p_{\theta,0}(z)
+&=
+\frac{e^{-U_\theta(z)}}{\int e^{-U_\theta(v)}\dd v},
+\label{eq:base-density}\\
+U_\theta(z)
+&=
+\frac12\norm{z}^2
++\sum_{m=1}^M A_m(\alpha_m+B_m z),
+\label{eq:base-potential}\\
+M_{\theta,0}(u)
+&=
+\int e^{u^{\trans}z}p_{\theta,0}(z)\dd z.
+\end{align}
+Moreover, there is a finite $B$ such that
+\[
+\sup_{\theta\in\Theta,\,y\in\operatorname{supp}(Y)}
+\norm{u_\theta(y)}\le B.
+\]
+\end{proposition}
+
+\begin{proof}
+Expanding the Gaussian prior gives
+\[
+-\tfrac12\norm{z-\Gamma x}^2
+=
+-\tfrac12\norm z^2+z^{\trans}\Gamma x+C(x,\Gamma).
+\]
+The terms in the likelihood that depend on $z$ are
+\[
+\sum_m T_m(w_m)^{\trans}B_mz
+-
+\sum_m A_m(\alpha_m+B_mz).
+\]
+Collecting the linear terms in $z$ gives \cref{eq:u}; all other terms independent of $z$ enter the normalizing constant. Boundedness follows from Assumption~\ref{ass:model}.
+\end{proof}
+
+\begin{lemma}[Uniform posterior geometry]
+\label{lem:geometry}
+Under Assumption~\ref{ass:model}, there are constants $\overline M<\infty$, $C_\star<\infty$, and $0<c_1\le c_2<\infty$ such that, uniformly in $\theta$,
+\begin{equation}
+I_L\preceq \nabla^2 U_\theta(z)\preceq \overline M I_L,
+\qquad z\in\R^L.
+\label{eq:curvature}
+\end{equation}
+The mode $z_\theta^\star=\argmin_z U_\theta(z)$ satisfies $\norm{z_\theta^\star}\le C_\star$, and
+\begin{equation}
+c_1e^{-\overline M\norm{z-z_\theta^\star}^2/2}
+\le p_{\theta,0}(z)
+\le c_2e^{-\norm{z-z_\theta^\star}^2/2}.
+\label{eq:gaussian-envelope}
+\end{equation}
+The same lower-curvature bound holds for every tilted posterior $\pi_\theta(\cdot\mid y)$. Its mode and all fixed moments are also bounded uniformly over $\theta$ and $y$.
+\end{lemma}
+
+\begin{proof}
+Differentiating \cref{eq:base-potential},
+\[
+\nabla^2U_\theta(z)
+=I_L+\sum_m B_m^{\trans}\nabla^2A_m(\alpha_m+B_mz)B_m.
+\]
+The curvature bounds follow from compactness and Assumption~\ref{ass:model}. At the mode,
+\[
+z_\theta^\star
+=-\sum_mB_m^{\trans}\nabla A_m(\alpha_m+B_mz_\theta^\star),
+\]
+so bounded gradients and compact loadings imply a uniform mode bound. Taylor's theorem around the mode gives
+\[
+U_\theta(z_\theta^\star)+\tfrac12\norm{z-z_\theta^\star}^2
+\le U_\theta(z)
+\le U_\theta(z_\theta^\star)+\tfrac{\overline M}{2}\norm{z-z_\theta^\star}^2.
+\]
+Integrating these inequalities bounds the normalizing constants and yields \cref{eq:gaussian-envelope}. Tilting adds a linear term to the negative log density and therefore does not change its Hessian. If $z_{\theta,u}^\star$ is the tilted mode, strong monotonicity of $\nabla U_\theta$ gives
+\[
+\norm{z_{\theta,u}^\star-z_\theta^\star}\le\norm u\le B.
+\]
+The Gaussian envelope argument can therefore be repeated around a uniformly bounded tilted mode, yielding uniform moment bounds.
+\end{proof}
+
+\section{A structured Gaussian-mixture encoder}
+\label{sec:encoder}
+
+Let a base approximation have a common covariance:
+\begin{equation}
+q_{K,0}(z)
+=
+\sum_{k=1}^K a_k\,\varphi_{\sigma^2I_L}(z-\mu_k),
+\qquad a_k>0,\quad \sum_k a_k=1.
+\label{eq:base-mixture}
+\end{equation}
+Its exponential tilt by $u$ is
+\begin{equation}
+q_{K,u}(z)
+=
+\frac{e^{u^{\trans}z}q_{K,0}(z)}
+{\int e^{u^{\trans}v}q_{K,0}(v)\dd v}.
+\label{eq:tilted-mixture-def}
+\end{equation}
+
+\begin{proposition}[Closed-form tilted mixture]
+\label{prop:tilted-mixture}
+The density in \cref{eq:tilted-mixture-def} is the $K$-component mixture
+\begin{equation}
+q_{K,u}(z)
+=
+\sum_{k=1}^K \omega_k(u)
+\varphi_{\sigma^2I_L}\bigl(z-\mu_k-\sigma^2u\bigr),
+\label{eq:tilted-mixture}
+\end{equation}
+where
+\begin{equation}
+\omega_k(u)
+=
+\frac{a_k e^{\mu_k^{\trans}u}}
+{\sum_{\ell=1}^K a_\ell e^{\mu_\ell^{\trans}u}}
+=
+\operatorname{softmax}_k\{\log a_k+\mu_k^{\trans}u\}.
+\label{eq:tilted-weights}
+\end{equation}
+\end{proposition}
+
+\begin{proof}
+Completing the square gives
+\[
+e^{u^{\trans}z}\varphi_{\sigma^2I_L}(z-\mu_k)
+=
+\exp\!\left(\mu_k^{\trans}u+\tfrac12\sigma^2\norm u^2\right)
+\varphi_{\sigma^2I_L}(z-\mu_k-\sigma^2u).
+\]
+Normalization cancels the common factor $\exp(\sigma^2\norm u^2/2)$ and yields \cref{eq:tilted-weights}.
+\end{proof}
+
+Thus a deep neural network is not required for posterior containment in this model. A sufficient encoder consists of
+\[
+y\longmapsto u_\phi(y)
+=Cx+\sum_mD_m^{\trans}T_m(w_m),
+\]
+followed by affine component-mean shifts and linear logits with a softmax. For every generative parameter $\theta$, the choice $(C,D_m)=(\Gamma,B_m)$ reproduces the correct posterior index. A richer concatenating encoder may be used in applications, but the theorem only requires that its class contain this structured map.
+
+Let $\cQ_K$ denote any encoder class containing all densities of the form \cref{eq:tilted-mixture} with admissible base-mixture parameters and admissible linear index maps.
+
+\section{ELBO profiling and the approximation gap}
+\label{sec:elbo}
+
+For $q_\phi(\cdot\mid Y_i)\in\cQ_K$, define
+\begin{align}
+\cL_{n,K}(\theta,\phi)
+=
+\frac1n\sum_{i=1}^n
+\bigg[
+&\E_{q_\phi(Z\mid Y_i)}
+\bigg\{
+\log p_\theta(Z\mid X_i)
++\sum_{m=1}^M\log p_{\theta_m}(W_{im}\mid Z)
+\bigg\}
+\nonumber\\[-0.25em]
+&-\E_{q_\phi(Z\mid Y_i)}\log q_\phi(Z\mid Y_i)
+\bigg].
+\label{eq:sample-elbo}
+\end{align}
+The exact decomposition is
+\begin{equation}
+\cL_{n,K}(\theta,\phi)
+=
+\ell_n(\theta)
+-
+\Delta_{n,K}(\theta,\phi),
+\label{eq:elbo-decomp}
+\end{equation}
+where
+\begin{equation}
+\Delta_{n,K}(\theta,\phi)
+=
+\frac1n\sum_{i=1}^n
+\KL\!\left[
+q_\phi(\cdot\mid Y_i)
+\,\middle\|\,
+\pi_\theta(\cdot\mid Y_i)
+\right]
+\ge0.
+\label{eq:empirical-gap}
+\end{equation}
+Define the profiled ELBO
+\[
+\overline\cL_{n,K}(\theta)
+=
+\sup_{\phi:q_\phi\in\cQ_K}
+\cL_{n,K}(\theta,\phi).
+\]
+
+\begin{definition}[Uniform posterior approximation error]
+\label{def:rho}
+Let
+\begin{equation}
+\rho_K
+=
+\sup_{\theta\in\Theta}
+\inf_{\phi\in\Phi_K}
+\sup_{y\in\operatorname{supp}(Y)}
+\KL\!\left[
+q_\phi(\cdot\mid y)
+\,\middle\|\,
+\pi_\theta(\cdot\mid y)
+\right],
+\label{eq:rho}
+\end{equation}
+where $\Phi_K$ is the parameter set of the structured conditional encoder. Thus, for each fixed generative parameter, one common amortized map must approximate every posterior in the observation domain.
+\end{definition}
+
+\begin{lemma}[Profile sandwich]
+\label{lem:profile-sandwich}
+If the approximation error in \cref{eq:rho} is attainable up to an arbitrarily small slack, then for every sample and every $\theta$,
+\begin{equation}
+\ell_n(\theta)-\rho_K
+\le
+\overline\cL_{n,K}(\theta)
+\le
+\ell_n(\theta).
+\label{eq:profile-sandwich}
+\end{equation}
+\end{lemma}
+
+\begin{proof}
+The upper bound follows from \cref{eq:elbo-decomp}. For the lower bound, choose the structured encoder whose base mixture approximates $p_{\theta,0}$ and whose index map equals $u_\theta(y)$. Its KL gap is at most $\rho_K$ for every observation, hence also on average.
+\end{proof}
+
+The rest of the statistical argument only needs a rate for $\rho_K$.
+
+\section{Uniform approximation of the posterior family}
+\label{sec:approx}
+
+\subsection{A uniform tilt-transfer lemma}
+
+For densities $p$ and $q$, define the exponentially weighted squared Hellinger discrepancy
+\begin{equation}
+h_B^2(q,p)
+=
+\int e^{B\norm z}\{\sqrt{q(z)}-\sqrt{p(z)}\}^2\dd z.
+\label{eq:weighted-hellinger}
+\end{equation}
+For $\norm u\le B$, let
+\[
+p_u(z)=\frac{e^{u^{\trans}z}p(z)}{M_p(u)},
+\qquad
+q_u(z)=\frac{e^{u^{\trans}z}q(z)}{M_q(u)}.
+\]
+
+\begin{lemma}[Uniform tilt transfer]
+\label{lem:tilt-transfer}
+Let $\cP$ be a family of base densities such that
+\begin{equation}
+m_B
+:=
+\inf_{p\in\cP,\,\norm u\le B}M_p(u)>0.
+\label{eq:mgf-lower}
+\end{equation}
+Suppose that for each $p\in\cP$ there is an approximating density $q$ satisfying
+\begin{equation}
+h_B^2(q,p)\le a,
+\qquad
+\sup_z\frac{q(z)}{p(z)}\le R,
+\qquad
+a\le m_B/4.
+\label{eq:tilt-assumptions}
+\end{equation}
+Then, for a universal finite constant $C$,
+\begin{equation}
+\sup_{\norm u\le B}
+\KL(q_u\|p_u)
+\le
+\frac{C}{m_B}\{1+\log(4R)\}a.
+\label{eq:tilt-bound}
+\end{equation}
+The bound is uniform over $p\in\cP$.
+\end{lemma}
+
+\begin{proof}
+Fix $p,q,u$ and set
+\[
+f(z)=e^{u^{\trans}z/2}\sqrt{p(z)},
+\qquad
+g(z)=e^{u^{\trans}z/2}\sqrt{q(z)}.
+\]
+Then $\norm{f}_2^2=M_p(u)$, $\norm{g}_2^2=M_q(u)$, and
+\[
+\norm{f-g}_2^2
+\le h_B^2(q,p)\le a.
+\]
+The reverse triangle inequality implies
+\[
+\abs{\sqrt{M_q(u)}-\sqrt{M_p(u)}}\le\sqrt a.
+\]
+Since $M_p(u)\ge m_B$ and $a\le m_B/4$,
+\begin{equation}
+M_q(u)\ge M_p(u)/4\ge m_B/4,
+\qquad
+\frac{M_p(u)}{M_q(u)}\le4.
+\label{eq:normalizer-bounds}
+\end{equation}
+By adding and subtracting $f/\sqrt{M_q(u)}$,
+\[
+h(q_u,p_u)
+\le
+\frac{2\norm{f-g}_2}{\sqrt{M_q(u)}},
+\]
+so
+\begin{equation}
+h^2(q_u,p_u)\le \frac{16a}{m_B}.
+\label{eq:tilted-h}
+\end{equation}
+Moreover,
+\[
+\frac{q_u(z)}{p_u(z)}
+=
+\frac{q(z)}{p(z)}\frac{M_p(u)}{M_q(u)}
+\le4R.
+\]
+For $0\le t\le S$ with $S\ge1$, an elementary calculus bound gives
+\[
+t\log t-t+1
+\le C\{1+\log S\}(\sqrt t-1)^2.
+\]
+Applying this with $t=q_u/p_u$ and $S=4R$, and using that both densities integrate to one, yields
+\[
+\KL(q_u\|p_u)
+\le C\{1+\log(4R)\}h^2(q_u,p_u).
+\]
+Combine with \cref{eq:tilted-h}.
+\end{proof}
+
+By Lemma~\ref{lem:geometry}, the family $\{p_{\theta,0}:\theta\in\Theta\}$ satisfies \cref{eq:mgf-lower}; bounded modes and two-sided Gaussian envelopes give a uniform positive lower bound on every bounded-tilt moment-generating function.
+
+\subsection{The base-mixture approximation condition}
+
+The following is the only nonstandard approximation condition in the main statistical theorem.
+
+\begin{assumption}[Uniform finite-mixture approximation]
+\label{ass:approx}
+For every fixed positive integer $r$, there are constants $C_r<\infty$, $c_r<\infty$, and $K_r<\infty$ such that, for every $K\ge K_r$ and every $\theta\in\Theta$, there exists a common-covariance Gaussian location mixture $q_{\theta,K,0}$ with at most $K$ components satisfying
+\begin{align}
+\sup_{\theta\in\Theta}
+h_B^2(q_{\theta,K,0},p_{\theta,0})
+&\le
+C_r K^{-2r/L}(\log K)^{c_r},
+\label{eq:base-h-rate}\\
+\sup_{\theta\in\Theta}
+\log\sup_{z\in\R^L}
+\frac{q_{\theta,K,0}(z)}{p_{\theta,0}(z)}
+&\le C_r\log K.
+\label{eq:ratio-rate}
+\end{align}
+The component covariance may depend on $K$ but is common across components.
+\end{assumption}
+
+\begin{proposition}[Why Assumption~\ref{ass:approx} is credible for the present model]
+\label{prop:verify-approx}
+Under Assumption~\ref{ass:model}, the family $\{p_{\theta,0}:\theta\in\Theta\}$ has all of the following properties uniformly in $\theta$:
+\begin{enumerate}[label=(\roman*)]
+\item two-sided Gaussian envelopes and uniformly bounded modes;
+\item derivatives of every fixed order bounded by a polynomial in $\norm z$ times the density;
+\item the local H\"older and derivative-moment conditions used in sharp normal-mixture approximation results;
+\item exponentially weighted moments of every polynomial order.
+\end{enumerate}
+Consequently, the single-density Gaussian-convolution approximation and compact finite discretization developed by Shen, Tokdar, and Ghosal~\cite{shen2013} can be applied with constants depending only on common envelope bounds. Tracking those constants uniformly over the compact posterior family, and applying the central-region/tail decomposition in the proof sketch below, yields Assumption~\ref{ass:approx} for every fixed $r$.
+\end{proposition}
+
+\begin{proof}[Verification and the point requiring audit]
+Repeated differentiation of $p_{\theta,0}\propto e^{-U_\theta}$ gives
+\[
+\frac{D^kp_{\theta,0}(z)}{p_{\theta,0}(z)}
+=P_k\{DU_\theta(z),\ldots,D^kU_\theta(z)\},
+\]
+where $P_k$ is a finite polynomial. The first derivative of $U_\theta$ grows at most linearly in $z$ and higher derivatives are uniformly bounded under Assumption~\ref{ass:model}; hence
+\[
+\sup_{\theta}\frac{|D^kp_{\theta,0}(z)|}{p_{\theta,0}(z)}
+\le C_k(1+\norm z^{|k|}).
+\]
+Together with \cref{eq:gaussian-envelope}, this verifies the required smoothness and integrability conditions at every fixed finite order.
+
+The approximation construction proceeds in four steps.
+\begin{enumerate}[label=\arabic*.]
+\item Apply the positive Gaussian-convolution approximation at a smoothness order slightly larger than $r$, obtaining ordinary squared Hellinger error $O(\sigma^{2r+\delta})$ for some fixed $\delta>0$.
+\item Truncate the mixing distribution to a ball of radius $O\{\sqrt{\log(1/\sigma)}\}$ using the uniform Gaussian envelope, then discretize it into
+\[
+K_\sigma
+\le C\sigma^{-L}\{\log(1/\sigma)\}^{cL}
+\]
+locations while preserving the ordinary Hellinger order. The finite discretization is an imported result.
+\item Split the weighted Hellinger integral at radius $D\sqrt{\log(1/\sigma)}$. In the central region, the exponential weight is absorbed by the extra factor $\sigma^\delta$. Outside the region, the Gaussian tails of both the target and the compact-center mixture are smaller than any prescribed power of $\sigma$. This upgrades ordinary to weighted Hellinger error of order $O(\sigma^{2r})$ up to logarithms.
+\item The target's Gaussian lower envelope and the mixture's compact centers imply
+\[
+\log\sup_z(q_{\theta,K,0}/p_{\theta,0})
+=O\{\log(1/\sigma)\}.
+\]
+Inverting the relation between $K_\sigma$ and $\sigma$ gives \cref{eq:base-h-rate,eq:ratio-rate} with an unspecified finite logarithmic exponent $c_r$.
+\end{enumerate}
+
+The first two steps are adaptations of established single-density approximation results. The third and fourth are model-specific. The part that is not stated verbatim in the cited approximation theorem is that every construction constant can be chosen uniformly over $\theta$. The common curvature, mode, derivative, and tail bounds make this uniformization natural, but an adversarial proof audit should check the constants in the imported construction line by line. If that audit fails, Assumption~\ref{ass:approx} must remain an explicit high-level assumption rather than a proved proposition.
+\end{proof}
+
+\begin{corollary}[Uniform reverse-KL rate]
+\label{cor:reverse-kl}
+Under Assumption~\ref{ass:approx}, the structured tilted mixtures satisfy
+\begin{equation}
+\rho_K
+\le
+C_rK^{-2r/L}(\log K)^{c_r+1}
+\label{eq:rho-rate}
+\end{equation}
+for every fixed positive integer $r$ and all sufficiently large $K$.
+\end{corollary}
+
+\begin{proof}
+Apply Lemma~\ref{lem:tilt-transfer} with \cref{eq:base-h-rate,eq:ratio-rate}. The common-covariance tilt formula in Proposition~\ref{prop:tilted-mixture} shows that all tilted approximations are jointly representable by the structured encoder.
+\end{proof}
+
+\begin{remark}[Relation to other approximation results]
+\label{rem:directions}
+The direction of KL is essential. Conditional-mixture approximation results commonly control $\KL(\pi\|q)$~\cite{norets2010}, while the ELBO gap is $\KL(q\|\pi)$. Uniform or $L^p$ density approximation alone also does not automatically imply reverse-KL convergence~\cite{nguyen2020}. Direct reverse-KL results for fixed-variance Gaussian mixtures are available under more specialized Gaussian-convolution assumptions~\cite{huix2024}. The weighted-Hellinger plus likelihood-ratio route above is tailored to the strongly log-concave Gaussian-tailed posterior class considered here.
+\end{remark}
+
+\section{Consistency and convergence rate}
+\label{sec:stats}
+
+Let
+\[
+\widetilde\theta_n\in\argmax_{\theta\in\Theta}\ell_n(\theta)
+\]
+be a marginal MLE and let
+\[
+(\widehat\theta_n,\widehat\phi_n)
+\in
+\argmax_{\theta\in\Theta,\,\phi:q_\phi\in\cQ_{K_n}}
+\cL_{n,K_n}(\theta,\phi)
+\]
+be a global sieve-ELBO maximizer. Global optimization is assumed.
+
+\begin{assumption}[Regular marginal likelihood]
+\label{ass:likelihood}
+In the identified coordinates $\eta=\chi([\theta])$:
+\begin{enumerate}[label=(\roman*)]
+\item the population criterion $Q(\eta)=\E_{\theta_0}\log p_\eta(W\mid X)$ is uniquely maximized at $\eta_0$ and is separated away from $\eta_0$;
+\item a uniform law of large numbers holds for $\ell_n$;
+\item with probability tending to one, a consistent MLE $\widetilde\eta_n$ exists and the normalized likelihood is locally strongly concave:
+\[
+\ell_n(\widetilde\eta_n)-\ell_n(\eta)
+\ge c\norm{\eta-\widetilde\eta_n}^2
+\]
+for $\eta$ in a fixed neighborhood of $\eta_0$;
+\item the MLE has the regular expansion
+\begin{equation}
+\sqrt n(\widetilde\eta_n-\eta_0)
+=
+A_0^{-1}\frac1{\sqrt n}\sum_{i=1}^n s_0(Y_i)+\op(1),
+\label{eq:mle-expansion}
+\end{equation}
+where $A_0=-\E_{\theta_0}\nabla_\eta^2\log p_{\eta_0}(W\mid X)$ is nonsingular and $\E s_0s_0^{\trans}=B_0<\infty$.
+\end{enumerate}
+Under correct likelihood specification, $B_0=A_0$.
+\end{assumption}
+
+\begin{theorem}[Likelihood regret, consistency, and rate]
+\label{thm:main-rate}
+Under Assumptions~\ref{ass:model}, \ref{ass:id}, and~\ref{ass:likelihood}, suppose $\rho_{K_n}\to0$. Then:
+\begin{enumerate}[label=(\roman*)]
+\item the likelihood regret satisfies
+\begin{equation}
+0\le
+\ell_n(\widetilde\theta_n)-\ell_n(\widehat\theta_n)
+\le \rho_{K_n};
+\label{eq:likelihood-regret}
+\end{equation}
+\item the generative component is consistent:
+\[
+\widehat\eta_n\xrightarrow{\Pp}\eta_0;
+\]
+\item its distance from the MLE satisfies
+\begin{equation}
+\norm{\widehat\eta_n-\widetilde\eta_n}
+=
+\Op\!\left(\sqrt{\rho_{K_n}}\right);
+\label{eq:mle-distance}
+\end{equation}
+\item consequently,
+\begin{equation}
+\widehat\eta_n-\eta_0
+=
+\Op(n^{-1/2})
++
+\Op\!\left(\sqrt{\rho_{K_n}}\right).
+\label{eq:total-rate}
+\end{equation}
+\end{enumerate}
+\end{theorem}
+
+\begin{proof}
+By global ELBO optimality and Lemma~\ref{lem:profile-sandwich},
+\[
+\ell_n(\widehat\theta_n)
+\ge
+\overline\cL_{n,K_n}(\widehat\theta_n)
+\ge
+\overline\cL_{n,K_n}(\widetilde\theta_n)
+\ge
+\ell_n(\widetilde\theta_n)-\rho_{K_n}.
+\]
+Since $\widetilde\theta_n$ maximizes $\ell_n$, this proves \cref{eq:likelihood-regret}. Standard approximate-argmax consistency follows from population separation, the likelihood uniform law of large numbers, and $\rho_{K_n}=o(1)$. Once both estimators lie in the local strongly concave neighborhood,
+\[
+c\norm{\widehat\eta_n-\widetilde\eta_n}^2
+\le
+\ell_n(\widetilde\eta_n)-\ell_n(\widehat\eta_n)
+\le\rho_{K_n},
+\]
+which proves \cref{eq:mle-distance}. Equation~\eqref{eq:total-rate} follows by the triangle inequality and the MLE rate.
+\end{proof}
+
+\begin{corollary}[Model-specific sieve rate]
+\label{cor:model-rate}
+Under Assumption~\ref{ass:approx} and the assumptions of Theorem~\ref{thm:main-rate}, for every fixed positive integer $r$,
+\begin{equation}
+\widehat\eta_n-\eta_0
+=
+\Op(n^{-1/2})
++
+\Op\!\left[
+K_n^{-r/L}(\log K_n)^{(c_r+1)/2}
+\right].
+\label{eq:model-specific-rate}
+\end{equation}
+Any $K_n\to\infty$ gives consistency.
+\end{corollary}
+
+\section{Asymptotic normality and confidence intervals}
+\label{sec:inference}
+
+\subsection{Root-n equivalence}
+
+\begin{corollary}[Asymptotic normality]
+\label{cor:an}
+Under the assumptions of Theorem~\ref{thm:main-rate}, if
+\begin{equation}
+n\rho_{K_n}\longrightarrow0,
+\label{eq:undersmooth}
+\end{equation}
+then
+\begin{equation}
+\sqrt n(\widehat\eta_n-\widetilde\eta_n)\xrightarrow{\Pp}0
+\label{eq:root-n-equivalence}
+\end{equation}
+and
+\begin{equation}
+\sqrt n(\widehat\eta_n-\eta_0)
+\rightsquigarrow
+\cN(0,A_0^{-1}B_0A_0^{-1}).
+\label{eq:an}
+\end{equation}
+Under correct specification, the covariance is $A_0^{-1}$.
+\end{corollary}
+
+\begin{proof}
+By \cref{eq:mle-distance},
+\[
+\sqrt n\norm{\widehat\eta_n-\widetilde\eta_n}
+=
+\Op\!\left(\sqrt{n\rho_{K_n}}\right)
+=\op(1).
+\]
+Combine with \cref{eq:mle-expansion} and apply Slutsky's theorem.
+\end{proof}
+
+Using \cref{eq:rho-rate}, a sufficient model-specific condition is
+\begin{equation}
+nK_n^{-2r/L}(\log K_n)^{c_r+1}\longrightarrow0.
+\label{eq:K-condition}
+\end{equation}
+If $K_n=n^\kappa$, the polynomial part of this condition is
+\begin{equation}
+\kappa>\frac{L}{2r}.
+\label{eq:kappa}
+\end{equation}
+The strict inequality leaves room for logarithmic factors. The logistic posterior is smooth at every fixed finite order, but $r$ must remain fixed; the constants may deteriorate sharply with $r$. Thus \cref{eq:kappa} is an asymptotic existence statement, not an architecture recommendation.
+
+\begin{remark}[Why this is an undersmoothing condition]
+A sieve dimension chosen to optimize posterior-density approximation need not make the approximation bias negligible relative to $n^{-1/2}$. Condition~\eqref{eq:undersmooth} deliberately makes the variational nuisance richer than consistency alone requires. This is the standard econometric logic of undersmoothing~\cite{chen2007}: remove approximation bias at the scale relevant for inference on the finite-dimensional parameter.
+\end{remark}
+
+\subsection{A feasible covariance estimator}
+
+Let
+\begin{align*}
+s_c(\eta;Y,Z)
+&=\nabla_\eta\log p_\eta(Y,Z),\\
+H_c(\eta;Y,Z)
+&=\nabla_\eta^2\log p_\eta(Y,Z)
+\end{align*}
+be complete-data derivatives in identified local coordinates. Fisher's and Louis's identities give~\cite{louis1982}
+\begin{align}
+s_o(\eta;Y)
+&=\E_{\pi_\eta(\cdot\mid Y)}s_c(\eta;Y,Z),
+\label{eq:fisher-id}\\
+J_o(\eta;Y)
+&:=-\nabla_\eta^2\log p_\eta(Y)
+\nonumber\\
+&=
+\E_{\pi_\eta(\cdot\mid Y)}[-H_c(\eta;Y,Z)]
+-
+\Var_{\pi_\eta(\cdot\mid Y)}\{s_c(\eta;Y,Z)\}.
+\label{eq:louis-id}
+\end{align}
+
+Define fitted mixture quantities
+\begin{align}
+\widehat s_i
+&=
+\E_{q_{\widehat\phi_n}(\cdot\mid Y_i)}
+ s_c(\widehat\eta_n;Y_i,Z),
+\label{eq:q-score}\\
+\widehat J_i
+&=
+\E_{q_{\widehat\phi_n}(\cdot\mid Y_i)}[-H_c(\widehat\eta_n;Y_i,Z)]
+-
+\Var_{q_{\widehat\phi_n}(\cdot\mid Y_i)}
+\{s_c(\widehat\eta_n;Y_i,Z)\}.
+\label{eq:q-information}
+\end{align}
+Set
+\begin{equation}
+\widehat A_n=\frac1n\sum_{i=1}^n\widehat J_i,
+\qquad
+\widehat B_n=\frac1n\sum_{i=1}^n\widehat s_i\widehat s_i^{\trans},
+\qquad
+\widehat V_n=\widehat A_n^{-1}\widehat B_n\widehat A_n^{-1}.
+\label{eq:sandwich}
+\end{equation}
+Under correct specification, one may use $\widehat A_n^{-1}$, but the sandwich form is safer.
+
+The following observation is useful: global optimality controls the \emph{fitted} training-sample gap, not only the gap of a comparator encoder.
+
+\begin{lemma}[Fitted average posterior gap]
+\label{lem:fitted-gap}
+Under the conditions of Theorem~\ref{thm:main-rate},
+\begin{equation}
+\frac1n\sum_{i=1}^n
+\KL\!\left[
+q_{\widehat\phi_n}(\cdot\mid Y_i)
+\,\middle\|\,
+\pi_{\widehat\theta_n}(\cdot\mid Y_i)
+\right]
+\le\rho_{K_n}.
+\label{eq:fitted-gap}
+\end{equation}
+\end{lemma}
+
+\begin{proof}
+By \cref{eq:elbo-decomp}, the left side is
+\[
+\ell_n(\widehat\theta_n)-\cL_{n,K_n}(\widehat\theta_n,\widehat\phi_n).
+\]
+The likelihood is at most $\ell_n(\widetilde\theta_n)$, while global ELBO optimality and the comparator at the MLE give
+\[
+\cL_{n,K_n}(\widehat\theta_n,\widehat\phi_n)
+\ge
+\ell_n(\widetilde\theta_n)-\rho_{K_n}.
+\]
+Subtract.
+\end{proof}
+
+\begin{lemma}[Posterior moment transfer]
+\label{lem:moment-transfer}
+Let $\pi$ be a density on $\R^L$ whose negative log density has Hessian bounded below by $I_L$. Let $q$ be any density with finite reverse KL. For every affine function $g_1(z)$ and every quadratic polynomial $g_2(z)$ whose coefficients are uniformly bounded,
+\begin{align}
+\norm{\E_qg_1-\E_\pi g_1}
+&\le C\sqrt{\KL(q\|\pi)},
+\label{eq:linear-transfer}\\
+\norm{\E_qg_2-\E_\pi g_2}
+&\le C\left\{\sqrt{\KL(q\|\pi)}+\KL(q\|\pi)\right\},
+\label{eq:quadratic-transfer}
+\end{align}
+where $C$ is uniform over the posterior family in Lemma~\ref{lem:geometry}.
+\end{lemma}
+
+\begin{proof}
+Uniform strong log-concavity implies the quadratic transportation inequality~\cite{ottovillani2000}
+\[
+W_2^2(q,\pi)\le2\KL(q\|\pi).
+\]
+Affine functions are Lipschitz, giving \cref{eq:linear-transfer}. For a quadratic term, take an optimal coupling $(Z,Z')$ with laws $(q,\pi)$ and use
+\[
+\norm{ZZ^{\trans}-Z'Z'^{\trans}}
+\le(\norm Z+\norm{Z'})\norm{Z-Z'}.
+\]
+Cauchy--Schwarz bounds its expectation by $W_2(q,\pi)$ times the square root of the sum of second moments. The target second moments are uniformly bounded by Lemma~\ref{lem:geometry}, while
+\[
+\{\E_q\norm Z^2\}^{1/2}
+\le
+\{\E_\pi\norm{Z'}^2\}^{1/2}+W_2(q,\pi).
+\]
+Substitute the transportation inequality. General bounded-coefficient quadratic polynomials follow componentwise.
+\end{proof}
+
+In the categorical linear-index model, complete-data scores are at most affine in $Z$, and the complete-data Hessian and score outer product are at most quadratic in $Z$, with bounded coefficients on the compact parameter and observation sets.
+
+\begin{proposition}[Consistency of the mixture-based covariance]
+\label{prop:covariance}
+Suppose the assumptions of Corollary~\ref{cor:an} hold, the complete-data derivatives are continuous in $\eta$, and their coefficients obey the bounded affine/quadratic structure just described. Then
+\begin{equation}
+\widehat A_n\xrightarrow{\Pp}A_0,
+\qquad
+\widehat B_n\xrightarrow{\Pp}B_0,
+\qquad
+\widehat V_n\xrightarrow{\Pp}A_0^{-1}B_0A_0^{-1}.
+\label{eq:cov-consistency}
+\end{equation}
+\end{proposition}
+
+\begin{proof}
+Let $d_i$ denote the KL divergence in \cref{eq:fitted-gap}. By Lemma~\ref{lem:moment-transfer}, the average discrepancy between fitted-mixture and exact-posterior score/information moments is bounded by a constant times
+\[
+\frac1n\sum_i(\sqrt{d_i}+d_i)
+\le
+\sqrt{\frac1n\sum_id_i}
++
+\frac1n\sum_id_i
+\le
+\sqrt{\rho_{K_n}}+\rho_{K_n}
+=o(1).
+\]
+Thus $\widehat A_n$ and $\widehat B_n$ are asymptotically equivalent to the same averages computed from the exact posterior at $\widehat\eta_n$. Fisher's and Louis's identities identify these exact-posterior averages with observed-data scores and Hessians. Consistency of $\widehat\eta_n$, continuity, and the ordinary law of large numbers then give convergence to $A_0$ and $B_0$. Matrix inversion and multiplication are continuous at nonsingular $A_0$.
+\end{proof}
+
+\begin{corollary}[Wald coverage]
+\label{cor:coverage}
+Let $a\in\R^p$ be fixed. Under Corollary~\ref{cor:an} and Proposition~\ref{prop:covariance},
+\begin{equation}
+\frac{\sqrt n\,a^{\trans}(\widehat\eta_n-\eta_0)}
+{\sqrt{a^{\trans}\widehat V_na}}
+\rightsquigarrow\cN(0,1).
+\end{equation}
+Therefore
+\begin{equation}
+a^{\trans}\widehat\eta_n
+\ \pm\ 
+z_{1-\alpha/2}
+\sqrt{\frac{a^{\trans}\widehat V_na}{n}}
+\label{eq:wald-ci}
+\end{equation}
+has asymptotic coverage $1-\alpha$. Smooth identified functionals follow by the delta method.
+\end{corollary}
+
+\section{Interpretation and boundaries of the result}
+
+\subsection{What the theory establishes}
+
+For the bounded, fixed-dimensional categorical model, the proposed theorem architecture establishes:
+\begin{itemize}
+\item an analytically intractable but uniformly regular posterior;
+\item a simple affine/softmax Gaussian-mixture encoder that exploits the posterior's exact tilt structure;
+\item consistency of the raw generative ELBO estimator whenever the mixture approximation error vanishes;
+\item the rate
+\[
+\widehat\eta_n-\eta_0
+=
+\Op(n^{-1/2})+
+\Op\!\left[K_n^{-r/L}(\log K_n)^{(c_r+1)/2}\right];
+\]
+\item MLE-equivalent asymptotic normality when the sieve is undersmoothed so that $n\rho_{K_n}\to0$;
+\item a feasible mixture-based covariance estimator and asymptotically valid Wald intervals.
+\end{itemize}
+
+The raw ELBO estimator and the MLE remain different optimization objects at every finite $K$. The result is that their generative-parameter components become indistinguishable at the root-$n$ scale under the stated sieve-growth condition.
+
+\subsection{What the theory does not establish}
+
+The present argument does not cover:
+\begin{itemize}
+\item optimization error or convergence of stochastic-gradient algorithms;
+\item Monte Carlo error in evaluating the ELBO or posterior moments;
+\item growing numbers of items, modalities, or observed dimensions;
+\item unbounded covariates or sufficient statistics;
+\item Poisson modalities, whose log-partition curvature is unbounded;
+\item arbitrary continuous modalities without a localization argument;
+\item nonlinear neural decoders or unidentified latent reparameterizations beyond the stated local chart;
+\item a practical claim that the asymptotically sufficient $K_n$ is small at realistic sample sizes.
+\end{itemize}
+
+If there are finitely many missing-modality patterns, the argument can be repeated with one base potential per pattern or with a mask-indexed structured encoder. Informative missingness requires an explicit missingness model.
+
+\subsection{Relation to existing variational theory}
+
+Margossian and Blei~\cite{margossianblei2024} characterize when simple hierarchical models admit ideal amortized inference functions that can close the amortization gap relative to factorized variational inference. The present model is simple hierarchical, but the tilt representation gives a more explicit result: the relevant inference function is affine/softmax once a base mixture is fixed.
+
+Westling and McCormick~\cite{westling2019} analyze fixed-family frequentist variational estimators as profile $M$-estimators, including consistency, asymptotic normality, sandwich covariance estimation, and one-step corrections. Here the variational family grows, and the one-sided ELBO comparison shows that its population target converges to the likelihood target. Wang and Blei~\cite{wangblei2019} study a different object: a Bayesian variational posterior over global parameters.
+
+The normal-mixture approximation literature supplies crucial density-approximation ingredients. It does not by itself supply the complete theorem above because the ELBO requires reverse KL, the posterior family varies with $\theta$ and the observations, and the approximation must be amortized. The exponential-tilt construction and Lemma~\ref{lem:tilt-transfer} address the latter two issues; Assumption~\ref{ass:approx} isolates the remaining uniform approximation question.
+
+\section{Compact statement of the main result}
+
+For convenient reference, the substantive conclusion can be summarized as follows.
+
+\begin{theorem}[Raw sieve-ELBO inference, compact form]
+\label{thm:compact}
+Consider the multimodal latent-factor model in \cref{sec:model}. Suppose:
+\begin{enumerate}[label=(\roman*)]
+\item the bounded categorical-model and identification assumptions hold;
+\item the marginal likelihood is regular in identified local coordinates;
+\item the uniform base-mixture approximation condition holds for some fixed $r$;
+\item a global ELBO maximizer is obtained.
+\end{enumerate}
+Then, with a $K_n$-component structured Gaussian-mixture encoder,
+\[
+\widehat\eta_n-\eta_0
+=
+\Op(n^{-1/2})
++
+\Op\!\left[
+K_n^{-r/L}(\log K_n)^{(c_r+1)/2}
+\right].
+\]
+If $K_n\to\infty$, the estimator is consistent. If
+\[
+nK_n^{-2r/L}(\log K_n)^{c_r+1}\to0,
+\]
+then it is root-$n$ equivalent to the marginal MLE, is asymptotically normal, and Wald intervals based on the mixture Fisher--Louis covariance have asymptotically correct coverage.
+\end{theorem}
+
+\begin{remark}[The claim an adversarial review should focus on]
+The ELBO-to-likelihood comparison and all subsequent statistical implications are short and exact once $\rho_K$ is controlled. The vulnerable step is not the sieve $M$-estimation argument; it is the uniform weighted normal-mixture approximation in Assumption~\ref{ass:approx}. A successful critique should identify either a failed condition in the imported Gaussian-mixture construction, a nonuniform constant over $\theta$, or a flaw in upgrading ordinary Hellinger approximation to the weighted metric. If those checks pass, the remaining asymptotic argument is standard.
+\end{remark}
+
+\begin{thebibliography}{99}
+
+\bibitem{chen2007}
+Chen, X. (2007).
+Large sample sieve estimation of semi-nonparametric models.
+\emph{Handbook of Econometrics}, 6B, 5549--5632.
+
+\bibitem{chenwhite1999}
+Chen, X. and White, H. (1999).
+Improved rates and asymptotic normality for nonparametric neural network estimators.
+\emph{IEEE Transactions on Information Theory}, 45(2), 682--691.
+
+\bibitem{huix2024}
+Huix, T., Korba, A., Durmus, A., and Moulines, E. (2024).
+Theoretical guarantees for variational inference with fixed-variance mixture of Gaussians.
+\emph{arXiv:2406.04012}.
+
+\bibitem{louis1982}
+Louis, T. A. (1982).
+Finding the observed information matrix when using the EM algorithm.
+\emph{Journal of the Royal Statistical Society, Series B}, 44(2), 226--233.
+
+\bibitem{margossianblei2024}
+Margossian, C. C. and Blei, D. M. (2024).
+Amortized variational inference: When and why?
+\emph{Proceedings of the 40th Conference on Uncertainty in Artificial Intelligence}, 2434--2449.
+
+\bibitem{nguyen2020}
+Nguyen, T. T., Nguyen, H. D., Chamroukhi, F., and McLachlan, G. J. (2020).
+Approximation by finite mixtures of continuous density functions that vanish at infinity.
+\emph{Cogent Mathematics \& Statistics}, 7(1), 1750861.
+
+\bibitem{norets2010}
+Norets, A. (2010).
+Approximation of conditional densities by smooth mixtures of regressions.
+\emph{Annals of Statistics}, 38(3), 1733--1766.
+
+\bibitem{ottovillani2000}
+Otto, F. and Villani, C. (2000).
+Generalization of an inequality by Talagrand and links with the logarithmic Sobolev inequality.
+\emph{Journal of Functional Analysis}, 173(2), 361--400.
+
+\bibitem{shen2013}
+Shen, W., Tokdar, S. T., and Ghosal, S. (2013).
+Adaptive Bayesian multivariate density estimation with Dirichlet mixtures.
+\emph{Biometrika}, 100(3), 623--640.
+
+\bibitem{wangblei2019}
+Wang, Y. and Blei, D. M. (2019).
+Frequentist consistency of variational Bayes.
+\emph{Journal of the American Statistical Association}, 114(527), 1147--1161.
+
+\bibitem{westling2019}
+Westling, T. and McCormick, T. H. (2019).
+Beyond prediction: A framework for inference with variational approximations in mixture models.
+\emph{Journal of Computational and Graphical Statistics}, 28(4), 778--789.
+
+\end{thebibliography}
+
+\end{document}

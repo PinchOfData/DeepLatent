@@ -1,0 +1,1172 @@
+{
+  "status": "complete",
+  "reference": "audit/results_gtm_pilot_n10000_20260907.json",
+  "config": {
+    "n": 10000,
+    "words": 25,
+    "topics": 5,
+    "vocab": 200,
+    "covariates": 3,
+    "components": 10,
+    "hidden": [
+      64,
+      64
+    ],
+    "checkpoints": [
+      2000,
+      4000,
+      8000,
+      16000
+    ],
+    "batch": 128,
+    "seed": 9100,
+    "design_seed": 777,
+    "sigma_y": 1.0,
+    "rho": 0.45,
+    "lr": 0.001,
+    "prior_lr": 0.0001,
+    "posterior_samples": 1024,
+    "readout_batch": 64,
+    "diagnostic_docs": 256,
+    "two_step_prior": "learned",
+    "device": "cpu",
+    "threads": 1,
+    "out": "audit/results_gtm_pilot_n10000_20260907.json"
+  },
+  "audit": {
+    "every": 1000,
+    "train_eval_n": 2048,
+    "heldout_n": 2048,
+    "importance_samples": 128,
+    "heldout_seed": 209100,
+    "constants_included": true,
+    "diagnostics_preserve_training_rng": true
+  },
+  "arms": {
+    "joint": {
+      "trajectory": [
+        {
+          "step": 1000,
+          "train": {
+            "nll": 73.74728393554688,
+            "negative_elbo": 73.76939392089844,
+            "text_nll": 72.17831420898438,
+            "ess": 122.47464752197266,
+            "nll_se_across_documents": 0.09712507324326293,
+            "outcome_predictive_nll": 1.5689659118652344
+          },
+          "heldout": {
+            "nll": 73.77162170410156,
+            "negative_elbo": 73.79428100585938,
+            "text_nll": 72.19154357910156,
+            "ess": 122.33106231689453,
+            "nll_se_across_documents": 0.0993734811707736,
+            "outcome_predictive_nll": 1.5800784826278687
+          },
+          "head": {
+            "beta": [
+              -0.09354843497276305,
+              0.6618708789348602,
+              -0.012693572044372547,
+              -0.24899627566337584,
+              -0.30663259625434874
+            ],
+            "error": [
+              -2.093548434972763,
+              -0.3381291210651398,
+              -0.012693572044372547,
+              0.7510037243366241,
+              1.6933674037456512
+            ],
+            "mean_absolute_error": 0.9777484512329101,
+            "rmse": 1.2592805276741321,
+            "scale_ratio": 0.13370354771614074,
+            "correlation": 0.5444792396442283
+          },
+          "prevalence_rmse": 0.3872560448921849,
+          "covariance_relative_error": 0.5985947187270259
+        },
+        {
+          "step": 2000,
+          "train": {
+            "nll": 72.25651550292969,
+            "negative_elbo": 72.28888702392578,
+            "text_nll": 70.74917602539062,
+            "ess": 119.69747924804688,
+            "nll_se_across_documents": 0.11953074884342718,
+            "outcome_predictive_nll": 1.5073328018188477,
+            "nll_change_since_previous": -1.4907679557800293,
+            "nll_change_paired_se": 0.043334717923503095
+          },
+          "heldout": {
+            "nll": 72.2674789428711,
+            "negative_elbo": 72.30064392089844,
+            "text_nll": 70.75144958496094,
+            "ess": 119.42364501953125,
+            "nll_se_across_documents": 0.12269935945118832,
+            "outcome_predictive_nll": 1.516019344329834,
+            "nll_change_since_previous": -1.5041491985321045,
+            "nll_change_paired_se": 0.042757495759722146
+          },
+          "head": {
+            "beta": [
+              0.13935896158218386,
+              1.1707772850990295,
+              0.14271690845489504,
+              -0.5124327301979065,
+              -0.9404204249382019
+            ],
+            "error": [
+              -1.8606410384178163,
+              0.17077728509902945,
+              0.14271690845489504,
+              0.48756726980209353,
+              1.059579575061798
+            ],
+            "mean_absolute_error": 0.7442564153671264,
+            "rmse": 0.987111826428967,
+            "scale_ratio": 0.38427687883377076,
+            "correlation": 0.7598670121525288
+          },
+          "prevalence_rmse": 0.35398859270710836,
+          "covariance_relative_error": 0.684099962107091
+        },
+        {
+          "step": 3000,
+          "train": {
+            "nll": 71.5838623046875,
+            "negative_elbo": 71.63047790527344,
+            "text_nll": 70.1038818359375,
+            "ess": 116.53143310546875,
+            "nll_se_across_documents": 0.12401970431120123,
+            "outcome_predictive_nll": 1.4799768924713135,
+            "nll_change_since_previous": -0.6726536750793457,
+            "nll_change_paired_se": 0.028626049946546137
+          },
+          "heldout": {
+            "nll": 71.60456085205078,
+            "negative_elbo": 71.65148162841797,
+            "text_nll": 70.11608123779297,
+            "ess": 116.44023132324219,
+            "nll_se_across_documents": 0.1266916669928221,
+            "outcome_predictive_nll": 1.4884833097457886,
+            "nll_change_since_previous": -0.6629118323326111,
+            "nll_change_paired_se": 0.02736038008576399
+          },
+          "head": {
+            "beta": [
+              0.6327074259519577,
+              1.0233306676149367,
+              0.5210821568965912,
+              -0.6941916555166244,
+              -1.4829285949468614
+            ],
+            "error": [
+              -1.3672925740480424,
+              0.02333066761493674,
+              0.5210821568965912,
+              0.30580834448337557,
+              0.5170714050531386
+            ],
+            "mean_absolute_error": 0.5469170296192168,
+            "rmse": 0.7074519770010645,
+            "scale_ratio": 0.59487943649292,
+            "correlation": 0.8968114131828189
+          },
+          "prevalence_rmse": 0.21106475340645545,
+          "covariance_relative_error": 0.7433222050784852
+        },
+        {
+          "step": 4000,
+          "train": {
+            "nll": 71.3143310546875,
+            "negative_elbo": 71.37107849121094,
+            "text_nll": 69.84882354736328,
+            "ess": 112.8510971069336,
+            "nll_se_across_documents": 0.12602377642118212,
+            "outcome_predictive_nll": 1.465505599975586,
+            "nll_change_since_previous": -0.26953282952308655,
+            "nll_change_paired_se": 0.015022104869709367
+          },
+          "heldout": {
+            "nll": 71.33683776855469,
+            "negative_elbo": 71.39431762695312,
+            "text_nll": 69.8636474609375,
+            "ess": 112.95039367675781,
+            "nll_se_across_documents": 0.1283122554649145,
+            "outcome_predictive_nll": 1.473186731338501,
+            "nll_change_since_previous": -0.26772594451904297,
+            "nll_change_paired_se": 0.01461211349828555
+          },
+          "head": {
+            "beta": [
+              1.0315037608146667,
+              0.8886620044708252,
+              0.6893925309181214,
+              -0.9233358263969421,
+              -1.6862224698066712
+            ],
+            "error": [
+              -0.9684962391853333,
+              -0.11133799552917478,
+              0.6893925309181214,
+              0.07666417360305788,
+              0.31377753019332877
+            ],
+            "mean_absolute_error": 0.4319336938858032,
+            "rmse": 0.5531684933578099,
+            "scale_ratio": 0.7247450292110443,
+            "correlation": 0.9337081185673076
+          },
+          "prevalence_rmse": 0.1878293893720931,
+          "covariance_relative_error": 0.751726811727613
+        },
+        {
+          "step": 5000,
+          "train": {
+            "nll": 71.18974304199219,
+            "negative_elbo": 71.2499771118164,
+            "text_nll": 69.72823333740234,
+            "ess": 111.79507446289062,
+            "nll_se_across_documents": 0.12735511107194422,
+            "outcome_predictive_nll": 1.4615141153335571,
+            "nll_change_since_previous": -0.12458121031522751,
+            "nll_change_paired_se": 0.008818754557403335
+          },
+          "heldout": {
+            "nll": 71.2152099609375,
+            "negative_elbo": 71.27635192871094,
+            "text_nll": 69.74632263183594,
+            "ess": 111.71087646484375,
+            "nll_se_across_documents": 0.12935411502339167,
+            "outcome_predictive_nll": 1.4688923358917236,
+            "nll_change_since_previous": -0.12162432074546814,
+            "nll_change_paired_se": 0.008549114825698827
+          },
+          "head": {
+            "beta": [
+              1.20767902135849,
+              0.8402673482894898,
+              0.7059713482856751,
+              -1.002551805973053,
+              -1.7513659119606018
+            ],
+            "error": [
+              -0.79232097864151,
+              -0.1597326517105102,
+              0.7059713482856751,
+              -0.002551805973052934,
+              0.24863408803939824
+            ],
+            "mean_absolute_error": 0.3818421745300293,
+            "rmse": 0.49264754526275933,
+            "scale_ratio": 0.7760909020900726,
+            "correlation": 0.945656212132126
+          },
+          "prevalence_rmse": 0.17230228141422071,
+          "covariance_relative_error": 0.7185886043903825
+        },
+        {
+          "step": 6000,
+          "train": {
+            "nll": 71.12825012207031,
+            "negative_elbo": 71.19328308105469,
+            "text_nll": 69.6688232421875,
+            "ess": 110.01023864746094,
+            "nll_se_across_documents": 0.12835970227962565,
+            "outcome_predictive_nll": 1.45943284034729,
+            "nll_change_since_previous": -0.06149010360240936,
+            "nll_change_paired_se": 0.004720098333903154
+          },
+          "heldout": {
+            "nll": 71.15779113769531,
+            "negative_elbo": 71.22319030761719,
+            "text_nll": 69.69064331054688,
+            "ess": 110.0288314819336,
+            "nll_se_across_documents": 0.13018408130098033,
+            "outcome_predictive_nll": 1.4671424627304077,
+            "nll_change_since_previous": -0.05742071568965912,
+            "nll_change_paired_se": 0.004472965677847971
+          },
+          "head": {
+            "beta": [
+              1.2725888311862945,
+              0.8242078840732574,
+              0.678799819946289,
+              -1.0014443576335907,
+              -1.7741521775722504
+            ],
+            "error": [
+              -0.7274111688137055,
+              -0.1757921159267426,
+              0.678799819946289,
+              -0.0014443576335907427,
+              0.2258478224277496
+            ],
+            "mean_absolute_error": 0.3618590569496155,
+            "rmse": 0.4629920943515919,
+            "scale_ratio": 0.7919134259223938,
+            "correlation": 0.9526563468877456
+          },
+          "prevalence_rmse": 0.16349700496945924,
+          "covariance_relative_error": 0.648345922664813
+        },
+        {
+          "step": 7000,
+          "train": {
+            "nll": 71.0927734375,
+            "negative_elbo": 71.15185546875,
+            "text_nll": 69.63485717773438,
+            "ess": 111.5780258178711,
+            "nll_se_across_documents": 0.12894412101778982,
+            "outcome_predictive_nll": 1.457916021347046,
+            "nll_change_since_previous": -0.03548651933670044,
+            "nll_change_paired_se": 0.0028981473661494
+          },
+          "heldout": {
+            "nll": 71.12313842773438,
+            "negative_elbo": 71.18486022949219,
+            "text_nll": 69.65674591064453,
+            "ess": 110.99595642089844,
+            "nll_se_across_documents": 0.13063993107776203,
+            "outcome_predictive_nll": 1.4663922786712646,
+            "nll_change_since_previous": -0.034652240574359894,
+            "nll_change_paired_se": 0.0028159679262704904
+          },
+          "head": {
+            "beta": [
+              1.3119680166244507,
+              0.8317009091377259,
+              0.6503441214561463,
+              -0.9992452383041381,
+              -1.7947678089141845
+            ],
+            "error": [
+              -0.6880319833755493,
+              -0.16829909086227413,
+              0.6503441214561463,
+              0.0007547616958618608,
+              0.20523219108581547
+            ],
+            "mean_absolute_error": 0.3425324296951294,
+            "rmse": 0.4397228427926912,
+            "scale_ratio": 0.8044417798519135,
+            "correlation": 0.9576948124014106
+          },
+          "prevalence_rmse": 0.15995561710788211,
+          "covariance_relative_error": 0.5629807916999388
+        },
+        {
+          "step": 8000,
+          "train": {
+            "nll": 71.06939697265625,
+            "negative_elbo": 71.12677001953125,
+            "text_nll": 69.61247253417969,
+            "ess": 112.550537109375,
+            "nll_se_across_documents": 0.12944032640202072,
+            "outcome_predictive_nll": 1.4569225311279297,
+            "nll_change_since_previous": -0.023373033851385117,
+            "nll_change_paired_se": 0.002142762571178806
+          },
+          "heldout": {
+            "nll": 71.10417938232422,
+            "negative_elbo": 71.16315460205078,
+            "text_nll": 69.6386489868164,
+            "ess": 112.1363296508789,
+            "nll_se_across_documents": 0.13108105053098917,
+            "outcome_predictive_nll": 1.4655330181121826,
+            "nll_change_since_previous": -0.018958667293190956,
+            "nll_change_paired_se": 0.002049730482444468
+          },
+          "head": {
+            "beta": [
+              1.3271453917026519,
+              0.83508180975914,
+              0.6333686947822571,
+              -0.9887588679790497,
+              -1.8068370282649995
+            ],
+            "error": [
+              -0.6728546082973481,
+              -0.16491819024085996,
+              0.6333686947822571,
+              0.01124113202095034,
+              0.19316297173500052
+            ],
+            "mean_absolute_error": 0.3351091194152832,
+            "rmse": 0.42860833720497954,
+            "scale_ratio": 0.8091805517673493,
+            "correlation": 0.9601761772652877
+          },
+          "prevalence_rmse": 0.16047261265622131,
+          "covariance_relative_error": 0.486286959940187
+        },
+        {
+          "step": 9000,
+          "train": {
+            "nll": 71.05416107177734,
+            "negative_elbo": 71.11465454101562,
+            "text_nll": 69.59689331054688,
+            "ess": 111.56312561035156,
+            "nll_se_across_documents": 0.12985126871171407,
+            "outcome_predictive_nll": 1.4572627544403076,
+            "nll_change_since_previous": -0.015235109254717827,
+            "nll_change_paired_se": 0.0017807782712062938
+          },
+          "heldout": {
+            "nll": 71.09138488769531,
+            "negative_elbo": 71.15380859375,
+            "text_nll": 69.62661743164062,
+            "ess": 111.16585540771484,
+            "nll_se_across_documents": 0.1314539447731893,
+            "outcome_predictive_nll": 1.464768648147583,
+            "nll_change_since_previous": -0.012793287634849548,
+            "nll_change_paired_se": 0.0017931487005164951
+          },
+          "head": {
+            "beta": [
+              1.3583808064460754,
+              0.830753219127655,
+              0.6189491271972656,
+              -0.9878793835639954,
+              -1.8202037692070008
+            ],
+            "error": [
+              -0.6416191935539246,
+              -0.16924678087234502,
+              0.6189491271972656,
+              0.012120616436004594,
+              0.17979623079299922
+            ],
+            "mean_absolute_error": 0.3243463897705078,
+            "rmse": 0.4137369401880511,
+            "scale_ratio": 0.8175801753997802,
+            "correlation": 0.9630263797820394
+          },
+          "prevalence_rmse": 0.16309095337631263,
+          "covariance_relative_error": 0.42569136557611664
+        },
+        {
+          "step": 10000,
+          "train": {
+            "nll": 71.04585266113281,
+            "negative_elbo": 71.0986099243164,
+            "text_nll": 69.58914184570312,
+            "ess": 113.37469482421875,
+            "nll_se_across_documents": 0.13015128051612673,
+            "outcome_predictive_nll": 1.456708550453186,
+            "nll_change_since_previous": -0.008312063291668892,
+            "nll_change_paired_se": 0.001518654343335265
+          },
+          "heldout": {
+            "nll": 71.08435821533203,
+            "negative_elbo": 71.13888549804688,
+            "text_nll": 69.61996459960938,
+            "ess": 112.95196533203125,
+            "nll_se_across_documents": 0.1317064149324817,
+            "outcome_predictive_nll": 1.4643888473510742,
+            "nll_change_since_previous": -0.007029406726360321,
+            "nll_change_paired_se": 0.001584437177418294
+          },
+          "head": {
+            "beta": [
+              1.3758979856967926,
+              0.838331264257431,
+              0.6030633568763732,
+              -0.9816224753856659,
+              -1.835670131444931
+            ],
+            "error": [
+              -0.6241020143032074,
+              -0.16166873574256901,
+              0.6030633568763732,
+              0.018377524614334062,
+              0.16432986855506893
+            ],
+            "mean_absolute_error": 0.31430830001831056,
+            "rmse": 0.40166343022266743,
+            "scale_ratio": 0.8243089973926544,
+            "correlation": 0.9652536977705213
+          },
+          "prevalence_rmse": 0.16591525991262993,
+          "covariance_relative_error": 0.37854842261813254
+        },
+        {
+          "step": 11000,
+          "train": {
+            "nll": 71.03860473632812,
+            "negative_elbo": 71.08893585205078,
+            "text_nll": 69.58175659179688,
+            "ess": 113.30769348144531,
+            "nll_se_across_documents": 0.13039695449609673,
+            "outcome_predictive_nll": 1.4568393230438232,
+            "nll_change_since_previous": -0.0072452835738658905,
+            "nll_change_paired_se": 0.0012621715077196164
+          },
+          "heldout": {
+            "nll": 71.07867431640625,
+            "negative_elbo": 71.13095092773438,
+            "text_nll": 69.61422729492188,
+            "ess": 112.79612731933594,
+            "nll_se_across_documents": 0.13194339612494632,
+            "outcome_predictive_nll": 1.4644371271133423,
+            "nll_change_since_previous": -0.005687301978468895,
+            "nll_change_paired_se": 0.0012686978484298523
+          },
+          "head": {
+            "beta": [
+              1.3993166863918305,
+              0.8371926128864289,
+              0.588448989391327,
+              -0.9784792482852935,
+              -1.8464790403842926
+            ],
+            "error": [
+              -0.6006833136081695,
+              -0.16280738711357112,
+              0.588448989391327,
+              0.021520751714706465,
+              0.15352095961570744
+            ],
+            "mean_absolute_error": 0.3053962802886963,
+            "rmse": 0.3892635943566792,
+            "scale_ratio": 0.8307263314723968,
+            "correlation": 0.9675216193544987
+          },
+          "prevalence_rmse": 0.16827600487659286,
+          "covariance_relative_error": 0.3426559590840404
+        },
+        {
+          "step": 12000,
+          "train": {
+            "nll": 71.03250122070312,
+            "negative_elbo": 71.08132934570312,
+            "text_nll": 69.5762710571289,
+            "ess": 114.12750244140625,
+            "nll_se_across_documents": 0.1306882629762919,
+            "outcome_predictive_nll": 1.4562288522720337,
+            "nll_change_since_previous": -0.006105080246925354,
+            "nll_change_paired_se": 0.001154092747112699
+          },
+          "heldout": {
+            "nll": 71.07464599609375,
+            "negative_elbo": 71.12458801269531,
+            "text_nll": 69.61048126220703,
+            "ess": 114.21449279785156,
+            "nll_se_across_documents": 0.13215038983469546,
+            "outcome_predictive_nll": 1.464156150817871,
+            "nll_change_since_previous": -0.004031343385577202,
+            "nll_change_paired_se": 0.0011480994981816752
+          },
+          "head": {
+            "beta": [
+              1.424823772907257,
+              0.8425231099128723,
+              0.5849231004714965,
+              -0.9801990866661072,
+              -1.8720708966255188
+            ],
+            "error": [
+              -0.575176227092743,
+              -0.15747689008712773,
+              0.5849231004714965,
+              0.019800913333892778,
+              0.12792910337448116
+            ],
+            "mean_absolute_error": 0.29306124687194823,
+            "rmse": 0.3780263557606531,
+            "scale_ratio": 0.8416511535644531,
+            "correlation": 0.968789300349996
+          },
+          "prevalence_rmse": 0.1692185715778214,
+          "covariance_relative_error": 0.31789252782576227
+        },
+        {
+          "step": 13000,
+          "train": {
+            "nll": 71.03096008300781,
+            "negative_elbo": 71.07947540283203,
+            "text_nll": 69.57456970214844,
+            "ess": 115.08740997314453,
+            "nll_se_across_documents": 0.13087625899407473,
+            "outcome_predictive_nll": 1.4564018249511719,
+            "nll_change_since_previous": -0.0015338975936174393,
+            "nll_change_paired_se": 0.0010570174420535378
+          },
+          "heldout": {
+            "nll": 71.07379913330078,
+            "negative_elbo": 71.12308502197266,
+            "text_nll": 69.60868072509766,
+            "ess": 114.76040649414062,
+            "nll_se_across_documents": 0.13234548759645237,
+            "outcome_predictive_nll": 1.4651219844818115,
+            "nll_change_since_previous": -0.0008345507085323334,
+            "nll_change_paired_se": 0.001055064857587369
+          },
+          "head": {
+            "beta": [
+              1.4393252372741698,
+              0.839718246459961,
+              0.5712768077850342,
+              -0.9808441162109375,
+              -1.8694761753082276
+            ],
+            "error": [
+              -0.5606747627258302,
+              -0.16028175354003904,
+              0.5712768077850342,
+              0.019155883789062522,
+              0.13052382469177237
+            ],
+            "mean_absolute_error": 0.2883826065063476,
+            "rmse": 0.3698126655171516,
+            "scale_ratio": 0.8438165187835693,
+            "correlation": 0.9704723768893295
+          },
+          "prevalence_rmse": 0.16931029783283905,
+          "covariance_relative_error": 0.29935738541178
+        },
+        {
+          "step": 14000,
+          "train": {
+            "nll": 71.02763366699219,
+            "negative_elbo": 71.07447052001953,
+            "text_nll": 69.57074737548828,
+            "ess": 115.07730102539062,
+            "nll_se_across_documents": 0.13097614702504556,
+            "outcome_predictive_nll": 1.4568846225738525,
+            "nll_change_since_previous": -0.003330785781145096,
+            "nll_change_paired_se": 0.0010546728589689925
+          },
+          "heldout": {
+            "nll": 71.07229614257812,
+            "negative_elbo": 71.12013244628906,
+            "text_nll": 69.60758209228516,
+            "ess": 114.94389343261719,
+            "nll_se_across_documents": 0.13243745201990315,
+            "outcome_predictive_nll": 1.4647083282470703,
+            "nll_change_since_previous": -0.0015114694833755493,
+            "nll_change_paired_se": 0.000986148751053422
+          },
+          "head": {
+            "beta": [
+              1.4631799161434174,
+              0.8368504345417023,
+              0.5650644898414612,
+              -0.9845621883869171,
+              -1.8805326521396637
+            ],
+            "error": [
+              -0.5368200838565826,
+              -0.16314956545829773,
+              0.5650644898414612,
+              0.015437811613082886,
+              0.1194673478603363
+            ],
+            "mean_absolute_error": 0.27998785972595214,
+            "rmse": 0.360167248386911,
+            "scale_ratio": 0.8508837759494782,
+            "correlation": 0.9718024015287777
+          },
+          "prevalence_rmse": 0.16864885372539518,
+          "covariance_relative_error": 0.2845368670984496
+        },
+        {
+          "step": 15000,
+          "train": {
+            "nll": 71.02703857421875,
+            "negative_elbo": 71.06962585449219,
+            "text_nll": 69.57022094726562,
+            "ess": 115.72856140136719,
+            "nll_se_across_documents": 0.1310747917239853,
+            "outcome_predictive_nll": 1.4568145275115967,
+            "nll_change_since_previous": -0.0006006080657243729,
+            "nll_change_paired_se": 0.0009883331431864008
+          },
+          "heldout": {
+            "nll": 71.07112121582031,
+            "negative_elbo": 71.11549377441406,
+            "text_nll": 69.60614013671875,
+            "ess": 115.33880615234375,
+            "nll_se_across_documents": 0.13253604403528227,
+            "outcome_predictive_nll": 1.4649767875671387,
+            "nll_change_since_previous": -0.001175571233034134,
+            "nll_change_paired_se": 0.0009893852503559666
+          },
+          "head": {
+            "beta": [
+              1.468343299627304,
+              0.8441956460475921,
+              0.5624453544616699,
+              -0.9838003695011139,
+              -1.8911839306354523
+            ],
+            "error": [
+              -0.531656700372696,
+              -0.15580435395240788,
+              0.5624453544616699,
+              0.016199630498886064,
+              0.10881606936454769
+            ],
+            "mean_absolute_error": 0.2749844217300415,
+            "rmse": 0.35647776522455754,
+            "scale_ratio": 0.8547050476074218,
+            "correlation": 0.9721673858983886
+          },
+          "prevalence_rmse": 0.16696006975409156,
+          "covariance_relative_error": 0.2732703685042007
+        },
+        {
+          "step": 16000,
+          "train": {
+            "nll": 71.025390625,
+            "negative_elbo": 71.0732650756836,
+            "text_nll": 69.5687484741211,
+            "ess": 114.26470947265625,
+            "nll_se_across_documents": 0.13115895898046157,
+            "outcome_predictive_nll": 1.4566333293914795,
+            "nll_change_since_previous": -0.0016490817070007324,
+            "nll_change_paired_se": 0.000979995558125022
+          },
+          "heldout": {
+            "nll": 71.07002258300781,
+            "negative_elbo": 71.11895751953125,
+            "text_nll": 69.60514831542969,
+            "ess": 114.1711654663086,
+            "nll_se_across_documents": 0.13263948293824013,
+            "outcome_predictive_nll": 1.4648679494857788,
+            "nll_change_since_previous": -0.0010963287204504013,
+            "nll_change_paired_se": 0.0010400139874935511
+          },
+          "head": {
+            "beta": [
+              1.4767365872859954,
+              0.8372857391834259,
+              0.5624629378318786,
+              -0.9791007816791535,
+              -1.8973844826221467
+            ],
+            "error": [
+              -0.5232634127140046,
+              -0.16271426081657414,
+              0.5624629378318786,
+              0.020899218320846513,
+              0.10261551737785335
+            ],
+            "mean_absolute_error": 0.27439106941223146,
+            "rmse": 0.35429135127061895,
+            "scale_ratio": 0.8564628660678864,
+            "correlation": 0.972445577856263
+          },
+          "prevalence_rmse": 0.16459762176564327,
+          "covariance_relative_error": 0.26454901845425205
+        }
+      ],
+      "reproduced_checkpoints": [
+        {
+          "step": 2000,
+          "max_coefficient_difference": 0.0
+        },
+        {
+          "step": 4000,
+          "max_coefficient_difference": 0.0
+        },
+        {
+          "step": 8000,
+          "max_coefficient_difference": 0.0
+        },
+        {
+          "step": 16000,
+          "max_coefficient_difference": 0.0
+        }
+      ]
+    },
+    "two_step": {
+      "trajectory": [
+        {
+          "step": 1000,
+          "train": {
+            "nll": 72.46141815185547,
+            "negative_elbo": 72.47583770751953,
+            "text_nll": 72.46141815185547,
+            "ess": 124.40660095214844,
+            "nll_se_across_documents": 0.09074473580171401
+          },
+          "heldout": {
+            "nll": 72.45561218261719,
+            "negative_elbo": 72.47099304199219,
+            "text_nll": 72.45561218261719,
+            "ess": 124.13447570800781,
+            "nll_se_across_documents": 0.09286096067558239
+          },
+          "prevalence_rmse": 0.38131782779984985,
+          "covariance_relative_error": 0.5481710880462998
+        },
+        {
+          "step": 2000,
+          "train": {
+            "nll": 71.02520751953125,
+            "negative_elbo": 71.0562515258789,
+            "text_nll": 71.02520751953125,
+            "ess": 120.6404800415039,
+            "nll_se_across_documents": 0.11966063489382563,
+            "nll_change_since_previous": -1.436208724975586,
+            "nll_change_paired_se": 0.04453946188058472
+          },
+          "heldout": {
+            "nll": 71.01234436035156,
+            "negative_elbo": 71.04356384277344,
+            "text_nll": 71.01234436035156,
+            "ess": 120.62286376953125,
+            "nll_se_across_documents": 0.12286877924548999,
+            "nll_change_since_previous": -1.4432570934295654,
+            "nll_change_paired_se": 0.04483179769021234
+          },
+          "prevalence_rmse": 0.30253489364851344,
+          "covariance_relative_error": 0.6783900584917564
+        },
+        {
+          "step": 3000,
+          "train": {
+            "nll": 70.50507354736328,
+            "negative_elbo": 70.54248046875,
+            "text_nll": 70.50507354736328,
+            "ess": 118.3196792602539,
+            "nll_se_across_documents": 0.12359833065650144,
+            "nll_change_since_previous": -0.5201361775398254,
+            "nll_change_paired_se": 0.020708565573333285
+          },
+          "heldout": {
+            "nll": 70.48220825195312,
+            "negative_elbo": 70.52009582519531,
+            "text_nll": 70.48220825195312,
+            "ess": 118.09107208251953,
+            "nll_se_across_documents": 0.12671265612338053,
+            "nll_change_since_previous": -0.5301402807235718,
+            "nll_change_paired_se": 0.02085281316236182
+          },
+          "prevalence_rmse": 0.2631425544319401,
+          "covariance_relative_error": 0.7526471932175789
+        },
+        {
+          "step": 4000,
+          "train": {
+            "nll": 69.9755859375,
+            "negative_elbo": 70.03602600097656,
+            "text_nll": 69.9755859375,
+            "ess": 112.77796936035156,
+            "nll_se_across_documents": 0.12383198224793371,
+            "nll_change_since_previous": -0.5294840931892395,
+            "nll_change_paired_se": 0.027988510374190038
+          },
+          "heldout": {
+            "nll": 69.97515869140625,
+            "negative_elbo": 70.03274536132812,
+            "text_nll": 69.97515869140625,
+            "ess": 113.81135559082031,
+            "nll_se_across_documents": 0.1265242491738247,
+            "nll_change_since_previous": -0.5070509910583496,
+            "nll_change_paired_se": 0.02661495775211016
+          },
+          "prevalence_rmse": 0.2072672220915096,
+          "covariance_relative_error": 0.7993585710018829
+        },
+        {
+          "step": 5000,
+          "train": {
+            "nll": 69.77508544921875,
+            "negative_elbo": 69.83561706542969,
+            "text_nll": 69.77508544921875,
+            "ess": 113.01005554199219,
+            "nll_se_across_documents": 0.12566467473515716,
+            "nll_change_since_previous": -0.2004980593919754,
+            "nll_change_paired_se": 0.011752169286860988
+          },
+          "heldout": {
+            "nll": 69.7867431640625,
+            "negative_elbo": 69.84645080566406,
+            "text_nll": 69.7867431640625,
+            "ess": 113.29313659667969,
+            "nll_se_across_documents": 0.12787349623520397,
+            "nll_change_since_previous": -0.18840950727462769,
+            "nll_change_paired_se": 0.011012135164371472
+          },
+          "prevalence_rmse": 0.16892768208063136,
+          "covariance_relative_error": 0.8186371692822921
+        },
+        {
+          "step": 6000,
+          "train": {
+            "nll": 69.69252014160156,
+            "negative_elbo": 69.75143432617188,
+            "text_nll": 69.69252014160156,
+            "ess": 112.30795288085938,
+            "nll_se_across_documents": 0.12696757079988655,
+            "nll_change_since_previous": -0.08256794512271881,
+            "nll_change_paired_se": 0.0055498041571389
+          },
+          "heldout": {
+            "nll": 69.71308135986328,
+            "negative_elbo": 69.7716064453125,
+            "text_nll": 69.71308135986328,
+            "ess": 112.97001647949219,
+            "nll_se_across_documents": 0.12884819479057905,
+            "nll_change_since_previous": -0.0736677497625351,
+            "nll_change_paired_se": 0.005280764359481164
+          },
+          "prevalence_rmse": 0.14432122170454278,
+          "covariance_relative_error": 0.8058218822506371
+        },
+        {
+          "step": 7000,
+          "train": {
+            "nll": 69.65039825439453,
+            "negative_elbo": 69.70606994628906,
+            "text_nll": 69.65039825439453,
+            "ess": 112.92671203613281,
+            "nll_se_across_documents": 0.12782883111249455,
+            "nll_change_since_previous": -0.04212220013141632,
+            "nll_change_paired_se": 0.0032189965066114065
+          },
+          "heldout": {
+            "nll": 69.67439270019531,
+            "negative_elbo": 69.73016357421875,
+            "text_nll": 69.67439270019531,
+            "ess": 113.12574768066406,
+            "nll_se_across_documents": 0.12953137413151639,
+            "nll_change_since_previous": -0.038693465292453766,
+            "nll_change_paired_se": 0.0029623419555153013
+          },
+          "prevalence_rmse": 0.1320283438066363,
+          "covariance_relative_error": 0.7755888816127173
+        },
+        {
+          "step": 8000,
+          "train": {
+            "nll": 69.62469482421875,
+            "negative_elbo": 69.67745971679688,
+            "text_nll": 69.62469482421875,
+            "ess": 114.01469421386719,
+            "nll_se_across_documents": 0.12836802628220656,
+            "nll_change_since_previous": -0.02570977248251438,
+            "nll_change_paired_se": 0.0021837592717065084
+          },
+          "heldout": {
+            "nll": 69.65257263183594,
+            "negative_elbo": 69.70470428466797,
+            "text_nll": 69.65257263183594,
+            "ess": 114.16785430908203,
+            "nll_se_across_documents": 0.12997738261917077,
+            "nll_change_since_previous": -0.021816527470946312,
+            "nll_change_paired_se": 0.002049407960271684
+          },
+          "prevalence_rmse": 0.1297011789077927,
+          "covariance_relative_error": 0.7367406468459555
+        },
+        {
+          "step": 9000,
+          "train": {
+            "nll": 69.60687255859375,
+            "negative_elbo": 69.6550521850586,
+            "text_nll": 69.60687255859375,
+            "ess": 115.36605072021484,
+            "nll_se_across_documents": 0.12881842857881823,
+            "nll_change_since_previous": -0.017809273675084114,
+            "nll_change_paired_se": 0.0017419835788771588
+          },
+          "heldout": {
+            "nll": 69.63552856445312,
+            "negative_elbo": 69.68365478515625,
+            "text_nll": 69.63552856445312,
+            "ess": 115.40487670898438,
+            "nll_se_across_documents": 0.13032505197253716,
+            "nll_change_since_previous": -0.017043257132172585,
+            "nll_change_paired_se": 0.0016784580707313677
+          },
+          "prevalence_rmse": 0.13427762361888865,
+          "covariance_relative_error": 0.6966271540432735
+        },
+        {
+          "step": 10000,
+          "train": {
+            "nll": 69.59487915039062,
+            "negative_elbo": 69.6456527709961,
+            "text_nll": 69.59487915039062,
+            "ess": 114.80027770996094,
+            "nll_se_across_documents": 0.12912576339815965,
+            "nll_change_since_previous": -0.011995280161499977,
+            "nll_change_paired_se": 0.0015231640561259308
+          },
+          "heldout": {
+            "nll": 69.62519073486328,
+            "negative_elbo": 69.6754379272461,
+            "text_nll": 69.62519073486328,
+            "ess": 115.10833740234375,
+            "nll_se_across_documents": 0.13056933510650628,
+            "nll_change_since_previous": -0.010338213294744492,
+            "nll_change_paired_se": 0.0014829717677147295
+          },
+          "prevalence_rmse": 0.14238886077797702,
+          "covariance_relative_error": 0.6599740762843871
+        },
+        {
+          "step": 11000,
+          "train": {
+            "nll": 69.5865478515625,
+            "negative_elbo": 69.62968444824219,
+            "text_nll": 69.5865478515625,
+            "ess": 116.82364654541016,
+            "nll_se_across_documents": 0.1294420333493854,
+            "nll_change_since_previous": -0.008329808712005615,
+            "nll_change_paired_se": 0.0013179917981678193
+          },
+          "heldout": {
+            "nll": 69.61967468261719,
+            "negative_elbo": 69.66342163085938,
+            "text_nll": 69.61967468261719,
+            "ess": 116.67240905761719,
+            "nll_se_across_documents": 0.13083825307343006,
+            "nll_change_since_previous": -0.005509832873940468,
+            "nll_change_paired_se": 0.0012862094523958113
+          },
+          "prevalence_rmse": 0.1504145145461272,
+          "covariance_relative_error": 0.6288449310009641
+        },
+        {
+          "step": 12000,
+          "train": {
+            "nll": 69.58153533935547,
+            "negative_elbo": 69.62303161621094,
+            "text_nll": 69.58153533935547,
+            "ess": 117.5601806640625,
+            "nll_se_across_documents": 0.12972293155799838,
+            "nll_change_since_previous": -0.0050179921090602875,
+            "nll_change_paired_se": 0.0011767932702112444
+          },
+          "heldout": {
+            "nll": 69.61431884765625,
+            "negative_elbo": 69.6570053100586,
+            "text_nll": 69.61431884765625,
+            "ess": 117.39974212646484,
+            "nll_se_across_documents": 0.13109349438801202,
+            "nll_change_since_previous": -0.005360562354326248,
+            "nll_change_paired_se": 0.0011311725994207415
+          },
+          "prevalence_rmse": 0.15833716028074957,
+          "covariance_relative_error": 0.6021635324530692
+        },
+        {
+          "step": 13000,
+          "train": {
+            "nll": 69.578125,
+            "negative_elbo": 69.62127685546875,
+            "text_nll": 69.578125,
+            "ess": 116.83208465576172,
+            "nll_se_across_documents": 0.12986710539004204,
+            "nll_change_since_previous": -0.003413913771510124,
+            "nll_change_paired_se": 0.0010893273642945036
+          },
+          "heldout": {
+            "nll": 69.61080169677734,
+            "negative_elbo": 69.6551742553711,
+            "text_nll": 69.61080169677734,
+            "ess": 116.525390625,
+            "nll_se_across_documents": 0.13118338307917363,
+            "nll_change_since_previous": -0.0035155359655618668,
+            "nll_change_paired_se": 0.0010951869286904069
+          },
+          "prevalence_rmse": 0.16524673165819048,
+          "covariance_relative_error": 0.580629573771896
+        },
+        {
+          "step": 14000,
+          "train": {
+            "nll": 69.57537078857422,
+            "negative_elbo": 69.61750030517578,
+            "text_nll": 69.57537078857422,
+            "ess": 116.55774688720703,
+            "nll_se_across_documents": 0.13001795949757464,
+            "nll_change_since_previous": -0.002748936414718628,
+            "nll_change_paired_se": 0.0009594739941672645
+          },
+          "heldout": {
+            "nll": 69.60964965820312,
+            "negative_elbo": 69.6533203125,
+            "text_nll": 69.60964965820312,
+            "ess": 116.14685821533203,
+            "nll_se_across_documents": 0.13132075019518277,
+            "nll_change_since_previous": -0.0011482983827590942,
+            "nll_change_paired_se": 0.0009192146988523759
+          },
+          "prevalence_rmse": 0.17053240306893688,
+          "covariance_relative_error": 0.5611976212598406
+        },
+        {
+          "step": 15000,
+          "train": {
+            "nll": 69.57247161865234,
+            "negative_elbo": 69.61099243164062,
+            "text_nll": 69.57247161865234,
+            "ess": 117.38352966308594,
+            "nll_se_across_documents": 0.13013961637580135,
+            "nll_change_since_previous": -0.0028987955302000046,
+            "nll_change_paired_se": 0.0009569026248177825
+          },
+          "heldout": {
+            "nll": 69.60809326171875,
+            "negative_elbo": 69.64781188964844,
+            "text_nll": 69.60809326171875,
+            "ess": 117.29728698730469,
+            "nll_se_across_documents": 0.13141801458483376,
+            "nll_change_since_previous": -0.001560397446155548,
+            "nll_change_paired_se": 0.000984897516488255
+          },
+          "prevalence_rmse": 0.17468606166177716,
+          "covariance_relative_error": 0.5453901051606432
+        },
+        {
+          "step": 16000,
+          "train": {
+            "nll": 69.57147216796875,
+            "negative_elbo": 69.61473846435547,
+            "text_nll": 69.57147216796875,
+            "ess": 116.92697143554688,
+            "nll_se_across_documents": 0.13023730223393745,
+            "nll_change_since_previous": -0.0009982362389564514,
+            "nll_change_paired_se": 0.0009555468463119731
+          },
+          "heldout": {
+            "nll": 69.60680389404297,
+            "negative_elbo": 69.65129089355469,
+            "text_nll": 69.60680389404297,
+            "ess": 116.59601593017578,
+            "nll_se_across_documents": 0.13150297209471962,
+            "nll_change_since_previous": -0.0012919660657644272,
+            "nll_change_paired_se": 0.0009945275774646133
+          },
+          "prevalence_rmse": 0.17836623235831908,
+          "covariance_relative_error": 0.5316194033817025
+        }
+      ],
+      "reproduced_checkpoints": [
+        {
+          "step": 2000,
+          "max_coefficient_difference": 0.0
+        },
+        {
+          "step": 4000,
+          "max_coefficient_difference": 0.0
+        },
+        {
+          "step": 8000,
+          "max_coefficient_difference": 0.0
+        },
+        {
+          "step": 16000,
+          "max_coefficient_difference": 0.0
+        }
+      ]
+    }
+  },
+  "elapsed_seconds": 530.1152875423431
+}
