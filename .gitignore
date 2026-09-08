@@ -18,7 +18,6 @@ figs/*
 data/*
 src2/*
 tests/*
-!tests/test_mog_corrected_poe.py
 __pycache__/
 *.ckpt
 *.mem
@@ -31,3 +30,13 @@ papers/2302.13183v1.txt
 papers/2307.11018v4.txt
 papers/rybkin21a.txt
 papers/NeurIPS-*.txt
+
+# Research notes, papers, results, and generated outputs stay local
+*.md
+!README.md
+!CLAUDE.md
+papers/*
+tables/*
+audit/*
+experiments/*
+figures/*
