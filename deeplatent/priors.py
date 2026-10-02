@@ -462,13 +462,15 @@ class GaussianPrior(Prior):
         n_dims: Dimension of latent space
         mean_net: Linear layer for covariate-dependent mean (if covariates > 0)
         global_mean: Learnable global mean parameter (if no covariates)
-        L_flat: Flattened lower triangular Cholesky factor
+        L_flat: Flattened lower triangular Cholesky factor (a fixed zero buffer,
+            i.e. Σ = I, when learn_cov=False)
     """
 
-    def __init__(self, prevalence_covariate_size, n_dims):
+    def __init__(self, prevalence_covariate_size, n_dims, learn_cov=True):
         super().__init__()
         self.prevalence_covariate_size = prevalence_covariate_size
         self.n_dims = n_dims
+        self.learn_cov = learn_cov
 
         if self.prevalence_covariate_size > 0:
             # Learnable network for mean prediction
@@ -482,7 +484,14 @@ class GaussianPrior(Prior):
         # zero-initialized L_flat yields L_ii = 1 + 1e-4 and off-diagonals 0, i.e.
         # Sigma = L L^T ~= I at initialization (the intended identity init).
         tril_count = n_dims * (n_dims + 1) // 2
-        self.L_flat = nn.Parameter(torch.zeros(tril_count))
+        if learn_cov:
+            self.L_flat = nn.Parameter(torch.zeros(tril_count))
+        else:
+            # Pin Sigma = I and learn only the mean. With a learned decoder,
+            # (z, mean, Sigma) -> (a z, a mean, a^2 Sigma) leaves the likelihood
+            # unchanged, so the covariate effects in mean_net are identified only once
+            # the residual variance is fixed (the factor-model / MIMIC normalization).
+            self.register_buffer("L_flat", torch.zeros(tril_count))
 
     @property
     def sigma(self):

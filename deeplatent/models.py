@@ -37,6 +37,35 @@ from typing import Optional, List
 from collections import OrderedDict
 
 
+def _gaussian_feature_nll(recon, target, decoder):
+    """Gaussian NLL of an embedding modality, summed over features (last dim).
+
+    With learned per-feature noise (decoder.noise_log_var) this is the exact
+    -log N(target | recon, diag(sigma^2)). Without it (noise="fixed") it is the
+    legacy squared error: the same NLL with sigma^2 pinned at 0.5, constants
+    dropped. A modality's information about the latent is |lambda_j|^2 / sigma^2_j,
+    so pinning sigma^2 misstates each modality's contribution to posterior precision
+    (and distorts the fitted loadings) whenever its true noise is not 0.5.
+    """
+    sq_err = (recon - target) ** 2
+    log_var = getattr(decoder, "noise_log_var", None)
+    if log_var is None:
+        return sq_err.sum(-1)
+    # Floor guards the Heywood case (sigma^2_j -> 0 for a perfectly fit feature).
+    log_var = log_var.clamp(-12.0, 12.0)
+    return 0.5 * (sq_err * torch.exp(-log_var) + log_var + np.log(2 * np.pi)).sum(-1)
+
+
+def _mixture_covariance(means, scale_trils, pi):
+    """Covariance [B,D,D] of a Gaussian mixture with means [B,C,D], covariance
+    Cholesky factors [B,C,D,D] and weights [B,C]: within-component covariance
+    plus the spread of the component means."""
+    dev = means - (pi.unsqueeze(-1) * means).sum(dim=1, keepdim=True)
+    within = scale_trils @ scale_trils.transpose(-1, -2)
+    between = dev.unsqueeze(-1) @ dev.unsqueeze(-2)
+    return (pi[..., None, None] * (within + between)).sum(dim=1)
+
+
 class DeepLatent:
     def __init__(
         self,
@@ -66,6 +95,7 @@ class DeepLatent:
         optim_args=None,
         print_every_n_steps=1000,
         log_every_n_steps=float("inf"),
+        validate_every_n_steps=1,
         print_topics=False,
         print_covariates=False,
         patience=float("inf"),
@@ -90,6 +120,10 @@ class DeepLatent:
             alpha: concentration parameter of the Dirichlet prior (only used when latent_factor_prior='dirichlet' and update_prior=False).
             encoder_args: dictionary with the parameters for the encoder.
             decoder_args: dictionary with the parameters for the decoder.
+                Embedding (Gaussian) modalities also accept noise: "learned"
+                (default; per-feature noise variance sigma^2_j estimated by maximum
+                likelihood, as in factor analysis) or "fixed" (legacy squared-error
+                loss, i.e. sigma^2 pinned at 0.5 for every feature).
             predictor_args: dictionary mapping label names to their predictor config.
                 Each config can include: hidden_dims (list), dropout (float), activation (str),
                 bias (bool), loss_weight (float). Example:
@@ -109,9 +143,10 @@ class DeepLatent:
             optim_args: dictionary with the parameters for the optimizer. Can include 'main' for main parameters (encoder+decoders), 'predictor' for predictor parameters, 'prior' for prior parameters, and other Adam parameters like 'betas'. If None, uses default parameters.
             print_every_n_steps: number of steps between each print.
             log_every_n_steps: number of steps between each checkpoint.
+            validate_every_n_steps: number of training steps between validation evaluations (only used if test_data is given). Each evaluation scores the whole test set: the per-document loss averaged over all its documents.
             print_topics: whether to print topic words during training.
             print_covariates: whether to print covariate words during training.
-            patience: number of steps to wait before stopping the training if the validation or training loss does not improve.
+            patience: number of loss checks without improvement before stopping the training. With test_data, the check is the validation loss at each evaluation (every validate_every_n_steps steps); without it, the training loss at every step.
             patience_tol: tolerance for improvement in loss. Loss must improve by at least this amount to reset patience counter.
             w_prior: parameter to control the tightness of the encoder output with the document-topic prior. If set to None, w_prior is chosen automatically.
             w_pred_loss: parameter to control the weight given to the prediction task in the likelihood. Default is 1.
@@ -184,6 +219,7 @@ class DeepLatent:
         self.num_workers = num_workers
         self.print_every_n_steps = print_every_n_steps
         self.log_every_n_steps = log_every_n_steps
+        self.validate_every_n_steps = validate_every_n_steps
         self.patience = patience
         self.patience_tol = patience_tol
         self.w_prior = w_prior
@@ -402,11 +438,19 @@ class DeepLatent:
                     + config.get("hidden_dims", [])
                     + [output_dim]
                 )
+                noise = config.get("noise", "learned")
+                if noise not in {"learned", "fixed"}:
+                    raise ValueError(
+                        f"decoder_args['{key}']['noise'] must be 'learned' or "
+                        f"'fixed'; got {noise!r}."
+                    )
+                learn_noise = view_type == "embedding" and noise == "learned"
                 self.decoders[key] = DecoderMLP(
                     decoder_dims=dims,
                     decoder_non_linear_activation=config.get("activation", None),
                     decoder_bias=config.get("bias", False),
                     dropout=config.get("dropout", 0.0),
+                    noise_dim=output_dim if learn_noise else None,
                 ).to(self.device)
 
         # PRIOR
@@ -444,6 +488,7 @@ class DeepLatent:
                 self.prior = GaussianPrior(
                     prevalence_covariate_size=self.prevalence_covariate_size,
                     n_dims=n_factors,
+                    learn_cov=learn_prior_cov,
                 )
             else:
                 raise ValueError(f"Unrecognized prior: {latent_factor_prior}")
@@ -572,6 +617,7 @@ class DeepLatent:
         # Loss tracking for visualization
         self.train_losses = []
         self.val_losses = []
+        self.val_steps = []  # training step of each validation evaluation
         self.train_recon_losses = []
         self.val_recon_losses = []
         self.train_div_losses = []
@@ -589,11 +635,15 @@ class DeepLatent:
         Train the model.
         """
 
+        # The training loop re-creates the iterator every epoch; persistent workers avoid
+        # re-spawning them each time (which, with small datasets and many epochs, also
+        # exhausts shared memory under WSL).
         train_data_loader = DataLoader(
             train_data,
             batch_size=self.batch_size,
             shuffle=True,
             num_workers=self.num_workers,
+            persistent_workers=self.num_workers > 0,
         )
 
         if test_data is not None:
@@ -602,6 +652,7 @@ class DeepLatent:
                 batch_size=self.batch_size,
                 shuffle=False,
                 num_workers=self.num_workers,
+                persistent_workers=self.num_workers > 0,
             )
 
         counter = 0
@@ -650,61 +701,54 @@ class DeepLatent:
                 else self.prediction_loss * self.w_pred_loss
             )
 
-            # Validation step (if test data is available)
-            if test_data is not None:
-                # Use first batch of test data for validation
-                test_iter = iter(test_data_loader)
-                test_data_batch = next(test_iter)
-                validation_loss = self.step_batch(
-                    test_data_batch, test_data, validation=True
-                )
-
-                # Record validation losses
+            # Validation (if test data is available): the per-document loss averaged
+            # over the whole test set, every validate_every_n_steps steps.
+            evaluate = (
+                test_data is not None
+                and (step + 1) % self.validate_every_n_steps == 0
+            )
+            if evaluate:
+                validation_loss = self.evaluate(test_data_loader, test_data)
+                self.val_steps.append(step + 1)
                 self.val_losses.append(validation_loss)
-                self.val_recon_losses.append(
-                    self.reconstruction_loss.item()
-                    if isinstance(self.reconstruction_loss, torch.Tensor)
-                    else self.reconstruction_loss
-                )
-                self.val_div_losses.append(
-                    self.divergence_loss.item()
-                    if isinstance(self.divergence_loss, torch.Tensor)
-                    else self.divergence_loss
-                )
-                self.val_pred_losses.append(
-                    self.prediction_loss.item()
-                    if isinstance(self.prediction_loss, torch.Tensor)
-                    else self.prediction_loss * self.w_pred_loss
-                )
-
-            # Determine current loss for patience checking
-            if test_data is not None:
-                current_loss = validation_loss
-            else:
-                current_loss = training_loss
-
-            # Check for improvement
-            if current_loss < best_loss - self.patience_tol:
-                best_loss = current_loss
-                best_step = step
-                counter = 0
-                if self.return_best_model:
-                    self.save_model("{}/best_model.ckpt".format(self.ckpt_folder))
-            else:
-                counter += 1
-
-            # Early stopping check
-            if counter >= self.patience:
-                if self.return_best_model:
-                    self.load_model("{}/best_model.ckpt".format(self.ckpt_folder))
+                self.val_recon_losses.append(self.reconstruction_loss)
+                self.val_div_losses.append(self.divergence_loss)
+                self.val_pred_losses.append(self.prediction_loss)
+                if (step + 1) % self.print_every_n_steps == 0:
                     print(
-                        f"\nEarly stopping at step {step + 1}. Reverting to step {best_step + 1}"
+                        f"Step {(step+1):>6d}"
+                        f"\tMean Validation Loss:{validation_loss:<.7f}"
+                        f"\nRec Loss:{self.reconstruction_loss:<.7f}"
+                        f"\nDivergence Loss:{self.divergence_loss:<.7f}"
+                        f"\nPred Loss:{self.prediction_loss * self.w_pred_loss:<.7f}\n"
                     )
+
+            # Patience: checked at each evaluation with test data, else at every step
+            if test_data is None or evaluate:
+                current_loss = validation_loss if test_data is not None else training_loss
+
+                # Check for improvement
+                if current_loss < best_loss - self.patience_tol:
+                    best_loss = current_loss
+                    best_step = step
+                    counter = 0
+                    if self.return_best_model:
+                        self.save_model("{}/best_model.ckpt".format(self.ckpt_folder))
                 else:
-                    print(
-                        f"\nEarly stopping at step {step + 1}. Using model from latest step."
-                    )
-                break
+                    counter += 1
+
+                # Early stopping check
+                if counter >= self.patience:
+                    if self.return_best_model:
+                        self.load_model("{}/best_model.ckpt".format(self.ckpt_folder))
+                        print(
+                            f"\nEarly stopping at step {step + 1}. Reverting to step {best_step + 1}"
+                        )
+                    else:
+                        print(
+                            f"\nEarly stopping at step {step + 1}. Using model from latest step."
+                        )
+                    break
 
             # Logging
             if (step + 1) % self.log_every_n_steps == 0:
@@ -712,6 +756,27 @@ class DeepLatent:
                 self.save_model(save_name)
 
             self.steps = step + 1
+
+    def evaluate(self, data_loader, dataset):
+        """
+        Per-document loss averaged over every document of data_loader (eval mode, no
+        gradients): each batch's per-document loss weighted by its number of documents.
+        Sets self.loss and its components to these averages and returns the total.
+        """
+        n_docs = len(data_loader.dataset)
+        totals = np.zeros(4)
+        for i, batch in enumerate(data_loader):
+            b = min(data_loader.batch_size, n_docs - i * data_loader.batch_size)
+            loss = self.step_batch(batch, dataset, validation=True, verbose=False)
+            parts = [loss, self.reconstruction_loss, self.divergence_loss,
+                     self.prediction_loss]
+            totals += b * np.array(
+                [x.item() if isinstance(x, torch.Tensor) else float(x) for x in parts]
+            )
+        totals /= n_docs
+        (self.loss, self.reconstruction_loss, self.divergence_loss,
+         self.prediction_loss) = (float(x) for x in totals)
+        return self.loss
 
     def _append_encoder_labels(self, x, target_labels=None):
         """Append the outcome block to a (non-image) encoder input.
@@ -728,9 +793,11 @@ class DeepLatent:
             lab = torch.zeros(x.size(0), self.label_size, device=x.device)
         return torch.cat([x, lab], dim=1)
 
-    def step_batch(self, data_batch, dataset, validation=False, num_samples=1):
+    def step_batch(self, data_batch, dataset, validation=False, num_samples=1, verbose=True):
         """
-        Train the model for one batch (single step).
+        Train the model for one batch (single step). With validation=True, compute the
+        loss in eval mode without updating the parameters. verbose=False skips the
+        periodic progress print.
         """
         if validation:
             self.encoder.eval()
@@ -987,16 +1054,23 @@ class DeepLatent:
                             )
 
                     elif view_type == "embedding":
-                        # Per-document Gaussian NLL: summed over feature dims, averaged over batch.
+                        # Per-document Gaussian NLL: summed over feature dims, averaged
+                        # over batch, with learned per-feature noise (or legacy
+                        # sigma^2 = 0.5 squared error; see _gaussian_feature_nll).
                         if mog_component_weights is not None:
-                            component_nll = (
-                                (recon.reshape(B_mog, C_mog, -1) - target.unsqueeze(1))
-                                .pow(2)
-                                .sum(-1)
+                            component_nll = _gaussian_feature_nll(
+                                recon.reshape(B_mog, C_mog, -1),
+                                target.unsqueeze(1),
+                                decoder,
                             )
                             recon_loss = (
                                 mog_component_weights * component_nll
                             ).sum() / B_mog
+                        elif getattr(decoder, "noise_log_var", None) is not None:
+                            recon_loss = (
+                                _gaussian_feature_nll(recon, target, decoder).sum()
+                                / target.shape[0]
+                            )
                         else:
                             recon_loss = (
                                 F.mse_loss(recon, target, reduction="sum")
@@ -1501,7 +1575,7 @@ class DeepLatent:
                 self.optimizer.step()
 
             # Print progress if needed
-            if (self.steps + 1) % self.print_every_n_steps == 0:
+            if verbose and (self.steps + 1) % self.print_every_n_steps == 0:
                 msg = (
                     f"Step {(self.steps+1):>6d}"
                     f"\tMean {'Validation' if validation else 'Training'} Loss:{loss.item():<.7f}"
@@ -1599,6 +1673,12 @@ class DeepLatent:
             return np.convolve(data, kernel, mode="valid")
 
         steps = np.arange(1, len(self.train_losses) + 1)
+        # Validation losses are recorded at their evaluation steps (older models: every step)
+        val_x = (
+            np.asarray(self.val_steps)
+            if len(getattr(self, "val_steps", [])) == len(self.val_losses)
+            else steps
+        )
 
         # Determine subplot layout
         n_plots = len(components)
@@ -1644,7 +1724,7 @@ class DeepLatent:
             if len(self.val_losses) > 0:
                 val_loss = smooth(self.val_losses, smoothing_window)
                 ax.plot(
-                    steps[: len(val_loss)],
+                    val_x[: len(val_loss)],
                     val_loss,
                     label="Validation",
                     linewidth=2,
@@ -1670,7 +1750,7 @@ class DeepLatent:
             if len(self.val_recon_losses) > 0:
                 val_recon = smooth(self.val_recon_losses, smoothing_window)
                 ax.plot(
-                    steps[: len(val_recon)],
+                    val_x[: len(val_recon)],
                     val_recon,
                     label="Validation",
                     linewidth=2,
@@ -1696,7 +1776,7 @@ class DeepLatent:
             if len(self.val_div_losses) > 0:
                 val_div = smooth(self.val_div_losses, smoothing_window)
                 ax.plot(
-                    steps[: len(val_div)],
+                    val_x[: len(val_div)],
                     val_div,
                     label="Validation",
                     linewidth=2,
@@ -1723,7 +1803,7 @@ class DeepLatent:
                 if len(self.val_pred_losses) > 0:
                     val_pred = smooth(self.val_pred_losses, smoothing_window)
                     ax.plot(
-                        steps[: len(val_pred)],
+                        val_x[: len(val_pred)],
                         val_pred,
                         label="Validation",
                         linewidth=2,
@@ -2232,6 +2312,23 @@ class DeepLatent:
         - PoE: w_m ∝ Λ_m (precision of modality m's posterior)
         - Corrected PoE: w_m ∝ Δ_m (precision increment from prior to posterior)
 
+        Corrected PoE by variational family (Λ_m is the precision of the unimodal
+        posterior q_m(z|x_m) used in training; all coincide when the latent is 1-D):
+        - mean_field: Δ_m = exp(-raw logvar), shares per dimension, averaged.
+        - full_rank: Δ_m = Λ_m - Λ_0, w_m ∝ tr(Δ_m).
+        - mixture_of_gaussians: a mixture has no single precision, so Δ_m is the
+          moment-matched increment Cov(q_m)^(-1) - Λ_0, w_m ∝ tr(Δ_m). Increments
+          of the exact unimodal posteriors defined this way need not add up to the
+          joint posterior's (non-Gaussian likelihoods), so these are shares of the
+          unimodal increments, not a decomposition of the fused precision.
+        For full_rank and mixtures Δ_m can be negative: an expert can be wider than
+        the prior, and a multimodal mixture can have a variance above the prior's
+        even when every component is sharper than it. Shares divide by the signed
+        sum, so with a negative increment they are no longer proportions: an entry
+        can fall outside [0, 1], and if every increment is negative the ordering
+        inverts while the entries stay inside [0, 1]. Values are returned unchanged;
+        a RuntimeWarning reports how many units have a non-positive increment.
+
         Args:
             dataset: A Corpus object containing the documents
             num_workers: Number of workers for data loaders. If None, uses self.num_workers.
@@ -2250,10 +2347,10 @@ class DeepLatent:
         if num_workers is None:
             num_workers = self.num_workers
 
-        # A scalar precision-based modality weight is not defined for a Gaussian
-        # mixture: MoE concatenates components, while corrected PoE assigns weights
-        # to Cartesian component tuples. Report equal descriptive modality weights.
-        if self.vi_type == "mixture_of_gaussians":
+        # Under MoE fusion a Gaussian mixture concatenates components, so no
+        # precision-based modality weight is defined. Report equal descriptive
+        # weights. (Corrected PoE uses moment-matched increments, below.)
+        if self.vi_type == "mixture_of_gaussians" and self.fusion != "corrected_poe":
             N = len(dataset)
             M = len(self.encoder.encoders)
             w = np.full((N, M), 1.0 / M, dtype=np.float32)
@@ -2268,6 +2365,8 @@ class DeepLatent:
         )
 
         weights_list = []
+        # Units with a non-positive corrected-PoE increment (full_rank, mixtures).
+        n_nonpositive = 0
         modality_names = list(self.encoder.encoders.keys())
 
         with torch.no_grad():
@@ -2356,6 +2455,10 @@ class DeepLatent:
                             zk, log_det_j = self.encoder.shared_flow(z0)
                             mu_logvars.append((mu, logvar, zk, log_det_j))
                             zs.append(zk)
+                        elif self.vi_type == "mixture_of_gaussians":
+                            means, raw, pi = self.encoder._mog_unpack(z)
+                            mu_logvars.append((means, raw, pi))
+                            zs.append(means[:, 0])
                         else:
                             raise ValueError(f"Unsupported vi_type: {self.vi_type}")
                     else:
@@ -2403,47 +2506,15 @@ class DeepLatent:
                     if self.ae_type == "vae":
                         if self.vi_type == "mean_field":
                             if self.fusion == "corrected_poe":
-                                # For corrected PoE: weights based on precision INCREMENTS Δ_m
-                                # Get prior precision Λ_0
-                                has_full_cov = hasattr(
-                                    self.prior, "sigma"
-                                ) and not isinstance(
-                                    self.prior,
-                                    (
-                                        FixedGaussianPrior,
-                                        FixedLogisticNormalPrior,
-                                        FixedDirichletPrior,
-                                    ),
-                                )
-                                if has_full_cov:
-                                    mu_p, Sigma_p = self.prior.get_prior_params(
-                                        prevalence_covariates, return_full_cov=True
-                                    )
-                                    Sigma_p_batch = Sigma_p.unsqueeze(0).expand(
-                                        B, -1, -1
-                                    )
-                                    Lambda_0_diag = 1.0 / (
-                                        torch.diagonal(Sigma_p_batch, dim1=1, dim2=2)
-                                        + 1e-8
-                                    )
-                                else:
-                                    mu_p, logvar_p = self.prior.get_prior_params(
-                                        prevalence_covariates
-                                    )
-                                    Lambda_0_diag = torch.exp(-logvar_p)
-
-                                # Precision increments: Δ_m = Λ_m - Λ_0
+                                # For corrected PoE: weights based on precision INCREMENTS Δ_m.
+                                # The raw encoder logvar already encodes -log(Δ_m) (see
+                                # MultiModalEncoder._corrected_unimodal_logvar), so Δ_m is
+                                # read directly; subtracting Λ_0 here would remove the
+                                # prior twice and zero out any modality with Δ_m < Λ_0.
                                 deltas = []
                                 for _, logvar in mu_logvars:
                                     if len(mu_logvars[0]) == 2:
-                                        Lambda_m = torch.exp(-logvar)  # Total precision
-                                        Delta_m = (
-                                            Lambda_m - Lambda_0_diag
-                                        )  # Precision increment
-                                        Delta_m = torch.clamp(
-                                            Delta_m, min=0.0
-                                        )  # Ensure non-negative
-                                        deltas.append(Delta_m)
+                                        deltas.append(torch.exp(-logvar))
 
                                 if deltas:
                                     delta_stack = torch.stack(
@@ -2497,9 +2568,25 @@ class DeepLatent:
                                     Sigma_q = torch.bmm(
                                         L, L.transpose(1, 2)
                                     )  # (B, D, D)
-                                    Sigma_inv = torch.linalg.inv(
-                                        Sigma_q + 1e-4 * I.expand(B, -1, -1)
-                                    )
+                                    if self.fusion == "corrected_poe":
+                                        # L L^T is the unimodal posterior covariance
+                                        # (Λ_0 + Δ_m)^(-1); the fusion adds
+                                        # Δ_m = Λ_m - Λ_0 (product_of_experts_full_rank,
+                                        # same regularization and Λ_0).
+                                        eye = I.expand(B, -1, -1)
+                                        _, Lambda_0 = (
+                                            self.encoder._full_rank_prior_precision(
+                                                prevalence_covariates, B, eye
+                                            )
+                                        )
+                                        Sigma_inv = (
+                                            torch.linalg.inv(Sigma_q + 1e-6 * eye)
+                                            - Lambda_0
+                                        )
+                                    else:
+                                        Sigma_inv = torch.linalg.inv(
+                                            Sigma_q + 1e-4 * I.expand(B, -1, -1)
+                                        )
                                     trace_prec = torch.diagonal(
                                         Sigma_inv, dim1=1, dim2=2
                                     ).sum(
@@ -2508,11 +2595,44 @@ class DeepLatent:
                                     precisions.append(trace_prec)
                             if precisions:
                                 weights = torch.stack(precisions, dim=1)  # (B, M)
+                                if self.fusion == "corrected_poe":
+                                    n_nonpositive += int(
+                                        (weights <= 0).any(dim=1).sum()
+                                    )
                                 weights = weights / weights.sum(dim=1, keepdim=True)
                             else:
                                 weights = torch.full(
                                     (B, M), 1.0 / M, device=self.device
                                 )
+
+                        elif self.vi_type == "mixture_of_gaussians":
+                            # Moment-matched increments Δ_m = Cov(q_m)^(-1) - Λ_0, with
+                            # q_m the unimodal posterior exactly as training forms it
+                            # (corrected mixture PoE over this modality alone).
+                            D = self.n_latent
+                            _, _, Lambda_0 = self.encoder._mog_prior_precision(
+                                prevalence_covariates,
+                                B,
+                                D,
+                                mu_logvars[0][0].device,
+                                mu_logvars[0][0].dtype,
+                            )
+                            increments = []
+                            for mixture in mu_logvars:
+                                _, means, scale_trils, pi = (
+                                    self.encoder.product_of_experts_mog(
+                                        [mixture],
+                                        prevalence_covariates=prevalence_covariates,
+                                    )
+                                )
+                                cov = _mixture_covariance(means, scale_trils, pi)
+                                delta = torch.linalg.inv(cov) - Lambda_0
+                                increments.append(
+                                    torch.diagonal(delta, dim1=1, dim2=2).sum(dim=1)
+                                )
+                            weights = torch.stack(increments, dim=1)  # (B, M)
+                            n_nonpositive += int((weights <= 0).any(dim=1).sum())
+                            weights = weights / weights.sum(dim=1, keepdim=True)
 
                         elif self.vi_type == "iaf":
                             # For flows, use base distribution variances
@@ -2538,6 +2658,15 @@ class DeepLatent:
                 weights_list.append(weights)
 
         weights_all = torch.cat(weights_list, dim=0)  # (N, M)
+        if n_nonpositive:
+            warnings.warn(
+                f"{n_nonpositive} of {weights_all.size(0)} units have a non-positive "
+                "precision increment for at least one modality (its unimodal posterior "
+                "is no tighter than the prior; for a mixture, well-separated components "
+                "also do this). Their modality weights are not proportions: an entry "
+                "can fall outside [0, 1], or the ordering can invert.",
+                RuntimeWarning,
+            )
         return weights_all.cpu().numpy() if to_numpy else weights_all
 
     def get_mutual_information(
@@ -2935,7 +3064,7 @@ class DeepLatent:
                 if vt == "bow":
                     ll = (target * F.log_softmax(recon, dim=1)).sum(1)
                 elif vt == "embedding":
-                    ll = -((recon - target) ** 2).sum(1)
+                    ll = -_gaussian_feature_nll(recon, target, decoder)
                 elif vt == "vote":
                     mask = ~md["mask"].to(self.device)
                     bce = F.binary_cross_entropy_with_logits(
@@ -3369,8 +3498,18 @@ class DeepLatent:
 
         self.encoder.load_state_dict(ckpt["encoder"])
 
+        legacy_noise = False
         for key, state_dict in ckpt["decoders"].items():
-            self.decoders[key].load_state_dict(state_dict)
+            decoder = self.decoders[key]
+            if hasattr(decoder, "noise_log_var") and "noise_log_var" not in state_dict:
+                # Checkpoint predates learned Gaussian noise: its decoder was trained
+                # with the implicit sigma^2 = 0.5, so restore exactly that.
+                legacy_noise = True
+                state_dict = OrderedDict(state_dict)
+                state_dict["noise_log_var"] = torch.full_like(
+                    decoder.noise_log_var, np.log(0.5)
+                )
+            decoder.load_state_dict(state_dict)
 
         if self.labels_info and "predictor" in ckpt:
             if not hasattr(self, "predictor") or self.predictor is None:
@@ -3442,7 +3581,16 @@ class DeepLatent:
 
             self.optimizer = torch.optim.Adam(param_groups)
 
-        self.optimizer.load_state_dict(ckpt["optimizer"])
+        if legacy_noise:
+            warnings.warn(
+                "Checkpoint predates learned Gaussian decoder noise: sigma^2 was set "
+                "to its implicit 0.5, and the saved optimizer state (which does not "
+                "cover the noise parameters) was not restored. Build the model with "
+                "decoder_args[...]['noise'] = 'fixed' to reload it exactly.",
+                RuntimeWarning,
+            )
+        else:
+            self.optimizer.load_state_dict(ckpt["optimizer"])
 
     def to(self, device):
         """

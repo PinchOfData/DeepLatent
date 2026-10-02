@@ -439,6 +439,8 @@ class DecoderMLP(nn.Module):
         dropout (nn.Dropout): Dropout layer.
         decoder_nonlin (Optional[Callable]): Decoder activation function.
         decoder (nn.ModuleDict): Decoder layers.
+        noise_log_var (Optional[nn.Parameter]): Learned per-feature log noise
+            variance log sigma^2_j (Gaussian modalities only; see noise_dim).
     """
 
     def __init__(
@@ -447,6 +449,7 @@ class DecoderMLP(nn.Module):
         decoder_non_linear_activation: Optional[str] = None,
         decoder_bias: bool = False,
         dropout: float = 0.0,
+        noise_dim: Optional[int] = None,
     ):
         super(DecoderMLP, self).__init__()
 
@@ -470,6 +473,12 @@ class DecoderMLP(nn.Module):
             }
         )
 
+        # Gaussian modalities: per-feature observation noise sigma^2_j (the
+        # uniquenesses of classical factor analysis), learned as log sigma^2_j.
+        # Init sigma^2 = 0.5, the variance a plain squared-error loss pins.
+        if noise_dim is not None:
+            self.noise_log_var = nn.Parameter(torch.full((noise_dim,), math.log(0.5)))
+
     def forward(self, z: torch.Tensor) -> torch.Tensor:
         """
         Decode the input.
@@ -481,13 +490,16 @@ class DecoderMLP(nn.Module):
             torch.Tensor: Reconstructed input.
         """
         hid = z
+        n_layers = len(self.decoder)
         for i, (_, layer) in enumerate(self.decoder.items()):
-            hid = self.dropout(layer(hid))
-            if (
-                i < len(self.decoder) - 1
-                and self.decoder_non_linear_activation is not None
-            ):
-                hid = self.decoder_nonlin(hid)
+            hid = layer(hid)
+            # Dropout + activation apply to hidden layers only, as in EncoderMLP. The final
+            # layer produces the output logits (e.g. word logits), which are never dropped out:
+            # zeroing a logit would set that output's score to 0 rather than remove a unit.
+            if i < n_layers - 1:
+                hid = self.dropout(hid)
+                if self.decoder_non_linear_activation is not None:
+                    hid = self.decoder_nonlin(hid)
         return hid
 
 
@@ -889,6 +901,43 @@ class MultiModalEncoder(nn.Module):
 
         return mu_S, logvar_S
 
+    def _full_rank_prior_precision(
+        self,
+        prevalence_covariates: Optional[torch.Tensor],
+        batch_size: int,
+        eye: torch.Tensor,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Prior mean and precision Λ_0 [B,D,D] for full-rank corrected PoE.
+
+        Shared by the fusion and by ``DeepLatent.get_modality_weights`` so the
+        precision increments Λ_m - Λ_0 read out are the ones training adds.
+        """
+        has_full_cov = hasattr(self.prior, "sigma") and not isinstance(
+            self.prior,
+            (FixedGaussianPrior, FixedLogisticNormalPrior, FixedDirichletPrior),
+        )
+
+        if has_full_cov:
+            mu_p, Sigma_p = self.prior.get_prior_params(
+                prevalence_covariates, return_full_cov=True
+            )
+            Sigma_p_batch = Sigma_p.unsqueeze(0).expand(batch_size, -1, -1)
+            Lambda_0 = torch.linalg.inv(Sigma_p_batch + 1e-6 * eye)
+        else:
+            mu_p, logvar_p = self.prior.get_prior_params(prevalence_covariates)
+            Lambda_0_diag = torch.exp(-logvar_p)
+            Lambda_0 = torch.diag_embed(Lambda_0_diag)
+
+        # Ensure prior parameters are properly batched
+        if mu_p.size(0) == 1 and batch_size > 1:
+            mu_p = mu_p.expand(batch_size, -1)
+            if Lambda_0.dim() == 2:  # [D, D] -> [B, D, D]
+                Lambda_0 = Lambda_0.unsqueeze(0).expand(batch_size, -1, -1)
+            elif Lambda_0.size(0) == 1:  # [1, D, D] -> [B, D, D]
+                Lambda_0 = Lambda_0.expand(batch_size, -1, -1)
+
+        return mu_p, Lambda_0
+
     def product_of_experts_full_rank(
         self,
         distributions: List[Tuple[torch.Tensor, torch.Tensor]],
@@ -948,31 +997,9 @@ class MultiModalEncoder(nn.Module):
             return combined_mu, combined_L
 
         # Corrected PoE: Λ_S = Σ_m Λ_m - (|S|-1)Λ_0
-        # Get prior precision matrix
-        has_full_cov = hasattr(self.prior, "sigma") and not isinstance(
-            self.prior,
-            (FixedGaussianPrior, FixedLogisticNormalPrior, FixedDirichletPrior),
+        mu_p, Lambda_0 = self._full_rank_prior_precision(
+            prevalence_covariates, batch_size, eye
         )
-
-        if has_full_cov:
-            mu_p, Sigma_p = self.prior.get_prior_params(
-                prevalence_covariates, return_full_cov=True
-            )
-            Sigma_p_batch = Sigma_p.unsqueeze(0).expand(batch_size, -1, -1)
-            Lambda_0 = torch.linalg.inv(Sigma_p_batch + 1e-6 * eye)
-        else:
-            mu_p, logvar_p = self.prior.get_prior_params(prevalence_covariates)
-            Lambda_0_diag = torch.exp(-logvar_p)
-            Lambda_0 = torch.diag_embed(Lambda_0_diag)
-
-        # Ensure prior parameters are properly batched
-        if mu_p.size(0) == 1 and batch_size > 1:
-            mu_p = mu_p.expand(batch_size, -1)
-            if Lambda_0.dim() == 2:  # [D, D] -> [B, D, D]
-                Lambda_0 = Lambda_0.unsqueeze(0).expand(batch_size, -1, -1)
-            elif Lambda_0.size(0) == 1:  # [1, D, D] -> [B, D, D]
-                Lambda_0 = Lambda_0.expand(batch_size, -1, -1)
-
         eta_0 = torch.bmm(Lambda_0, mu_p.unsqueeze(-1)).squeeze(-1)
 
         # Accumulate modality natural parameters
@@ -1005,6 +1032,55 @@ class MultiModalEncoder(nn.Module):
             L_S = torch.linalg.cholesky(Sigma_S_reg)
 
         return mu_S, L_S
+
+    def _mog_prior_precision(
+        self,
+        prevalence_covariates: Optional[torch.Tensor],
+        batch_size: int,
+        dim: int,
+        device: torch.device,
+        dtype: torch.dtype,
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Prior mean [B,D], covariance Cholesky and precision Λ_0 [B,D,D] for
+        corrected mixture PoE.
+
+        Shared by the fusion and by ``DeepLatent.get_modality_weights`` so the
+        moment-matched increments read out subtract the Λ_0 training uses.
+        """
+        # All Gaussian/logistic-normal priors used by a VAE expose their covariance.
+        try:
+            mu_0, Sigma_0 = self.prior.get_prior_params(
+                prevalence_covariates, return_full_cov=True
+            )
+        except TypeError as exc:
+            raise ValueError(
+                "Corrected mixture PoE requires a Gaussian prior with full-covariance "
+                "parameters."
+            ) from exc
+
+        mu_0 = mu_0.to(device=device, dtype=dtype)
+        Sigma_0 = Sigma_0.to(device=device, dtype=dtype)
+        if mu_0.size(0) == 1 and batch_size > 1:
+            mu_0 = mu_0.expand(batch_size, -1)
+        if Sigma_0.dim() == 2:
+            Sigma_0 = Sigma_0.unsqueeze(0).expand(batch_size, -1, -1)
+        elif Sigma_0.size(0) == 1 and batch_size > 1:
+            Sigma_0 = Sigma_0.expand(batch_size, -1, -1)
+        if mu_0.shape != (batch_size, dim) or Sigma_0.shape != (
+            batch_size,
+            dim,
+            dim,
+        ):
+            raise ValueError(
+                "Prior parameters do not match the mixture batch/latent dimensions: "
+                f"mu={tuple(mu_0.shape)}, Sigma={tuple(Sigma_0.shape)}, "
+                f"expected ({batch_size}, {dim}) and "
+                f"({batch_size}, {dim}, {dim})."
+            )
+
+        chol_0 = torch.linalg.cholesky(Sigma_0)
+        Lambda_0 = torch.cholesky_inverse(chol_0)
+        return mu_0, chol_0, Lambda_0
 
     def product_of_experts_mog(
         self,
@@ -1043,39 +1119,9 @@ class MultiModalEncoder(nn.Module):
         device = mixtures[0][0].device
         dtype = mixtures[0][0].dtype
 
-        # All Gaussian/logistic-normal priors used by a VAE expose their covariance.
-        try:
-            mu_0, Sigma_0 = self.prior.get_prior_params(
-                prevalence_covariates, return_full_cov=True
-            )
-        except TypeError as exc:
-            raise ValueError(
-                "Corrected mixture PoE requires a Gaussian prior with full-covariance "
-                "parameters."
-            ) from exc
-
-        mu_0 = mu_0.to(device=device, dtype=dtype)
-        Sigma_0 = Sigma_0.to(device=device, dtype=dtype)
-        if mu_0.size(0) == 1 and batch_size > 1:
-            mu_0 = mu_0.expand(batch_size, -1)
-        if Sigma_0.dim() == 2:
-            Sigma_0 = Sigma_0.unsqueeze(0).expand(batch_size, -1, -1)
-        elif Sigma_0.size(0) == 1 and batch_size > 1:
-            Sigma_0 = Sigma_0.expand(batch_size, -1, -1)
-        if mu_0.shape != (batch_size, dim) or Sigma_0.shape != (
-            batch_size,
-            dim,
-            dim,
-        ):
-            raise ValueError(
-                "Prior parameters do not match the mixture batch/latent dimensions: "
-                f"mu={tuple(mu_0.shape)}, Sigma={tuple(Sigma_0.shape)}, "
-                f"expected ({batch_size}, {dim}) and "
-                f"({batch_size}, {dim}, {dim})."
-            )
-
-        chol_0 = torch.linalg.cholesky(Sigma_0)
-        Lambda_0 = torch.cholesky_inverse(chol_0)
+        mu_0, chol_0, Lambda_0 = self._mog_prior_precision(
+            prevalence_covariates, batch_size, dim, device, dtype
+        )
         eta_0 = torch.matmul(Lambda_0, mu_0.unsqueeze(-1)).squeeze(-1)
         logdet_Lambda_0 = -2.0 * torch.log(
             torch.diagonal(chol_0, dim1=-2, dim2=-1)
@@ -1289,6 +1335,35 @@ class MultiModalEncoder(nn.Module):
         logits = z @ V.t() if V is not None else z
         return F.softmax(logits, dim=1)
 
+    def _corrected_unimodal_logvar(
+        self,
+        logvar: torch.Tensor,
+        prevalence_covariates: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        """Mean-field corrected PoE: raw expert logvar -> unimodal posterior logvar.
+
+        The encoder's raw logvar encodes -log(Δ_m), the precision increment of
+        modality m over the prior, so the unimodal posterior is
+        q_m(z|x_m) = N(μ_m, (Λ_0 + Δ_m)^(-1)). Shared by the multimodal (training)
+        and single-modality (readout) paths so the two cannot drift apart.
+        """
+        # Get prior precision Λ_0
+        has_full_cov = hasattr(self.prior, "sigma") and not isinstance(
+            self.prior,
+            (FixedGaussianPrior, FixedLogisticNormalPrior, FixedDirichletPrior),
+        )
+        if has_full_cov:
+            _, Sigma_p = self.prior.get_prior_params(
+                prevalence_covariates, return_full_cov=True
+            )
+            Lambda_0_diag = 1.0 / (torch.diagonal(Sigma_p, dim1=-2, dim2=-1) + 1e-8)
+        else:
+            _, logvar_p = self.prior.get_prior_params(prevalence_covariates)
+            Lambda_0_diag = torch.exp(-logvar_p)
+
+        # Total unimodal precision: Λ_m = Λ_0 + Δ_m, with Δ_m = exp(-logvar)
+        return -torch.log(Lambda_0_diag + torch.exp(-logvar))
+
     def forward(
         self,
         modality_inputs: Dict[str, torch.Tensor],
@@ -1315,6 +1390,12 @@ class MultiModalEncoder(nn.Module):
             if self.ae_type == "vae":
                 if self.vi_type == "mean_field":
                     mu, logvar = torch.chunk(z_raw, 2, dim=1)
+                    if self.poe == "corrected" and self.prior is not None:
+                        # Raw logvar is the precision increment Δ_m; the unimodal
+                        # posterior adds the prior precision, exactly as in training.
+                        logvar = self._corrected_unimodal_logvar(
+                            logvar, prevalence_covariates
+                        )
                     mu_logvar_info = [(mu, logvar)]
 
                     # Sample from distribution
@@ -1416,38 +1497,10 @@ class MultiModalEncoder(nn.Module):
                     # Encoder outputs (μ_m, Δ_m) where Δ_m ≥ 0 is the precision increment
                     # The unimodal posterior is q_m(z|x_m) = N(μ_m, (Λ_0 + Δ_m)^(-1))
                     if self.poe == "corrected" and self.prior is not None:
-                        # Get prior precision Λ_0
-                        has_full_cov = hasattr(self.prior, "sigma") and not isinstance(
-                            self.prior,
-                            (
-                                FixedGaussianPrior,
-                                FixedLogisticNormalPrior,
-                                FixedDirichletPrior,
-                            ),
+                        # Unimodal posterior logvar: -log(Λ_0 + Δ_m)
+                        logvar_m = self._corrected_unimodal_logvar(
+                            logvar, prevalence_covariates
                         )
-                        if has_full_cov:
-                            mu_p, Sigma_p = self.prior.get_prior_params(
-                                prevalence_covariates, return_full_cov=True
-                            )
-                            B = mu.size(0)
-                            Sigma_p_batch = Sigma_p.unsqueeze(0).expand(B, -1, -1)
-                            Lambda_0_diag = 1.0 / (
-                                torch.diagonal(Sigma_p_batch, dim1=1, dim2=2) + 1e-8
-                            )
-                        else:
-                            mu_p, logvar_p = self.prior.get_prior_params(
-                                prevalence_covariates
-                            )
-                            Lambda_0_diag = torch.exp(-logvar_p)
-
-                        # Precision increment Δ_m from encoder (logvar encodes -log(Δ_m))
-                        Delta_m = torch.exp(-logvar)
-
-                        # Total unimodal precision: Λ_m = Λ_0 + Δ_m
-                        Lambda_m = Lambda_0_diag + Delta_m
-
-                        # Convert to logvar for distribution sampling
-                        logvar_m = -torch.log(Lambda_m)
 
                         # Store (μ_m, logvar_m) for PoE fusion
                         # Note: μ_m is the encoder's point estimate, NOT the fused posterior mean

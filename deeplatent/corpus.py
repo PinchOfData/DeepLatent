@@ -3,7 +3,7 @@ from torch.utils.data import Dataset
 from patsy import dmatrix
 import numpy as np
 from sklearn.feature_extraction.text import CountVectorizer
-import scipy
+import scipy.sparse
 from typing import Optional, Dict, Union
 import pandas as pd
 
@@ -68,14 +68,30 @@ class Corpus(Dataset):
                     }
 
                 elif view_type == "vote":
-                    M = df[view_column].astype(float).values
-                    mask = np.isnan(M)
-                    M = np.where(mask, 2.0, M)
-                    self.processed_modalities[modality_name][view_name] = {
-                        "matrix": M,
-                        "mask": mask,
-                        "type": "vote"
-                    }
+                    if "matrix" in view_config:
+                        # Precomputed votes as a scipy.sparse matrix (+1 yea, -1 nay, 0 not
+                        # observed), for long panels where each unit sees a small share of the
+                        # roll calls; rows are expanded one at a time in __getitem__.
+                        M = view_config["matrix"]
+                        if not scipy.sparse.issparse(M):
+                            raise TypeError(
+                                "A precomputed vote matrix must be scipy.sparse "
+                                "(+1 yea, -1 nay, 0 not observed)."
+                            )
+                        self.processed_modalities[modality_name][view_name] = {
+                            "matrix": scipy.sparse.csr_matrix(M),
+                            "type": "vote",
+                        }
+                    else:
+                        M = df[view_column].astype(float).values
+                        mask = np.isnan(M)
+                        M = np.where(mask, 2.0, M)
+                        # float32 tensors once, so that __getitem__ returns row views
+                        self.processed_modalities[modality_name][view_name] = {
+                            "matrix": torch.from_numpy(M.astype(np.float32)),
+                            "mask": torch.from_numpy(mask),
+                            "type": "vote",
+                        }
 
                 elif view_type == "discrete_choice":
                     if isinstance(view_column, str):
@@ -232,9 +248,19 @@ class Corpus(Dataset):
                 elif view_type == "embedding":
                     d["modalities"][modality_name][view_name] = info["matrix"][i]
                 elif view_type == "vote":
+                    if scipy.sparse.issparse(info["matrix"]):
+                        # Same coding as the dense path: 1 yea, 0 nay, 2 and masked if missing.
+                        row = info["matrix"][i]
+                        idx = torch.from_numpy(row.indices.astype(np.int64))
+                        matrix = torch.full((row.shape[1],), 2.0)
+                        matrix[idx] = torch.from_numpy((row.data > 0).astype(np.float32))
+                        mask = torch.ones(row.shape[1], dtype=torch.bool)
+                        mask[idx] = False
+                    else:
+                        matrix, mask = info["matrix"][i], info["mask"][i]
                     d["modalities"][modality_name][view_name] = {
-                        "matrix": torch.FloatTensor(info["matrix"][i]),
-                        "mask": torch.BoolTensor(info["mask"][i])
+                        "matrix": matrix,
+                        "mask": mask,
                     }
                 elif view_type == "discrete_choice":
                     d["modalities"][modality_name][view_name] = {
