@@ -684,6 +684,14 @@ class IAF(nn.Module):
         return zk, log_det_jacobian
 
 
+def _place(filler, values, rows):
+    """One modality's parameters for every unit of the batch: ``values`` (computed on
+    ``rows``, or on every row when rows is None) placed into ``filler`` elsewhere."""
+    if values is None:
+        return filler
+    return values if rows is None else filler.index_copy(0, rows, values)
+
+
 class MultiModalEncoder(nn.Module):
     def __init__(
         self,
@@ -816,6 +824,7 @@ class MultiModalEncoder(nn.Module):
         self,
         distributions: List[Tuple[torch.Tensor, torch.Tensor]],
         prevalence_covariates: Optional[torch.Tensor] = None,
+        unit_mask: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         Combine Gaussian distributions using Product of Experts.
@@ -824,12 +833,16 @@ class MultiModalEncoder(nn.Module):
         Args:
             distributions: List of (mu, logvar) tuples for each modality
             prevalence_covariates: Covariates for prior parameters (needed for corrected PoE)
+            unit_mask: Optional [B, M] boolean, corrected PoE only: unit i fuses the
+                experts m with unit_mask[i, m] (see _forward_unit_mask).
 
         Returns:
             Combined (mu, logvar) from PoE
         """
         # Uncorrected PoE (standard, backward compatible)
         if self.poe != "corrected" or self.prior is None:
+            if unit_mask is not None:
+                raise ValueError("unit_mask requires corrected PoE.")
             precisions = []
             precision_means = []
 
@@ -880,17 +893,27 @@ class MultiModalEncoder(nn.Module):
         Lambda_sum = torch.zeros_like(Lambda_0_diag)
         eta_sum = torch.zeros_like(eta_0)
 
-        for mu_m, logvar_m in distributions:
+        for m, (mu_m, logvar_m) in enumerate(distributions):
             # Λ_m is encoded in logvar_m (already includes Λ_0 + Δ_m if corrected PoE)
             Lambda_m = torch.exp(-logvar_m)
             # Natural mean: η_m = Λ_m * μ_m
             eta_m = Lambda_m * mu_m
+            if unit_mask is not None:
+                # A unit without expert m leaves it out of its product.
+                s = unit_mask[:, m : m + 1].to(Lambda_m.dtype)
+                Lambda_m, eta_m = Lambda_m * s, eta_m * s
             Lambda_sum += Lambda_m
             eta_sum += eta_m
 
-        # Corrected PoE formula
-        Lambda_S = Lambda_sum - (num_modalities - 1) * Lambda_0_diag
-        eta_S = eta_sum - (num_modalities - 1) * eta_0
+        # Corrected PoE formula: Λ_S = Σ_m Λ_m - (n - 1) Λ_0 over the n experts fused
+        # (per unit with unit_mask; a unit with none keeps the prior).
+        n_extra = (
+            num_modalities - 1
+            if unit_mask is None
+            else unit_mask.sum(1, keepdim=True).to(Lambda_sum.dtype) - 1
+        )
+        Lambda_S = Lambda_sum - n_extra * Lambda_0_diag
+        eta_S = eta_sum - n_extra * eta_0
 
         # Ensure positive precision
         Lambda_S = torch.clamp(Lambda_S, min=1e-8)
@@ -942,6 +965,7 @@ class MultiModalEncoder(nn.Module):
         self,
         distributions: List[Tuple[torch.Tensor, torch.Tensor]],
         prevalence_covariates: Optional[torch.Tensor] = None,
+        unit_mask: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         Combine full-rank Gaussian distributions using Product of Experts.
@@ -950,6 +974,8 @@ class MultiModalEncoder(nn.Module):
         Args:
             distributions: List of (mu, L) tuples where L is lower triangular
             prevalence_covariates: Covariates for prior parameters (needed for corrected PoE)
+            unit_mask: Optional [B, M] boolean, corrected PoE only: unit i fuses the
+                experts m with unit_mask[i, m] (see _forward_unit_mask).
 
         Returns:
             Combined (mu, L) from PoE
@@ -961,6 +987,8 @@ class MultiModalEncoder(nn.Module):
 
         # Uncorrected PoE (standard, backward compatible)
         if self.poe != "corrected" or self.prior is None:
+            if unit_mask is not None:
+                raise ValueError("unit_mask requires corrected PoE.")
             precisions = []
             precision_means = []
 
@@ -1007,16 +1035,26 @@ class MultiModalEncoder(nn.Module):
         Lambda_sum = torch.zeros(batch_size, dim, dim, device=device)
         eta_sum = torch.zeros(batch_size, dim, device=device)
 
-        for mu_m, L_m in distributions:
+        for m, (mu_m, L_m) in enumerate(distributions):
             Sigma_m = torch.bmm(L_m, L_m.transpose(-2, -1))
             Lambda_m = torch.linalg.inv(Sigma_m + 1e-6 * eye)
             eta_m = torch.bmm(Lambda_m, mu_m.unsqueeze(-1)).squeeze(-1)
+            if unit_mask is not None:
+                # A unit without expert m leaves it out of its product.
+                s = unit_mask[:, m].to(Lambda_m.dtype)
+                Lambda_m, eta_m = Lambda_m * s[:, None, None], eta_m * s[:, None]
             Lambda_sum += Lambda_m
             eta_sum += eta_m
 
-        # Corrected PoE formula
-        Lambda_S = Lambda_sum - (num_modalities - 1) * Lambda_0
-        eta_S = eta_sum - (num_modalities - 1) * eta_0
+        # Corrected PoE formula (per unit with unit_mask; a unit with none keeps the
+        # prior)
+        if unit_mask is None:
+            Lambda_S = Lambda_sum - (num_modalities - 1) * Lambda_0
+            eta_S = eta_sum - (num_modalities - 1) * eta_0
+        else:
+            n_extra = unit_mask.sum(1).to(Lambda_sum.dtype) - 1  # [B]
+            Lambda_S = Lambda_sum - n_extra[:, None, None] * Lambda_0
+            eta_S = eta_sum - n_extra[:, None] * eta_0
 
         # Regularization
         Lambda_S = Lambda_S + 1e-6 * eye
@@ -1060,11 +1098,12 @@ class MultiModalEncoder(nn.Module):
 
         mu_0 = mu_0.to(device=device, dtype=dtype)
         Sigma_0 = Sigma_0.to(device=device, dtype=dtype)
-        if mu_0.size(0) == 1 and batch_size > 1:
+        # (batch_size can be 0: a readout batch where no unit has the modality)
+        if mu_0.size(0) == 1 and batch_size != 1:
             mu_0 = mu_0.expand(batch_size, -1)
         if Sigma_0.dim() == 2:
             Sigma_0 = Sigma_0.unsqueeze(0).expand(batch_size, -1, -1)
-        elif Sigma_0.size(0) == 1 and batch_size > 1:
+        elif Sigma_0.size(0) == 1 and batch_size != 1:
             Sigma_0 = Sigma_0.expand(batch_size, -1, -1)
         if mu_0.shape != (batch_size, dim) or Sigma_0.shape != (
             batch_size,
@@ -1086,6 +1125,7 @@ class MultiModalEncoder(nn.Module):
         self,
         mixtures: List[Tuple[torch.Tensor, torch.Tensor, torch.Tensor]],
         prevalence_covariates: Optional[torch.Tensor] = None,
+        unit_mask: Optional[torch.Tensor] = None,
     ) -> Tuple[str, torch.Tensor, torch.Tensor, torch.Tensor]:
         """Exactly combine diagonal Gaussian mixtures with corrected PoE.
 
@@ -1102,6 +1142,10 @@ class MultiModalEncoder(nn.Module):
         is normalizable.  The exact result contains ``prod_m C_m`` full-covariance
         Gaussian components.  Full covariance is required even though the increments
         are diagonal because the prior itself may have learned correlations.
+
+        With ``unit_mask`` ([B, M] boolean), unit ``i`` fuses only the modalities
+        with ``unit_mask[i, m]``: an absent modality's expert is replaced by the prior,
+        whose ``C_m`` components are then identical and cancel one divided-out prior.
 
         Returns:
             ``("mog_full", means, scale_trils, weights)`` with shapes
@@ -1137,7 +1181,7 @@ class MultiModalEncoder(nn.Module):
         modality_consts = []
         component_counts = []
 
-        for means_m, raw_m, pi_m in mixtures:
+        for m, (means_m, raw_m, pi_m) in enumerate(mixtures):
             if means_m.dim() != 3 or raw_m.shape != means_m.shape:
                 raise ValueError(
                     "Each mixture must provide means and raw precision increments "
@@ -1162,6 +1206,19 @@ class MultiModalEncoder(nn.Module):
                 - 0.5 * (means_m * eta_m).sum(-1)
                 - 0.5 * dim * math.log(2.0 * math.pi)
             )
+            if unit_mask is not None:
+                # Units without modality m take the prior as its expert: no precision
+                # increment, the prior's natural mean and log-normalizer.
+                has = unit_mask[:, m]
+                Delta_m = torch.where(
+                    has[:, None, None, None], Delta_m, torch.zeros_like(Delta_m)
+                )
+                eta_m = torch.where(
+                    has[:, None, None], eta_m, eta_0.unsqueeze(1).expand_as(eta_m)
+                )
+                const_m = torch.where(
+                    has[:, None], const_m, prior_const.unsqueeze(1).expand_as(const_m)
+                )
 
             modality_increments.append(Delta_m)
             modality_etas.append(eta_m)
@@ -1216,6 +1273,37 @@ class MultiModalEncoder(nn.Module):
         weights_t = F.softmax(log_component_weight + log_overlap, dim=1)
 
         return "mog_full", means_t, scale_trils_t, weights_t
+
+    def encode(
+        self,
+        name: str,
+        x: torch.Tensor,
+        prevalence_covariates: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        """Raw output of modality ``name``'s encoder. MLP inputs already carry the
+        covariates; image encoders take them separately."""
+        encoder = self.encoders[name]
+        if isinstance(encoder, ImageEncoder):
+            return encoder(x, prevalence_covariates=prevalence_covariates)
+        return encoder(x)
+
+    def _full_rank_unpack(self, z_raw: torch.Tensor):
+        """Raw full-rank encoder output -> mean [B,D] and lower-triangular covariance
+        Cholesky factor L [B,D,D] with a positive diagonal."""
+        D = self.topic_dim
+        mu = z_raw[:, :D]
+        L_flat = z_raw[:, D:]
+        B = mu.size(0)
+
+        # Reconstruct lower triangular matrix
+        tril_indices = torch.tril_indices(D, D, device=z_raw.device)
+        L = torch.zeros(B, D, D, device=z_raw.device)
+        L[:, tril_indices[0], tril_indices[1]] = L_flat
+
+        # Ensure positive diagonal
+        diag_idx = torch.arange(D, device=z_raw.device)
+        L[:, diag_idx, diag_idx] = F.softplus(L[:, diag_idx, diag_idx]) + 1e-4
+        return mu, L
 
     def _mog_unpack(self, z_raw: torch.Tensor):
         """Split a raw encoder output into mixture-of-Gaussians parameters.
@@ -1364,13 +1452,133 @@ class MultiModalEncoder(nn.Module):
         # Total unimodal precision: Λ_m = Λ_0 + Δ_m, with Δ_m = exp(-logvar)
         return -torch.log(Lambda_0_diag + torch.exp(-logvar))
 
+    def _forward_unit_mask(
+        self,
+        modality_inputs: Dict[str, torch.Tensor],
+        unit_mask: torch.Tensor,
+        unit_rows: Optional[Dict[str, Optional[torch.Tensor]]],
+        prevalence_covariates: Optional[torch.Tensor],
+    ) -> Tuple[torch.Tensor, torch.Tensor, List[Tuple]]:
+        """Corrected-PoE fusion when units differ in which modalities they use.
+
+        unit_mask [B, M] (boolean, encoder order) says which experts each unit fuses.
+        Unit i's posterior is prod_{m: unit_mask[i, m]} q_m(z | x_m) / p(z)^(n_i - 1):
+        an absent modality is left out of the product (the same as an expert equal to
+        the prior), and a unit with no modality keeps the prior. Each encoder runs only
+        on its own rows, unit_rows[name] (None = every row; computed from unit_mask when
+        unit_rows is None), so the placeholder inputs of the other rows are never read;
+        those rows get neutral parameters that the fusion masks out.
+        """
+        if not (
+            self.ae_type == "vae"
+            and self.poe == "corrected"
+            and self.prior is not None
+            and self.vi_type in {"mean_field", "full_rank", "mixture_of_gaussians"}
+        ):
+            raise ValueError(
+                "Units with different modalities require ae_type='vae', "
+                "fusion='corrected_poe' and vi_type 'mean_field', 'full_rank' or "
+                "'mixture_of_gaussians'."
+            )
+        names = list(self.encoders.keys())
+        B, D = unit_mask.size(0), self.topic_dim
+        ref = next(self.encoders.parameters())
+        dtype, device = ref.dtype, ref.device
+
+        present = []  # (column, name, rows); modalities no unit uses are skipped
+        for m, name in enumerate(names):
+            rows = (
+                unit_rows[name]
+                if unit_rows is not None
+                else torch.nonzero(unit_mask[:, m], as_tuple=True)[0]
+            )
+            if rows is None or rows.numel() > 0:
+                present.append((m, name, rows))
+        if not present:
+            # No unit uses any modality: one masked-out expert gives everyone the prior.
+            present = [(0, names[0], torch.zeros(0, dtype=torch.long, device=device))]
+
+        experts = []
+        for m, name, rows in present:
+            prev = prevalence_covariates
+            z_raw = None
+            if rows is None:
+                z_raw = self.encode(name, modality_inputs[name], prev)
+            elif rows.numel() > 0:
+                prev = prev[rows] if prev is not None else None
+                z_raw = self.encode(name, modality_inputs[name][rows], prev)
+
+            if self.vi_type == "mean_field":
+                mu = logvar = None
+                if z_raw is not None:
+                    mu, logvar = torch.chunk(z_raw, 2, dim=1)
+                    logvar = self._corrected_unimodal_logvar(logvar, prev)
+                zeros = torch.zeros(B, D, dtype=dtype, device=device)
+                experts.append(
+                    (_place(zeros, mu, rows), _place(zeros, logvar, rows))
+                )
+            elif self.vi_type == "full_rank":
+                mu = L = None
+                if z_raw is not None:
+                    mu, L = self._full_rank_unpack(z_raw)
+                eye = torch.eye(D, dtype=dtype, device=device).repeat(B, 1, 1)
+                zeros = torch.zeros(B, D, dtype=dtype, device=device)
+                experts.append((_place(zeros, mu, rows), _place(eye, L, rows)))
+            else:
+                C = self.mixture_components
+                means = raw = pi = None
+                if z_raw is not None:
+                    means, raw, pi = self._mog_unpack(z_raw)
+                zeros = torch.zeros(B, C, D, dtype=dtype, device=device)
+                uniform = torch.full((B, C), 1.0 / C, dtype=dtype, device=device)
+                experts.append(
+                    (
+                        _place(zeros, means, rows),
+                        _place(zeros, raw, rows),
+                        _place(uniform, pi, rows),
+                    )
+                )
+
+        mask = unit_mask[:, [m for m, _, _ in present]]
+        if self.vi_type == "mean_field":
+            mu_S, logvar_S = self.product_of_experts(
+                experts, prevalence_covariates=prevalence_covariates, unit_mask=mask
+            )
+            z_final = mu_S + torch.randn_like(mu_S) * torch.exp(0.5 * logvar_S)
+            mu_logvar_info = [(mu_S, logvar_S)]
+        elif self.vi_type == "full_rank":
+            mu_S, L_S = self.product_of_experts_full_rank(
+                experts, prevalence_covariates=prevalence_covariates, unit_mask=mask
+            )
+            eps = torch.randn(B, D, 1, dtype=mu_S.dtype, device=mu_S.device)
+            z_final = (mu_S.unsqueeze(-1) + torch.bmm(L_S, eps)).squeeze(-1)
+            mu_logvar_info = [(mu_S, L_S)]
+        else:
+            fused = self.product_of_experts_mog(
+                experts, prevalence_covariates=prevalence_covariates, unit_mask=mask
+            )
+            _, means_S, scale_trils_S, pi_S = fused
+            z_final = self._mog_sample(means_S, scale_trils_S, pi_S)
+            mu_logvar_info = [fused]
+
+        return self.latent_to_theta(z_final), z_final, mu_logvar_info
+
     def forward(
         self,
         modality_inputs: Dict[str, torch.Tensor],
         single_modality: Optional[str] = None,
         active_modalities: Optional[List[str]] = None,
         prevalence_covariates: Optional[torch.Tensor] = None,
+        unit_mask: Optional[torch.Tensor] = None,
+        unit_rows: Optional[Dict[str, Optional[torch.Tensor]]] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor, List[Tuple]]:
+
+        if unit_mask is not None:
+            if single_modality is not None:
+                raise ValueError("Pass either single_modality or unit_mask, not both.")
+            return self._forward_unit_mask(
+                modality_inputs, unit_mask, unit_rows, prevalence_covariates
+            )
 
         # If single_modality is specified, only process that modality
         if single_modality is not None:
@@ -1404,21 +1612,7 @@ class MultiModalEncoder(nn.Module):
                     z_sample = mu + eps * std
 
                 elif self.vi_type == "full_rank":
-                    D = self.topic_dim
-                    mu = z_raw[:, :D]
-                    L_flat = z_raw[:, D:]
-                    B = mu.size(0)
-
-                    # Reconstruct lower triangular matrix
-                    tril_indices = torch.tril_indices(D, D, device=z_raw.device)
-                    L = torch.zeros(B, D, D, device=z_raw.device)
-                    L[:, tril_indices[0], tril_indices[1]] = L_flat
-
-                    # Ensure positive diagonal
-                    diag_idx = torch.arange(D, device=z_raw.device)
-                    L[:, diag_idx, diag_idx] = (
-                        F.softplus(L[:, diag_idx, diag_idx]) + 1e-4
-                    )
+                    mu, L = self._full_rank_unpack(z_raw)
 
                     mu_logvar_info = [(mu, L)]
 
@@ -1520,21 +1714,7 @@ class MultiModalEncoder(nn.Module):
                     modality_outputs.append(z_sample)
 
                 elif self.vi_type == "full_rank":
-                    D = self.topic_dim
-                    mu = z_raw[:, :D]
-                    L_flat = z_raw[:, D:]
-                    B = mu.size(0)
-
-                    # Reconstruct lower triangular matrix
-                    tril_indices = torch.tril_indices(D, D, device=z_raw.device)
-                    L = torch.zeros(B, D, D, device=z_raw.device)
-                    L[:, tril_indices[0], tril_indices[1]] = L_flat
-
-                    # Ensure positive diagonal
-                    diag_idx = torch.arange(D, device=z_raw.device)
-                    L[:, diag_idx, diag_idx] = (
-                        F.softplus(L[:, diag_idx, diag_idx]) + 1e-4
-                    )
+                    mu, L = self._full_rank_unpack(z_raw)
 
                     mu_logvar_info.append((mu, L))
 

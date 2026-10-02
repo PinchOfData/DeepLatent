@@ -9,7 +9,7 @@ import pandas as pd
 import torch
 import torch.nn.functional as F
 import torch.nn as nn
-from torch.utils.data import DataLoader
+from torch.utils.data import BatchSampler, DataLoader, RandomSampler, SequentialSampler
 import plotly.graph_objects as go
 import matplotlib.pyplot as plt
 from wordcloud import WordCloud
@@ -54,6 +54,27 @@ def _gaussian_feature_nll(recon, target, decoder):
     # Floor guards the Heywood case (sigma^2_j -> 0 for a perfectly fit feature).
     log_var = log_var.clamp(-12.0, 12.0)
     return 0.5 * (sq_err * torch.exp(-log_var) + log_var + np.log(2 * np.pi)).sum(-1)
+
+
+def _to_device(obj, device):
+    """A batch entry (tensor, or nested dict of tensors) on `device`."""
+    if isinstance(obj, dict):
+        return {k: _to_device(v, device) for k, v in obj.items()}
+    return obj.to(device) if isinstance(obj, torch.Tensor) else obj
+
+
+def _take_rows(obj, rows):
+    """Rows of a batch entry: a tensor, or a dict of tensors (vote, discrete choice)."""
+    if isinstance(obj, dict):
+        return {k: _take_rows(v, rows) for k, v in obj.items()}
+    return obj[rows]
+
+
+def _fill_rows(values, rows, n):
+    """[len(rows), ...] values -> [n, ...], NaN outside rows."""
+    out = values.new_full((n,) + tuple(values.shape[1:]), float("nan"))
+    out[rows] = values
+    return out
 
 
 def _mixture_covariance(means, scale_trils, pi):
@@ -241,6 +262,23 @@ class DeepLatent:
 
         if not os.path.exists(ckpt_folder):
             os.makedirs(ckpt_folder)
+
+        if getattr(train_data, "availability", None) or getattr(
+            test_data, "availability", None
+        ):
+            self._check_unit_availability()
+            for data in (train_data, test_data):
+                unknown = sorted(
+                    set(getattr(data, "availability", None) or {})
+                    - set(encoder_args)
+                    - set(decoder_args)
+                )
+                if unknown:
+                    warnings.warn(
+                        f"'available' is declared for {unknown}, which no encoder or "
+                        "decoder uses; it is ignored.",
+                        RuntimeWarning,
+                    )
 
         self.prevalence_covariate_size = (
             train_data.M_prevalence_covariates.shape[1] if train_data.prevalence else 0
@@ -638,22 +676,10 @@ class DeepLatent:
         # The training loop re-creates the iterator every epoch; persistent workers avoid
         # re-spawning them each time (which, with small datasets and many epochs, also
         # exhausts shared memory under WSL).
-        train_data_loader = DataLoader(
-            train_data,
-            batch_size=self.batch_size,
-            shuffle=True,
-            num_workers=self.num_workers,
-            persistent_workers=self.num_workers > 0,
-        )
+        train_data_loader = self._data_loader(train_data, shuffle=True, persistent=True)
 
         if test_data is not None:
-            test_data_loader = DataLoader(
-                test_data,
-                batch_size=self.batch_size,
-                shuffle=False,
-                num_workers=self.num_workers,
-                persistent_workers=self.num_workers > 0,
-            )
+            test_data_loader = self._data_loader(test_data, persistent=True)
 
         counter = 0
         if self.return_best_model:
@@ -766,7 +792,7 @@ class DeepLatent:
         n_docs = len(data_loader.dataset)
         totals = np.zeros(4)
         for i, batch in enumerate(data_loader):
-            b = min(data_loader.batch_size, n_docs - i * data_loader.batch_size)
+            b = min(self.batch_size, n_docs - i * self.batch_size)
             loss = self.step_batch(batch, dataset, validation=True, verbose=False)
             parts = [loss, self.reconstruction_loss, self.divergence_loss,
                      self.prediction_loss]
@@ -777,6 +803,115 @@ class DeepLatent:
         (self.loss, self.reconstruction_loss, self.divergence_loss,
          self.prediction_loss) = (float(x) for x in totals)
         return self.loss
+
+    def _data_loader(self, dataset, shuffle=False, num_workers=None, persistent=False):
+        """Batches of self.batch_size, the same ones and in the same order as
+        DataLoader(dataset, batch_size=self.batch_size, shuffle=shuffle). A Corpus
+        builds each batch at once (Corpus.get_batch slices every matrix once, not row
+        by row)."""
+        num_workers = self.num_workers if num_workers is None else num_workers
+        persistent = persistent and num_workers > 0
+        if hasattr(dataset, "get_batch"):
+            sampler = RandomSampler(dataset) if shuffle else SequentialSampler(dataset)
+            return DataLoader(
+                dataset,
+                sampler=BatchSampler(sampler, self.batch_size, drop_last=False),
+                batch_size=None,
+                num_workers=num_workers,
+                persistent_workers=persistent,
+            )
+        return DataLoader(
+            dataset,
+            batch_size=self.batch_size,
+            shuffle=shuffle,
+            num_workers=num_workers,
+            persistent_workers=persistent,
+        )
+
+    def _encoder_inputs(self, data, dataset, keys=None, target_labels=None):
+        """Encoder input of each modality in `keys` (default: every encoder) for a batch
+        already on the device: the modality's data, then (except for images, whose
+        encoders take them separately) the prevalence covariates and, with
+        labels_in_encoder, the label block (true labels if given, else zeros)."""
+        prevalence_covariates = data.get("M_prevalence_covariates", None)
+        modality_inputs = {}
+        for key in self.encoder.encoders.keys() if keys is None else keys:
+            mod, view = parse_modality_view(key)
+            view_data = data["modalities"][mod][view]
+            view_type = dataset.processed_modalities[mod][view]["type"]
+
+            if view_type == "image":
+                modality_inputs[key] = view_data.to(self.device)
+                continue
+            elif view_type in {"bow", "embedding"}:
+                x = view_data.to(self.device)
+            elif view_type == "vote":
+                x = view_data["matrix"].to(self.device)
+            elif view_type == "discrete_choice":
+                # concatenate all questions into one input vector
+                x = torch.cat(
+                    [view_data[q].to(self.device) for q in view_data if q != "type"],
+                    dim=-1,
+                )
+            else:
+                raise ValueError(f"Unsupported view type: {view_type}")
+
+            if prevalence_covariates is not None:
+                x = torch.cat([x, prevalence_covariates], dim=1)
+            modality_inputs[key] = self._append_encoder_labels(x, target_labels)
+        return modality_inputs
+
+    def _check_unit_availability(self):
+        if not (
+            self.ae_type == "vae"
+            and self.fusion == "corrected_poe"
+            and self.vi_type in {"mean_field", "full_rank", "mixture_of_gaussians"}
+        ):
+            raise ValueError(
+                "The Corpus declares which units have which modalities ('available'). "
+                "A unit's posterior is then the product of the experts it has, which "
+                "requires ae_type='vae', fusion='corrected_poe' and vi_type "
+                "'mean_field', 'full_rank' or 'mixture_of_gaussians'."
+            )
+
+    def _units_in_step(self, data, active_modalities=None):
+        """Which modalities each unit of the batch uses, when the Corpus declares
+        availability ('available'); (None, None) otherwise.
+
+        Returns a [B, M] boolean mask over the encoders (on the device) and, for every
+        encoder and decoder key, the rows that use it (None = every row). With modality
+        dropout (active_modalities, drawn for the whole batch), a unit uses the active
+        modalities it has, and a unit left with none keeps one of its own, drawn at
+        random. Computed on the CPU, so no device synchronization.
+        """
+        avail = data.get("available")
+        if not avail:
+            return None, None
+        self._check_unit_availability()
+        B = next(iter(avail.values())).shape[0]
+        enc = list(self.encoder.encoders.keys())
+        keys = list(dict.fromkeys(enc + list(self.decoders.keys())))
+        use = {
+            k: avail[k].cpu().bool() if k in avail else torch.ones(B, dtype=torch.bool)
+            for k in keys
+        }
+        if active_modalities is not None:
+            have = torch.stack([use[k] for k in enc], 1)
+            kept = have & torch.tensor([k in active_modalities for k in enc])
+            lost = have.any(1) & ~kept.any(1)
+            if lost.any():
+                draw = torch.rand(int(lost.sum()), len(enc))
+                draw = draw.masked_fill(~have[lost], -1.0)
+                kept[torch.nonzero(lost, as_tuple=True)[0], draw.argmax(1)] = True
+            use.update({k: kept[:, m] for m, k in enumerate(enc)})
+        unit_mask = torch.stack([use[k] for k in enc], 1).to(self.device)
+        unit_rows = {
+            k: None
+            if bool(u.all())
+            else torch.nonzero(u, as_tuple=True)[0].to(self.device)
+            for k, u in use.items()
+        }
+        return unit_mask, unit_rows
 
     def _append_encoder_labels(self, x, target_labels=None):
         """Append the outcome block to a (non-image) encoder input.
@@ -850,54 +985,37 @@ class DeepLatent:
                 if isinstance(value, torch.Tensor):
                     data[key] = value.to(self.device)
 
+            # When the Corpus declares which units have which modalities, each unit
+            # fuses (and reconstructs) only the modalities it uses in this step. Rows
+            # are selected on the device, so the modality data moves there first.
+            unit_mask, unit_rows = self._units_in_step(data, active_modalities)
+            if unit_rows is not None:
+                data["modalities"] = _to_device(data["modalities"], self.device)
+
             prevalence_covariates = data.get("M_prevalence_covariates", None)
             content_covariates = data.get("M_content_covariates", None)
             prediction_covariates = data.get("M_prediction", None)
             target_labels = data.get("M_labels", None)
 
             # -------------------- ENCODER INPUT --------------------
-            modality_inputs = {}
-            for key in self.encoder.encoders.keys():
-                mod, view = parse_modality_view(key)
-                view_type = dataset.processed_modalities[mod][view]["type"]
-
-                if view_type == "image":
-                    # Images are already tensors from corpus lazy loading
-                    x = data["modalities"][mod][view].to(self.device)
-                    modality_inputs[key] = (
-                        x  # Don't concatenate covariates for images - handled in encoder
-                    )
-                elif view_type in {"bow", "embedding"}:
-                    x = data["modalities"][mod][view].to(self.device)
-                elif view_type == "vote":
-                    x = data["modalities"][mod][view]["matrix"].to(self.device)
-                elif view_type == "discrete_choice":
-                    # concatenate all questions into one input vector
-                    question_tensors = [
-                        data["modalities"][mod][view][q].to(self.device)
-                        for q in data["modalities"][mod][view]
-                        if q != "type"
-                    ]
-                    x = torch.cat(question_tensors, dim=-1)
-                else:
-                    raise ValueError(f"Unsupported view type: {view_type}")
-
-                # For non-image modalities, concatenate covariates as before
-                if view_type != "image":
-                    if prevalence_covariates is not None:
-                        x = torch.cat([x, prevalence_covariates], dim=1)
-                    x = self._append_encoder_labels(x, target_labels)
-
-                    modality_inputs[key] = x
+            modality_inputs = self._encoder_inputs(
+                data, dataset, target_labels=target_labels
+            )
+            unit_kwargs = (
+                {}
+                if unit_mask is None
+                else {"unit_mask": unit_mask, "unit_rows": unit_rows}
+            )
 
             theta_q, z, mu_logvar = self.encoder(
                 modality_inputs,
-                active_modalities=active_modalities,
+                active_modalities=active_modalities if unit_mask is None else None,
                 prevalence_covariates=(
                     prevalence_covariates.to(self.device)
                     if prevalence_covariates is not None
                     else None
                 ),
+                **unit_kwargs,
             )
 
             if self.latent_factor_prior in {"dirichlet", "logistic_normal"}:
@@ -963,46 +1081,82 @@ class DeepLatent:
                     else doc_latents
                 )
 
+            n_batch = doc_latents.shape[0]
             for key, decoder in self.decoders.items():
                 # Skip inactive modalities during training with modality masking
-                if active_modalities is not None and key not in active_modalities:
+                if (
+                    unit_rows is None
+                    and active_modalities is not None
+                    and key not in active_modalities
+                ):
                     continue
 
                 mod, view = parse_modality_view(key)
                 view_type = dataset.processed_modalities[mod][view]["type"]
                 modality_data = data["modalities"][mod][view]
 
+                # Decoder inputs; with unit availability, only the rows (units) that use
+                # this modality in this step. The loss still divides by the full batch
+                # size, so every unit keeps weight 1/B in the per-document average.
+                k_doc_latents = decoder_doc_latents
+                k_content = decoder_content_covariates
+                k_theta_input = theta_input
+                k_weights = mog_component_weights
+                n_rows = n_batch
+                rows = None if unit_rows is None else unit_rows.get(key)
+                if rows is not None:
+                    if rows.numel() == 0:
+                        continue
+                    n_rows = rows.numel()
+                    modality_data = _take_rows(modality_data, rows)
+                    if mog_component_weights is not None:
+                        # Decoder inputs are [B * C, ...], unit-major.
+                        def pick(t):
+                            if t is None:
+                                return None
+                            t = t.reshape(n_batch, C_mog, *t.shape[1:])[rows]
+                            return t.reshape(n_rows * C_mog, *t.shape[2:])
+
+                        k_doc_latents = pick(decoder_doc_latents)
+                        k_content = pick(decoder_content_covariates)
+                        k_theta_input = pick(theta_input)
+                        k_weights = mog_component_weights[rows]
+                    else:
+                        k_doc_latents = decoder_doc_latents[rows]
+                        k_content = (
+                            decoder_content_covariates[rows]
+                            if decoder_content_covariates is not None
+                            else None
+                        )
+                        k_theta_input = theta_input[rows]
+
                 if view_type == "image":
                     # Image reconstruction
                     target_images = modality_data.to(self.device)
 
                     # For image decoder, we need to pass content covariates separately
-                    reconstructed_images = decoder(
-                        decoder_doc_latents, decoder_content_covariates
-                    )
+                    reconstructed_images = decoder(k_doc_latents, k_content)
 
                     # Per-document Gaussian NLL: summed over pixels, averaged over the batch.
-                    if mog_component_weights is not None:
+                    if k_weights is not None:
                         target_expanded = (
                             target_images.unsqueeze(1)
                             .expand(-1, C_mog, *target_images.shape[1:])
-                            .reshape(B_mog * C_mog, *target_images.shape[1:])
+                            .reshape(n_rows * C_mog, *target_images.shape[1:])
                         )
                         component_nll = (
                             (reconstructed_images - target_expanded)
                             .pow(2)
-                            .reshape(B_mog, C_mog, -1)
+                            .reshape(n_rows, C_mog, -1)
                             .sum(-1)
                         )
-                        recon_loss = (
-                            mog_component_weights * component_nll
-                        ).sum() / B_mog
+                        recon_loss = (k_weights * component_nll).sum() / n_batch
                     else:
                         recon_loss = (
                             F.mse_loss(
                                 reconstructed_images, target_images, reduction="sum"
                             )
-                            / target_images.shape[0]
+                            / n_batch
                         )
                     reconstruction_loss += recon_loss
 
@@ -1011,20 +1165,25 @@ class DeepLatent:
                         if question == "type":
                             continue
                         x_out = modality_data[question].to(self.device)
-                        logits = question_decoder(theta_input)
+                        logits = question_decoder(k_theta_input)
                         targets = x_out.argmax(dim=-1)
-                        if mog_component_weights is not None:
+                        if k_weights is not None:
                             targets_expanded = (
                                 targets.unsqueeze(1)
                                 .expand(-1, C_mog)
-                                .reshape(B_mog * C_mog)
+                                .reshape(n_rows * C_mog)
                             )
                             component_nll = F.cross_entropy(
                                 logits, targets_expanded, reduction="none"
-                            ).reshape(B_mog, C_mog)
+                            ).reshape(n_rows, C_mog)
                             reconstruction_loss += (
-                                mog_component_weights * component_nll
-                            ).sum() / B_mog
+                                k_weights * component_nll
+                            ).sum() / n_batch
+                        elif rows is not None:
+                            reconstruction_loss += (
+                                F.cross_entropy(logits, targets, reduction="sum")
+                                / n_batch
+                            )
                         else:
                             reconstruction_loss += F.cross_entropy(logits, targets)
 
@@ -1034,67 +1193,58 @@ class DeepLatent:
                         if view_type in {"bow", "embedding"}
                         else modality_data["matrix"].to(self.device)
                     )
-                    recon = decoder(theta_input)
+                    recon = decoder(k_theta_input)
 
                     if view_type == "bow":
-                        if mog_component_weights is not None:
+                        if k_weights is not None:
                             log_probs = F.log_softmax(
-                                recon.reshape(B_mog, C_mog, -1), dim=2
+                                recon.reshape(n_rows, C_mog, -1), dim=2
                             )
                             component_nll = -(target.unsqueeze(1) * log_probs).sum(-1)
-                            recon_loss = (
-                                mog_component_weights * component_nll
-                            ).sum() / B_mog
+                            recon_loss = (k_weights * component_nll).sum() / n_batch
                         else:
                             log_probs = F.log_softmax(recon, dim=1)
                             # Per-document multinomial NLL: summed over the vocabulary,
                             # averaged over the batch.
-                            recon_loss = (
-                                -torch.sum(target * log_probs) / target.shape[0]
-                            )
+                            recon_loss = -torch.sum(target * log_probs) / n_batch
 
                     elif view_type == "embedding":
                         # Per-document Gaussian NLL: summed over feature dims, averaged
                         # over batch, with learned per-feature noise (or legacy
                         # sigma^2 = 0.5 squared error; see _gaussian_feature_nll).
-                        if mog_component_weights is not None:
+                        if k_weights is not None:
                             component_nll = _gaussian_feature_nll(
-                                recon.reshape(B_mog, C_mog, -1),
+                                recon.reshape(n_rows, C_mog, -1),
                                 target.unsqueeze(1),
                                 decoder,
                             )
-                            recon_loss = (
-                                mog_component_weights * component_nll
-                            ).sum() / B_mog
+                            recon_loss = (k_weights * component_nll).sum() / n_batch
                         elif getattr(decoder, "noise_log_var", None) is not None:
                             recon_loss = (
                                 _gaussian_feature_nll(recon, target, decoder).sum()
-                                / target.shape[0]
+                                / n_batch
                             )
                         else:
                             recon_loss = (
-                                F.mse_loss(recon, target, reduction="sum")
-                                / target.shape[0]
+                                F.mse_loss(recon, target, reduction="sum") / n_batch
                             )
 
                     elif view_type == "vote":
                         mask = ~modality_data["mask"].to(self.device)
                         loss_fn = nn.BCEWithLogitsLoss(reduction="none")
-                        if mog_component_weights is not None:
-                            recon_reshaped = recon.reshape(B_mog, C_mog, -1)
+                        if k_weights is not None:
+                            recon_reshaped = recon.reshape(n_rows, C_mog, -1)
                             losses = loss_fn(
                                 recon_reshaped,
                                 target.unsqueeze(1).expand_as(recon_reshaped),
                             )
                             component_nll = (losses * mask.unsqueeze(1)).sum(-1)
-                            recon_loss = (
-                                mog_component_weights * component_nll
-                            ).sum() / B_mog
+                            recon_loss = (k_weights * component_nll).sum() / n_batch
                         else:
                             losses = loss_fn(recon, target)
                             # Per-document Bernoulli NLL: summed over observed votes,
                             # averaged over the batch.
-                            recon_loss = torch.sum(losses * mask) / target.shape[0]
+                            recon_loss = torch.sum(losses * mask) / n_batch
 
                     else:
                         raise ValueError(f"Unsupported view type: {view_type}")
@@ -1988,12 +2138,7 @@ class DeepLatent:
         final_stds = [] if return_std else None
 
         with torch.no_grad():
-            data_loader = DataLoader(
-                dataset,
-                batch_size=self.batch_size,
-                shuffle=False,
-                num_workers=num_workers,
-            )
+            data_loader = self._data_loader(dataset, num_workers=num_workers)
 
             for data in data_loader:
                 for key, value in data.items():
@@ -2001,6 +2146,9 @@ class DeepLatent:
                         data[key] = value.to(self.device)
 
                 prevalence_covariates = data.get("M_prevalence_covariates", None)
+                unit_mask, unit_rows = self._units_in_step(data)
+                encoder_kwargs = {}
+                rows = None
 
                 # Prepare modality inputs
                 if single_modality is not None:
@@ -2009,70 +2157,25 @@ class DeepLatent:
                         raise ValueError(
                             f"Modality '{single_modality}' not found in encoders"
                         )
-
-                    mod, view = parse_modality_view(single_modality)
-                    view_data = data["modalities"][mod][view]
-                    view_type = dataset.processed_modalities[mod][view]["type"]
-
-                    if view_type == "image":
-                        x = view_data.to(self.device)
+                    modality_inputs = self._encoder_inputs(
+                        data, dataset, keys=[single_modality]
+                    )
+                    encoder_kwargs["single_modality"] = single_modality
+                    if unit_rows is not None:
+                        # Only the units that have this modality; the others get NaN.
+                        rows = unit_rows[single_modality]
+                    if rows is not None:
+                        n_batch = unit_mask.size(0)
                         modality_inputs = {
-                            single_modality: x
-                        }  # Don't concatenate covariates for images
-                    elif view_type in {"bow", "embedding"}:
-                        x = view_data.to(self.device)
-                    elif view_type == "vote":
-                        x = view_data["matrix"].to(self.device)
-                    elif view_type == "discrete_choice":
-                        question_tensors = [
-                            view_data[q].to(self.device)
-                            for q in view_data
-                            if q != "type"
-                        ]
-                        x = torch.cat(question_tensors, dim=-1)
-                    else:
-                        raise ValueError(f"Unsupported view type: {view_type}")
-
-                    # For non-image modalities, concatenate covariates
-                    if view_type != "image":
+                            single_modality: modality_inputs[single_modality][rows]
+                        }
                         if prevalence_covariates is not None:
-                            x = torch.cat([x, prevalence_covariates], dim=1)
-                        x = self._append_encoder_labels(x)
-
-                        modality_inputs = {single_modality: x}
+                            prevalence_covariates = prevalence_covariates[rows]
                 else:
                     # Multimodal path - prepare all modality inputs
-                    modality_inputs = {}
-                    for key in self.encoder.encoders.keys():
-                        mod, view = parse_modality_view(key)
-                        view_data = data["modalities"][mod][view]
-                        view_type = dataset.processed_modalities[mod][view]["type"]
-
-                        if view_type == "image":
-                            # Images are handled separately - don't concatenate covariates
-                            x = view_data.to(self.device)
-                            modality_inputs[key] = x
-                        elif view_type in {"bow", "embedding"}:
-                            x = view_data.to(self.device)
-                        elif view_type == "vote":
-                            x = view_data["matrix"].to(self.device)
-                        elif view_type == "discrete_choice":
-                            question_tensors = [
-                                view_data[q].to(self.device)
-                                for q in view_data
-                                if q != "type"
-                            ]
-                            x = torch.cat(question_tensors, dim=-1)
-                        else:
-                            raise ValueError(f"Unsupported view type: {view_type}")
-
-                        # For non-image modalities, concatenate covariates
-                        if view_type != "image":
-                            if prevalence_covariates is not None:
-                                x = torch.cat([x, prevalence_covariates], dim=1)
-                            x = self._append_encoder_labels(x)
-
-                            modality_inputs[key] = x
+                    modality_inputs = self._encoder_inputs(data, dataset)
+                    if unit_mask is not None:
+                        encoder_kwargs.update(unit_mask=unit_mask, unit_rows=unit_rows)
 
                 # Use the MultiModalEncoder.forward() method with single_modality parameter
                 if self.ae_type == "vae":
@@ -2080,8 +2183,8 @@ class DeepLatent:
                     for _ in range(num_samples):
                         theta_q, z, _ = self.encoder(
                             modality_inputs,
-                            single_modality=single_modality,
                             prevalence_covariates=prevalence_covariates,
+                            **encoder_kwargs,
                         )
                         thetas.append(theta_q if to_simplex else z)
 
@@ -2097,8 +2200,8 @@ class DeepLatent:
                 else:
                     theta_q, z, _ = self.encoder(
                         modality_inputs,
-                        single_modality=single_modality,
                         prevalence_covariates=prevalence_covariates,
+                        **encoder_kwargs,
                     )
                     theta_q = theta_q if to_simplex else z
                     if return_samples:
@@ -2106,6 +2209,11 @@ class DeepLatent:
                         theta_q = theta_q.unsqueeze(1).expand(-1, num_samples, -1)
                     elif return_std:
                         theta_std = torch.zeros_like(theta_q)
+
+                if rows is not None:
+                    theta_q = _fill_rows(theta_q, rows, n_batch)
+                    if return_std and not return_samples:
+                        theta_std = _fill_rows(theta_std, rows, n_batch)
 
                 final_thetas.append(theta_q)
                 if return_std and not return_samples:
@@ -2199,12 +2307,7 @@ class DeepLatent:
         self.predictor.eval()
 
         with torch.no_grad():
-            data_loader = DataLoader(
-                dataset,
-                batch_size=self.batch_size,
-                shuffle=False,
-                num_workers=num_workers,
-            )
+            data_loader = self._data_loader(dataset, num_workers=num_workers)
             # Initialize dict to collect predictions per label
             final_predictions = {
                 label_name: [] for label_name in self.labels_info.keys()
@@ -2219,50 +2322,30 @@ class DeepLatent:
                 prediction_covariates = data.get("M_prediction", None)
 
                 # Prepare encoder input
-                modality_inputs = {}
-                for key in self.encoder.encoders.keys():
-                    mod, view = parse_modality_view(key)
-                    view_type = dataset.processed_modalities[mod][view]["type"]
-                    view_data = data["modalities"][mod][view]
-
-                    if view_type == "image":
-                        # Images are handled separately - don't concatenate covariates
-                        x = view_data.to(self.device)
-                        modality_inputs[key] = x
-                    elif view_type in {"bow", "embedding"}:
-                        x = view_data.to(self.device)
-                    elif view_type == "vote":
-                        x = view_data["matrix"].to(self.device)
-                    elif view_type == "discrete_choice":
-                        question_tensors = [
-                            view_data[q].to(self.device)
-                            for q in view_data
-                            if q != "type"
-                        ]
-                        x = torch.cat(question_tensors, dim=-1)
-                    else:
-                        raise ValueError(f"Unsupported view type: {view_type}")
-
-                    # For non-image modalities, concatenate covariates
-                    if view_type != "image":
-                        if prevalence_covariates is not None:
-                            x = torch.cat([x, prevalence_covariates], dim=1)
-                        x = self._append_encoder_labels(x)
-
-                        modality_inputs[key] = x
+                modality_inputs = self._encoder_inputs(data, dataset)
+                unit_mask, unit_rows = self._units_in_step(data)
+                encoder_kwargs = (
+                    {}
+                    if unit_mask is None
+                    else {"unit_mask": unit_mask, "unit_rows": unit_rows}
+                )
 
                 if self.ae_type == "vae":
                     thetas = []
                     for _ in range(num_samples):
                         theta_q, z, _ = self.encoder(
-                            modality_inputs, prevalence_covariates=prevalence_covariates
+                            modality_inputs,
+                            prevalence_covariates=prevalence_covariates,
+                            **encoder_kwargs,
                         )
                         theta_q = theta_q if to_simplex else z
                         thetas.append(theta_q)
                     features = torch.stack(thetas, dim=1).mean(dim=1)
                 else:
                     theta_q, z, _ = self.encoder(
-                        modality_inputs, prevalence_covariates=prevalence_covariates
+                        modality_inputs,
+                        prevalence_covariates=prevalence_covariates,
+                        **encoder_kwargs,
                     )
                     features = theta_q if to_simplex else z
 
@@ -2321,6 +2404,9 @@ class DeepLatent:
           of the exact unimodal posteriors defined this way need not add up to the
           joint posterior's (non-Gaussian likelihoods), so these are shares of the
           unimodal increments, not a decomposition of the fused precision.
+        When the Corpus declares which units have which modalities ('available'), a
+        unit gets NaN for the modalities it lacks and its shares are taken over the
+        modalities it has.
         For full_rank and mixtures Δ_m can be negative: an expert can be wider than
         the prior, and a multimodal mixture can have a variance above the prior's
         even when every component is sharper than it. Shares divide by the signed
@@ -2346,6 +2432,8 @@ class DeepLatent:
         """
         if num_workers is None:
             num_workers = self.num_workers
+        if getattr(dataset, "availability", None):
+            self._check_unit_availability()
 
         # Under MoE fusion a Gaussian mixture concatenates components, so no
         # precision-based modality weight is defined. Report equal descriptive
@@ -2357,11 +2445,11 @@ class DeepLatent:
             return w if to_numpy else torch.tensor(w, device=self.device)
 
         self.encoder.eval()
-        data_loader = DataLoader(
-            dataset,
-            batch_size=self.batch_size,
-            shuffle=False,
-            num_workers=num_workers,
+        data_loader = self._data_loader(dataset, num_workers=num_workers)
+        corrected = (
+            self.fusion == "corrected_poe"
+            and self.ae_type == "vae"
+            and self.vi_type in {"mean_field", "full_rank", "mixture_of_gaussians"}
         )
 
         weights_list = []
@@ -2376,54 +2464,37 @@ class DeepLatent:
                         data[key] = value.to(self.device)
 
                 prevalence_covariates = data.get("M_prevalence_covariates", None)
+                modality_inputs = self._encoder_inputs(data, dataset)
 
-                modality_inputs = {}
+                if corrected:
+                    # Shares of the precision increments Δ_m, over the modalities
+                    # each unit has (NaN for the others).
+                    increments, has = self._corrected_poe_increments(
+                        data, modality_inputs, prevalence_covariates
+                    )
+                    stack = torch.stack(increments, dim=1)  # (B, M[, D])
+                    if self.vi_type == "mean_field":
+                        delta_sum = torch.where(has.unsqueeze(-1), stack, 0.0).sum(
+                            dim=1, keepdim=True
+                        )  # (B, 1, D)
+                        # Normalize across modalities, then average across dimensions
+                        weights = (stack / (delta_sum + 1e-8)).mean(dim=2)  # (B, M)
+                    else:
+                        n_nonpositive += int(((stack <= 0) & has).any(dim=1).sum())
+                        weights = stack / torch.where(has, stack, 0.0).sum(
+                            dim=1, keepdim=True
+                        )
+                    weights_list.append(weights)
+                    continue
+
                 mu_logvars = []
                 zs = []
 
                 for name in modality_names:
-                    mod, view = parse_modality_view(name)
-                    view_data = data["modalities"][mod][view]
-                    view_type = dataset.processed_modalities[mod][view]["type"]
-
-                    if view_type == "image":
-                        x = view_data.to(self.device)
-                        modality_inputs[name] = (
-                            x  # Don't concatenate covariates for images
-                        )
-                    elif view_type in {"bow", "embedding"}:
-                        x = view_data.to(self.device)
-                    elif view_type == "vote":
-                        x = view_data["matrix"].to(self.device)
-                    elif view_type == "discrete_choice":
-                        x = torch.cat(
-                            [
-                                view_data[q].to(self.device)
-                                for q in view_data
-                                if q != "type"
-                            ],
-                            dim=-1,
-                        )
-                    else:
-                        raise ValueError(f"Unsupported view type: {view_type}")
-
-                    # For non-image modalities, concatenate covariates
-                    if view_type != "image":
-                        if prevalence_covariates is not None:
-                            x = torch.cat((x, prevalence_covariates), dim=1)
-                        x = self._append_encoder_labels(x)
-
-                        modality_inputs[name] = x
-
                     # Encode each modality separately for weight computation
-                    encoder = self.encoder.encoders[name]
-                    if isinstance(encoder, ImageEncoder):
-                        z = encoder(
-                            modality_inputs[name],
-                            prevalence_covariates=prevalence_covariates,
-                        )
-                    else:
-                        z = encoder(modality_inputs[name])
+                    z = self.encoder.encode(
+                        name, modality_inputs[name], prevalence_covariates
+                    )
 
                     if self.ae_type == "vae":
                         if self.vi_type == "mean_field":
@@ -2455,16 +2526,10 @@ class DeepLatent:
                             zk, log_det_j = self.encoder.shared_flow(z0)
                             mu_logvars.append((mu, logvar, zk, log_det_j))
                             zs.append(zk)
-                        elif self.vi_type == "mixture_of_gaussians":
-                            means, raw, pi = self.encoder._mog_unpack(z)
-                            mu_logvars.append((means, raw, pi))
-                            zs.append(means[:, 0])
                         else:
                             raise ValueError(f"Unsupported vi_type: {self.vi_type}")
                     else:
                         zs.append(z)
-
-                    modality_inputs[name] = x
 
                 B = zs[0].size(0)
                 M = len(zs)
@@ -2505,56 +2570,28 @@ class DeepLatent:
                 elif self.fusion in ["poe", "corrected_poe"]:
                     if self.ae_type == "vae":
                         if self.vi_type == "mean_field":
-                            if self.fusion == "corrected_poe":
-                                # For corrected PoE: weights based on precision INCREMENTS Δ_m.
-                                # The raw encoder logvar already encodes -log(Δ_m) (see
-                                # MultiModalEncoder._corrected_unimodal_logvar), so Δ_m is
-                                # read directly; subtracting Λ_0 here would remove the
-                                # prior twice and zero out any modality with Δ_m < Λ_0.
-                                deltas = []
-                                for _, logvar in mu_logvars:
-                                    if len(mu_logvars[0]) == 2:
-                                        deltas.append(torch.exp(-logvar))
-
-                                if deltas:
-                                    delta_stack = torch.stack(
-                                        deltas, dim=1
-                                    )  # (B, M, D)
-                                    # Normalize across modalities
-                                    delta_sum = delta_stack.sum(
-                                        dim=1, keepdim=True
-                                    )  # (B, 1, D)
-                                    delta_normalized = delta_stack / (
-                                        delta_sum + 1e-8
-                                    )  # (B, M, D)
-                                    # Average across dimensions
-                                    weights = delta_normalized.mean(dim=2)  # (B, M)
-                                else:
-                                    weights = torch.full(
-                                        (B, M), 1.0 / M, device=self.device
-                                    )
+                            # Uncorrected PoE: weights based on total precisions Λ_m
+                            # (corrected PoE is handled above)
+                            precisions = [
+                                1.0 / torch.exp(logvar)
+                                for _, logvar in mu_logvars
+                                if len(mu_logvars[0]) == 2
+                            ]
+                            if precisions:
+                                precision_stack = torch.stack(
+                                    precisions, dim=1
+                                )  # (B, M, D)
+                                # Normalize across modalities for each dimension
+                                precision_normalized = (
+                                    precision_stack
+                                    / precision_stack.sum(dim=1, keepdim=True)
+                                )  # (B, M, D)
+                                # Average across dimensions: overall modality weight
+                                weights = precision_normalized.mean(dim=2)  # (B, M)
                             else:
-                                # Uncorrected PoE: weights based on total precisions Λ_m
-                                precisions = [
-                                    1.0 / torch.exp(logvar)
-                                    for _, logvar in mu_logvars
-                                    if len(mu_logvars[0]) == 2
-                                ]
-                                if precisions:
-                                    precision_stack = torch.stack(
-                                        precisions, dim=1
-                                    )  # (B, M, D)
-                                    # Normalize across modalities for each dimension
-                                    precision_normalized = (
-                                        precision_stack
-                                        / precision_stack.sum(dim=1, keepdim=True)
-                                    )  # (B, M, D)
-                                    # Average across dimensions to get overall modality weight
-                                    weights = precision_normalized.mean(dim=2)  # (B, M)
-                                else:
-                                    weights = torch.full(
-                                        (B, M), 1.0 / M, device=self.device
-                                    )
+                                weights = torch.full(
+                                    (B, M), 1.0 / M, device=self.device
+                                )
 
                         elif self.vi_type == "full_rank":
                             precisions = []
@@ -2568,25 +2605,9 @@ class DeepLatent:
                                     Sigma_q = torch.bmm(
                                         L, L.transpose(1, 2)
                                     )  # (B, D, D)
-                                    if self.fusion == "corrected_poe":
-                                        # L L^T is the unimodal posterior covariance
-                                        # (Λ_0 + Δ_m)^(-1); the fusion adds
-                                        # Δ_m = Λ_m - Λ_0 (product_of_experts_full_rank,
-                                        # same regularization and Λ_0).
-                                        eye = I.expand(B, -1, -1)
-                                        _, Lambda_0 = (
-                                            self.encoder._full_rank_prior_precision(
-                                                prevalence_covariates, B, eye
-                                            )
-                                        )
-                                        Sigma_inv = (
-                                            torch.linalg.inv(Sigma_q + 1e-6 * eye)
-                                            - Lambda_0
-                                        )
-                                    else:
-                                        Sigma_inv = torch.linalg.inv(
-                                            Sigma_q + 1e-4 * I.expand(B, -1, -1)
-                                        )
+                                    Sigma_inv = torch.linalg.inv(
+                                        Sigma_q + 1e-4 * I.expand(B, -1, -1)
+                                    )
                                     trace_prec = torch.diagonal(
                                         Sigma_inv, dim1=1, dim2=2
                                     ).sum(
@@ -2595,44 +2616,11 @@ class DeepLatent:
                                     precisions.append(trace_prec)
                             if precisions:
                                 weights = torch.stack(precisions, dim=1)  # (B, M)
-                                if self.fusion == "corrected_poe":
-                                    n_nonpositive += int(
-                                        (weights <= 0).any(dim=1).sum()
-                                    )
                                 weights = weights / weights.sum(dim=1, keepdim=True)
                             else:
                                 weights = torch.full(
                                     (B, M), 1.0 / M, device=self.device
                                 )
-
-                        elif self.vi_type == "mixture_of_gaussians":
-                            # Moment-matched increments Δ_m = Cov(q_m)^(-1) - Λ_0, with
-                            # q_m the unimodal posterior exactly as training forms it
-                            # (corrected mixture PoE over this modality alone).
-                            D = self.n_latent
-                            _, _, Lambda_0 = self.encoder._mog_prior_precision(
-                                prevalence_covariates,
-                                B,
-                                D,
-                                mu_logvars[0][0].device,
-                                mu_logvars[0][0].dtype,
-                            )
-                            increments = []
-                            for mixture in mu_logvars:
-                                _, means, scale_trils, pi = (
-                                    self.encoder.product_of_experts_mog(
-                                        [mixture],
-                                        prevalence_covariates=prevalence_covariates,
-                                    )
-                                )
-                                cov = _mixture_covariance(means, scale_trils, pi)
-                                delta = torch.linalg.inv(cov) - Lambda_0
-                                increments.append(
-                                    torch.diagonal(delta, dim1=1, dim2=2).sum(dim=1)
-                                )
-                            weights = torch.stack(increments, dim=1)  # (B, M)
-                            n_nonpositive += int((weights <= 0).any(dim=1).sum())
-                            weights = weights / weights.sum(dim=1, keepdim=True)
 
                         elif self.vi_type == "iaf":
                             # For flows, use base distribution variances
@@ -2669,6 +2657,63 @@ class DeepLatent:
             )
         return weights_all.cpu().numpy() if to_numpy else weights_all
 
+    def _corrected_poe_increments(self, data, modality_inputs, prevalence_covariates):
+        """Corrected-PoE precision increment of every modality for every unit of a
+        batch, as get_modality_weights reports them: mean_field Δ_m [B, D] (read from
+        the raw encoder logvar, which encodes -log Δ_m; see _corrected_unimodal_logvar),
+        full_rank tr(Λ_m - Λ_0) [B], mixtures tr(Cov(q_m)^(-1) - Λ_0) [B] with q_m the
+        unimodal posterior exactly as training forms it (corrected mixture PoE over the
+        modality alone). With unit availability, each encoder runs only on the units
+        that have its modality and the others get NaN.
+
+        Returns (increments, has): a list over modalities and the [B, M] mask of the
+        units that have each modality.
+        """
+        unit_mask, unit_rows = self._units_in_step(data)
+        names = list(self.encoder.encoders.keys())
+        B = next(iter(modality_inputs.values())).size(0)
+        increments = []
+        for name in names:
+            rows = None if unit_rows is None else unit_rows[name]
+            x, prev = modality_inputs[name], prevalence_covariates
+            if rows is not None:
+                x = x[rows]
+                prev = prev[rows] if prev is not None else None
+            z = self.encoder.encode(name, x, prev)
+            n = z.size(0)
+            if self.vi_type == "mean_field":
+                # Δ_m read directly: subtracting Λ_0 here would remove the prior twice.
+                inc = torch.exp(-torch.chunk(z, 2, dim=1)[1])
+            elif self.vi_type == "full_rank":
+                # L L^T is the unimodal posterior covariance (Λ_0 + Δ_m)^(-1); the
+                # fusion adds Δ_m = Λ_m - Λ_0 (product_of_experts_full_rank, same
+                # regularization and Λ_0).
+                _, L = self.encoder._full_rank_unpack(z)
+                eye = torch.eye(self.n_latent, device=self.device)
+                eye = eye.unsqueeze(0).expand(n, -1, -1)
+                _, Lambda_0 = self.encoder._full_rank_prior_precision(prev, n, eye)
+                Sigma_q = torch.bmm(L, L.transpose(1, 2))
+                delta = torch.linalg.inv(Sigma_q + 1e-6 * eye) - Lambda_0
+                inc = torch.diagonal(delta, dim1=1, dim2=2).sum(dim=1)
+            else:
+                mixture = self.encoder._mog_unpack(z)
+                _, _, Lambda_0 = self.encoder._mog_prior_precision(
+                    prev, n, self.n_latent, z.device, z.dtype
+                )
+                _, means, scale_trils, pi = self.encoder.product_of_experts_mog(
+                    [mixture], prevalence_covariates=prev
+                )
+                cov = _mixture_covariance(means, scale_trils, pi)
+                delta = torch.linalg.inv(cov) - Lambda_0
+                inc = torch.diagonal(delta, dim1=1, dim2=2).sum(dim=1)
+            increments.append(inc if rows is None else _fill_rows(inc, rows, B))
+        has = (
+            torch.ones(B, len(names), dtype=torch.bool, device=self.device)
+            if unit_mask is None
+            else unit_mask
+        )
+        return increments, has
+
     def get_mutual_information(
         self, dataset, num_workers: Optional[int] = None, to_numpy: bool = True
     ):
@@ -2687,7 +2732,10 @@ class DeepLatent:
         equals prior).
 
         Mathematical definitions by variational inference type:
-        - **Mean-field**: KL(N(μ, diag(σ²)) || N(μ_p, Σ_p))
+        - **Mean-field**: KL(N(μ, diag(σ²)) || N(μ_p, Σ_p)). Under corrected PoE,
+          q(z|x_m) is the modality's own posterior as training forms it,
+          N(μ_m, (Λ_0 + Δ_m)^(-1)): the raw encoder logvar encodes -log Δ_m, the
+          precision increment over the prior, not the posterior variance.
         - **Full-rank**: KL(N(μ, Σ) || N(μ_p, Σ_p))
         - **IAF**: KL computed via the base distribution (flow transformations cancel in expectation)
 
@@ -2701,7 +2749,9 @@ class DeepLatent:
 
         Returns:
             Pointwise mutual information matrix [N, M] where N is number of observations
-            and M is number of modalities. All values are non-negative.
+            and M is number of modalities. All values are non-negative. When the Corpus
+            declares which units have which modalities ('available'), a unit gets NaN
+            for the modalities it lacks.
 
         Raises:
             ValueError: If model is not a VAE (ae_type != "vae")
@@ -2731,12 +2781,7 @@ class DeepLatent:
             )
 
         self.encoder.eval()
-        data_loader = DataLoader(
-            dataset,
-            batch_size=self.batch_size,
-            shuffle=False,
-            num_workers=num_workers,
-        )
+        data_loader = self._data_loader(dataset, num_workers=num_workers)
 
         mi_list = []
         modality_names = list(self.encoder.encoders.keys())
@@ -2752,67 +2797,34 @@ class DeepLatent:
                 labels = data.get("M_labels", None)
 
                 # Prepare modality inputs and get individual posteriors
-                modality_inputs = {}
+                modality_inputs = self._encoder_inputs(data, dataset)
+                unit_mask, unit_rows = self._units_in_step(data)
                 modality_posteriors = []
 
                 for name in modality_names:
-                    mod, view = parse_modality_view(name)
-                    view_data = data["modalities"][mod][view]
-                    view_type = dataset.processed_modalities[mod][view]["type"]
-
-                    if view_type == "image":
-                        x = view_data.to(self.device)
-                        modality_inputs[name] = x
-                    elif view_type in {"bow", "embedding"}:
-                        x = view_data.to(self.device)
-                    elif view_type == "vote":
-                        x = view_data["matrix"].to(self.device)
-                    elif view_type == "discrete_choice":
-                        x = torch.cat(
-                            [
-                                view_data[q].to(self.device)
-                                for q in view_data
-                                if q != "type"
-                            ],
-                            dim=-1,
-                        )
-                    else:
-                        raise ValueError(f"Unsupported view type: {view_type}")
-
-                    # For non-image modalities, concatenate covariates
-                    if view_type != "image":
-                        if prevalence_covariates is not None:
-                            x = torch.cat((x, prevalence_covariates), dim=1)
-                        x = self._append_encoder_labels(x)
-                        modality_inputs[name] = x
-
-                    # Encode each modality separately to get individual posterior parameters
-                    encoder = self.encoder.encoders[name]
-                    if isinstance(encoder, ImageEncoder):
-                        z = encoder(
-                            modality_inputs[name],
-                            prevalence_covariates=prevalence_covariates,
-                        )
-                    else:
-                        z = encoder(modality_inputs[name])
+                    # Encode each modality separately to get individual posterior
+                    # parameters (only on the units that have it; NaN for the others)
+                    rows = None if unit_rows is None else unit_rows[name]
+                    x, prev = modality_inputs[name], prevalence_covariates
+                    if rows is not None:
+                        x = x[rows]
+                        prev = prev[rows] if prev is not None else None
+                    z = self.encoder.encode(name, x, prev)
+                    if rows is not None:
+                        z = _fill_rows(z, rows, unit_mask.size(0))
 
                     # Extract posterior parameters based on vi_type
                     if self.vi_type == "mean_field":
                         mu, logvar = torch.chunk(z, 2, dim=1)
+                        if self.fusion == "corrected_poe":
+                            # Raw logvar is -log Δ_m; the unimodal posterior adds the
+                            # prior precision, exactly as in training.
+                            logvar = self.encoder._corrected_unimodal_logvar(
+                                logvar, prevalence_covariates
+                            )
                         modality_posteriors.append((mu, logvar))
                     elif self.vi_type == "full_rank":
-                        D = self.n_latent
-                        mu = z[:, :D]
-                        L_flat = z[:, D:]
-                        B = mu.size(0)
-                        tril_indices = torch.tril_indices(D, D, device=z.device)
-                        L = torch.zeros(B, D, D, device=z.device)
-                        L[:, tril_indices[0], tril_indices[1]] = L_flat
-                        diag_idx = torch.arange(D, device=z.device)
-                        L[:, diag_idx, diag_idx] = (
-                            F.softplus(L[:, diag_idx, diag_idx]) + 1e-4
-                        )
-                        modality_posteriors.append((mu, L))
+                        modality_posteriors.append(self.encoder._full_rank_unpack(z))
                     elif self.vi_type == "iaf":
                         mu, logvar = torch.chunk(z, 2, dim=1)
                         modality_posteriors.append((mu, logvar, name))
@@ -2998,6 +3010,8 @@ class DeepLatent:
 
                     mi_batch[:, m_idx] = kl
 
+                if unit_mask is not None:
+                    mi_batch = mi_batch.masked_fill(~unit_mask, float("nan"))
                 mi_list.append(mi_batch)
 
         mi_all = torch.cat(mi_list, dim=0)  # (N, M)
@@ -3028,18 +3042,33 @@ class DeepLatent:
         else:
             raise ValueError(f"Unsupported vi_type: {self.vi_type}")
 
-    def _recon_loglik(self, doc_latents, data, dataset, content_covariates):
-        """Per-document log p(x|z) summed over modalities (NOT averaged over the batch)."""
-        theta_input = (
+    def _recon_loglik(
+        self, doc_latents, data, dataset, content_covariates, unit_rows=None
+    ):
+        """Per-document log p(x|z) summed over modalities (NOT averaged over the batch).
+        With unit_rows (unit availability), a modality counts only for its rows."""
+        full_theta_input = (
             torch.cat([doc_latents, content_covariates], dim=1)
             if content_covariates is not None
             else doc_latents
         )
+        n_batch = doc_latents.shape[0]
+        full_doc_latents, full_content = doc_latents, content_covariates
         total = None
         for key, decoder in self.decoders.items():
             mod, view = parse_modality_view(key)
             vt = dataset.processed_modalities[mod][view]["type"]
             md = data["modalities"][mod][view]
+            theta_input = full_theta_input
+            doc_latents, content_covariates = full_doc_latents, full_content
+            rows = None if unit_rows is None else unit_rows.get(key)
+            if rows is not None:
+                if rows.numel() == 0:
+                    continue
+                md = _take_rows(md, rows)
+                theta_input, doc_latents = theta_input[rows], doc_latents[rows]
+                if content_covariates is not None:
+                    content_covariates = content_covariates[rows]
             if vt == "image":
                 target = md.to(self.device)
                 recon = decoder(doc_latents, content_covariates)
@@ -3073,8 +3102,10 @@ class DeepLatent:
                     ll = -(bce * mask).sum(1)
                 else:
                     raise ValueError(f"Unsupported view type: {vt}")
+            if rows is not None:
+                ll = ll.new_zeros(n_batch).index_add(0, rows, ll)
             total = ll if total is None else total + ll
-        return total
+        return full_doc_latents.new_zeros(n_batch) if total is None else total
 
     def estimate_marginal_log_likelihood(
         self,
@@ -3118,9 +3149,7 @@ class DeepLatent:
             (FixedGaussianPrior, FixedLogisticNormalPrior, FixedDirichletPrior),
         )
 
-        loader = DataLoader(
-            dataset, batch_size=self.batch_size, shuffle=False, num_workers=num_workers
-        )
+        loader = self._data_loader(dataset, num_workers=num_workers)
         iwae_all, elbo_all = [], []
 
         with torch.no_grad():
@@ -3131,28 +3160,13 @@ class DeepLatent:
                 prevalence = data.get("M_prevalence_covariates", None)
                 content = data.get("M_content_covariates", None)
 
-                modality_inputs = {}
-                for key in self.encoder.encoders.keys():
-                    mod, view = parse_modality_view(key)
-                    vt = dataset.processed_modalities[mod][view]["type"]
-                    vd = data["modalities"][mod][view]
-                    if vt == "image":
-                        modality_inputs[key] = vd.to(self.device)
-                        continue
-                    elif vt in {"bow", "embedding"}:
-                        x = vd.to(self.device)
-                    elif vt == "vote":
-                        x = vd["matrix"].to(self.device)
-                    elif vt == "discrete_choice":
-                        x = torch.cat(
-                            [vd[q].to(self.device) for q in vd if q != "type"], dim=-1
-                        )
-                    else:
-                        raise ValueError(f"Unsupported view type: {vt}")
-                    if prevalence is not None:
-                        x = torch.cat([x, prevalence], dim=1)
-                    x = self._append_encoder_labels(x)
-                    modality_inputs[key] = x
+                unit_mask, unit_rows = self._units_in_step(data)
+                encoder_kwargs = {}
+                if unit_mask is not None:
+                    # _recon_loglik selects each modality's rows on the device
+                    data["modalities"] = _to_device(data["modalities"], self.device)
+                    encoder_kwargs = {"unit_mask": unit_mask, "unit_rows": unit_rows}
+                modality_inputs = self._encoder_inputs(data, dataset)
 
                 B = (
                     prevalence.shape[0]
@@ -3173,14 +3187,18 @@ class DeepLatent:
                 lw = []
                 for _ in range(n_samples):
                     theta, z, info = self.encoder(
-                        modality_inputs, prevalence_covariates=prevalence
+                        modality_inputs,
+                        prevalence_covariates=prevalence,
+                        **encoder_kwargs,
                     )
                     doc_latents = (
                         theta
                         if self.latent_factor_prior in {"dirichlet", "logistic_normal"}
                         else z
                     )
-                    logpx = self._recon_loglik(doc_latents, data, dataset, content)
+                    logpx = self._recon_loglik(
+                        doc_latents, data, dataset, content, unit_rows
+                    )
                     logpz = (
                         prior_dist.log_prob(z)
                         if has_full_cov

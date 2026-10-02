@@ -21,6 +21,12 @@ class Corpus(Dataset):
         self.modalities_config = modalities
 
         self.processed_modalities = {}
+        # Per-view availability: which rows (units) have the modality at all. A view's
+        # "available" option (a boolean column name or a boolean array of length N)
+        # marks the rows without it; their entries are placeholders that the models
+        # never read. This differs from missing values inside a modality (e.g. a vote
+        # not cast), which the modality's own likelihood handles.
+        self.availability = {}
 
         for modality_name, modality_info in self.modalities_config.items():
             column = modality_info.get("column", "doc")
@@ -30,6 +36,12 @@ class Corpus(Dataset):
             for view_name, view_config in views.items():
                 view_type = view_config["type"]
                 view_column = view_config.get("column", column)
+                key = f"{modality_name}_{view_name}"
+                avail = (
+                    self._availability_vector(view_config["available"], df, key)
+                    if "available" in view_config
+                    else None
+                )
 
                 if view_type == "bow":
                     vec = view_config.get("vectorizer", CountVectorizer())
@@ -78,8 +90,12 @@ class Corpus(Dataset):
                                 "A precomputed vote matrix must be scipy.sparse "
                                 "(+1 yea, -1 nay, 0 not observed)."
                             )
+                        # Explicitly stored zeros are "not observed", like implicit
+                        # ones.
+                        M = scipy.sparse.csr_matrix(M, copy=True)
+                        M.eliminate_zeros()
                         self.processed_modalities[modality_name][view_name] = {
-                            "matrix": scipy.sparse.csr_matrix(M),
+                            "matrix": M,
                             "type": "vote",
                         }
                     else:
@@ -96,9 +112,20 @@ class Corpus(Dataset):
                 elif view_type == "discrete_choice":
                     if isinstance(view_column, str):
                         view_column = [view_column]
+                    answers = df
+                    if avail is not None and avail.any() and not avail.all():
+                        # Absent rows are placeholders, never read: give them an
+                        # observed answer so that the design keeps one row per unit.
+                        absent = ~avail.numpy()
+                        answers = df[view_column].copy()
+                        first = int(np.flatnonzero(~absent)[0])
+                        for col in view_column:
+                            answers.loc[absent, col] = df[col].iloc[first]
                     self.processed_modalities[modality_name][view_name] = {}
                     for col in view_column:
-                        M = dmatrix(f"~ C({col}) - 1", df)
+                        # NA_action="raise": patsy would otherwise drop rows with a
+                        # missing answer and misalign every later unit.
+                        M = dmatrix(f"~ C({col}) - 1", answers, NA_action="raise")
                         self.processed_modalities[modality_name][view_name][col] = {
                             "matrix": np.asarray(M, dtype=np.float32),
                             "columns": M.design_info.column_names
@@ -128,11 +155,15 @@ class Corpus(Dataset):
                         self.processed_modalities[modality_name][view_name] = {
                             "image_paths": image_paths,
                             "transform_fn": transform_fn,
+                            "available": None if avail is None else avail.numpy(),
                             "type": "image"
                         }
 
                 else:
                     raise ValueError(f"Unsupported view type: {view_type}")
+
+                if avail is not None:
+                    self.availability[key] = avail
 
         # Covariates
         self.prevalence = prevalence
@@ -162,8 +193,70 @@ class Corpus(Dataset):
                         i: token for i, token in enumerate(vocab)
                     }
 
+    @staticmethod
+    def _availability_vector(spec, df, key):
+        if isinstance(spec, str):
+            if not pd.api.types.is_bool_dtype(df[spec]):
+                raise TypeError(
+                    f"'available' column '{spec}' for '{key}' must be boolean."
+                )
+            a = df[spec].to_numpy(dtype=bool)
+        else:
+            a = np.asarray(spec)
+        if a.dtype != np.bool_ or a.shape != (len(df),):
+            raise TypeError(
+                f"'available' for '{key}' must be a boolean column name or a boolean "
+                f"array of length {len(df)}."
+            )
+        return torch.from_numpy(a.copy())
+
+    @staticmethod
+    def _expand_votes(S):
+        """Sparse vote rows (+1 yea, -1 nay, 0 not observed) -> the dense coding of the
+        vote view: matrix 1 yea, 0 nay, 2 if missing; mask True if missing."""
+        S = scipy.sparse.csr_matrix(S)
+        rows = torch.from_numpy(np.repeat(np.arange(S.shape[0]), np.diff(S.indptr)))
+        cols = torch.from_numpy(S.indices.astype(np.int64))
+        matrix = torch.full(S.shape, 2.0)
+        matrix[rows, cols] = torch.from_numpy((S.data > 0).astype(np.float32))
+        mask = torch.ones(S.shape, dtype=torch.bool)
+        mask[rows, cols] = False
+        return {"matrix": matrix, "mask": mask}
+
+    @staticmethod
+    def _load_image(info, i):
+        """Lazy loading: transform a single image on demand. A row without the
+        modality gets a zero placeholder shaped like the view's images (never read)."""
+        avail = info.get("available")
+        if avail is not None and not avail[i]:
+            if "placeholder" not in info:
+                present = np.flatnonzero(avail)
+                info["placeholder"] = (
+                    torch.zeros_like(Corpus._load_image(info, int(present[0])))
+                    if len(present)
+                    else torch.zeros(3, 224, 224)
+                )
+            return info["placeholder"]
+        image_path = info["image_paths"][i]
+        transform_fn = info["transform_fn"]
+        try:
+            # Transform function should handle single image path -> tensor
+            tensor = transform_fn([image_path])  # Pass as list for consistency
+            if isinstance(tensor, list):
+                tensor = tensor[0]  # Extract single tensor
+            elif isinstance(tensor, torch.Tensor) and tensor.dim() == 4:
+                tensor = tensor[0]  # Remove batch dimension if present
+            return tensor
+        except Exception as e:
+            print(f"Error loading image {image_path}: {e}")
+            # Fallback: create zero tensor with reasonable default shape
+            return torch.zeros(3, 224, 224)
+
     def _transform_df(self, formula):
-        M = dmatrix(formula, self.df)
+        # NA_action="raise": patsy would otherwise drop rows with a missing value, so
+        # that row i of the matrix no longer belongs to unit i (every later unit gets
+        # its neighbour's covariates). Missing covariates must be handled explicitly.
+        M = dmatrix(formula, self.df, NA_action="raise")
         return M.design_info.column_names, np.asarray(M, dtype=np.float32)
 
     def _process_labels(self, labels_config: Dict[str, Dict]):
@@ -236,6 +329,8 @@ class Corpus(Dataset):
         return len(self.df)
 
     def __getitem__(self, i):
+        if not (np.isscalar(i) or (torch.is_tensor(i) and i.dim() == 0)):
+            return self.get_batch(i)
         d = {"modalities": {}}
         for modality_name, views in self.processed_modalities.items():
             d["modalities"][modality_name] = {}
@@ -250,18 +345,15 @@ class Corpus(Dataset):
                 elif view_type == "vote":
                     if scipy.sparse.issparse(info["matrix"]):
                         # Same coding as the dense path: 1 yea, 0 nay, 2 and masked if missing.
-                        row = info["matrix"][i]
-                        idx = torch.from_numpy(row.indices.astype(np.int64))
-                        matrix = torch.full((row.shape[1],), 2.0)
-                        matrix[idx] = torch.from_numpy((row.data > 0).astype(np.float32))
-                        mask = torch.ones(row.shape[1], dtype=torch.bool)
-                        mask[idx] = False
+                        votes = self._expand_votes(info["matrix"][i])
+                        d["modalities"][modality_name][view_name] = {
+                            k: v[0] for k, v in votes.items()
+                        }
                     else:
-                        matrix, mask = info["matrix"][i], info["mask"][i]
-                    d["modalities"][modality_name][view_name] = {
-                        "matrix": matrix,
-                        "mask": mask,
-                    }
+                        d["modalities"][modality_name][view_name] = {
+                            "matrix": info["matrix"][i],
+                            "mask": info["mask"][i],
+                        }
                 elif view_type == "discrete_choice":
                     d["modalities"][modality_name][view_name] = {
                         col: torch.FloatTensor(info[col]["matrix"][i])
@@ -271,22 +363,8 @@ class Corpus(Dataset):
                     if "matrix" in info:
                         d["modalities"][modality_name][view_name] = info["matrix"][i]
                     else:
-                        # Lazy loading: transform single image on demand
-                        image_path = info["image_paths"][i]
-                        transform_fn = info["transform_fn"]
-                        
-                        try:
-                            # Transform function should handle single image path -> tensor
-                            tensor = transform_fn([image_path])  # Pass as list for consistency
-                            if isinstance(tensor, list):
-                                tensor = tensor[0]  # Extract single tensor
-                            elif isinstance(tensor, torch.Tensor) and tensor.dim() == 4:
-                                tensor = tensor[0]  # Remove batch dimension if present
-                            d["modalities"][modality_name][view_name] = tensor
-                        except Exception as e:
-                            print(f"Error loading image {image_path}: {e}")
-                            # Fallback: create zero tensor with reasonable default shape
-                            d["modalities"][modality_name][view_name] = torch.zeros(3, 224, 224)
+                        image = self._load_image(info, i)
+                        d["modalities"][modality_name][view_name] = image
 
         if self.prevalence:
             d["M_prevalence_covariates"] = self.M_prevalence_covariates[i]
@@ -296,5 +374,55 @@ class Corpus(Dataset):
             d["M_prediction"] = self.M_prediction[i]
         if self.labels_info:
             d["M_labels"] = self.M_labels[i]
+        if self.availability:
+            d["available"] = {k: v[i] for k, v in self.availability.items()}
 
+        return d
+
+    def get_batch(self, indices):
+        """The items at `indices`, already collated (what a DataLoader with the default
+        collate function yields for them), built a whole batch at a time: each matrix is
+        sliced once instead of row by row. corpus[list_of_indices] calls this."""
+        idx = np.asarray(indices, dtype=np.int64)
+        t = torch.from_numpy(idx)
+        d = {"modalities": {}}
+        for modality_name, views in self.processed_modalities.items():
+            d["modalities"][modality_name] = {}
+            for view_name, info in views.items():
+                view_type = info.get("type")
+                if view_type == "bow":
+                    rows = info["matrix"][idx]
+                    if scipy.sparse.issparse(rows):
+                        rows = rows.toarray()
+                    out = torch.FloatTensor(np.asarray(rows))
+                elif view_type == "embedding":
+                    out = info["matrix"][t]
+                elif view_type == "vote":
+                    if scipy.sparse.issparse(info["matrix"]):
+                        out = self._expand_votes(info["matrix"][idx])
+                    else:
+                        out = {"matrix": info["matrix"][t], "mask": info["mask"][t]}
+                elif view_type == "discrete_choice":
+                    out = {
+                        col: torch.FloatTensor(info[col]["matrix"][idx])
+                        for col in info if col != "type"
+                    }
+                elif view_type == "image":
+                    if "matrix" in info:
+                        out = info["matrix"][t]
+                    else:
+                        out = torch.stack([self._load_image(info, i) for i in idx])
+                d["modalities"][modality_name][view_name] = out
+
+        if self.prevalence:
+            prevalence = self.M_prevalence_covariates[idx]
+            d["M_prevalence_covariates"] = torch.from_numpy(prevalence)
+        if self.content:
+            d["M_content_covariates"] = torch.from_numpy(self.M_content_covariates[idx])
+        if self.prediction:
+            d["M_prediction"] = torch.from_numpy(self.M_prediction[idx])
+        if self.labels_info:
+            d["M_labels"] = torch.from_numpy(self.M_labels[idx])
+        if self.availability:
+            d["available"] = {k: v[t] for k, v in self.availability.items()}
         return d

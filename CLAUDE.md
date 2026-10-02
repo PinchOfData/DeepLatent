@@ -91,7 +91,9 @@ Diagnostics: `estimate_marginal_log_likelihood()` (IWAE — measures bound tight
 - `bow` — bag-of-words (multinomial likelihood)
 - `embedding` — pre-computed embeddings (Gaussian)
 - `image` — raw images with lazy loading
-- `vote` — voting records (missing values masked)
+- `vote` — voting records (missing values masked; or a precomputed `scipy.sparse` matrix: +1 yea, −1 nay, 0 not observed)
+
+**Units without a modality** (view option `"available"`: a boolean column or array): a unit's posterior is the corrected product of the experts it has (absent = left out; none = the prior), its likelihood counts only those modalities, and absent rows are placeholders never read. Distinct from missing values *inside* a modality (e.g. an abstention). Requires `ae_type="vae"`, `fusion="corrected_poe"`, vi_type mean_field/full_rank/MoG. Used for one vote modality per congress (roll calls are congress-specific). Package DataLoaders fetch whole batches (`Corpus.get_batch`).
 - `discrete_choice` — categorical responses
 
 ### Metadata Types
@@ -112,7 +114,7 @@ These were measured in this repo; scripts and JSON results live in `audit/`.
 5. **Joint vs two-step, clean 30-rep Monte Carlo** (`audit/run_mc_30.sh` → `audit/results_mc_30.json`, N=10k, σ=1, anchor words): joint E[c]=1.000 at the calibrated 8k steps; two-step stably attenuated E[c]≈0.84 at every checkpoint (classic errors-in-variables). Residual caveat: topics with near-zero/adjacent effects can bleed into each other at small N (affects both estimators equally; anchor words mitigate).
 6. **Prevalence coefficients** (`PREVALENCE_RECOVERY.md`): read them via two-step OLS on posterior factors or via the joint prior `mean_net` — but never with weight decay on the prior optimizer (shrinks them); wd=0 is now the default.
 7. **Variational families** (`VARIATIONAL_FAMILIES.md`): on held-out US-Congress IWAE, MoG beats mean-field by ≈3.6 nats/doc while full-rank/IAF underperform — expressiveness must be on the multimodality axis, not the correlation axis.
-8. **Code audit** (`AUDIT_REPORT.md`): core math verified correct. Still open: validation loss uses only the first test batch (MED-2); IAF MI diagnostic is approximate (MED-4); implicit fixed decoder σ²=0.5 for Gaussian modalities (LOW-3).
+8. **Code audit** (`AUDIT_REPORT.md`): core math verified correct. MED-2 fixed (validation now averages over the whole test set every `validate_every_n_steps` steps; `patience` counts evaluations). Still open: IAF MI diagnostic is approximate (MED-4); implicit fixed decoder σ²=0.5 for Gaussian modalities (LOW-3).
 
 ## Repository Layout
 
