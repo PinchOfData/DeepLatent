@@ -44,16 +44,39 @@ class Corpus(Dataset):
                 )
 
                 if view_type == "bow":
-                    vec = view_config.get("vectorizer", CountVectorizer())
-                    if hasattr(vec, "vocabulary_"):
-                        M = vec.transform(df[view_column])
+                    if "matrix" in view_config:
+                        # Precomputed term counts (units x vocabulary, scipy.sparse),
+                        # for corpora tokenized outside the package; "vocab"
+                        # (optional) names the columns.
+                        M = view_config["matrix"]
+                        if not scipy.sparse.issparse(M):
+                            raise TypeError(
+                                "A precomputed bow matrix must be scipy.sparse "
+                                "(units x vocabulary term counts)."
+                            )
+                        M = scipy.sparse.csr_matrix(M)
+                        vocab = view_config.get("vocab")
+                        if vocab is not None and len(vocab) != M.shape[1]:
+                            raise ValueError(
+                                f"vocab has {len(vocab)} terms but the bow matrix has "
+                                f"{M.shape[1]} columns."
+                            )
+                        self.processed_modalities[modality_name][view_name] = {
+                            "matrix": M,
+                            "vocab": vocab,
+                            "type": "bow",
+                        }
                     else:
-                        M = vec.fit_transform(df[view_column])
-                    self.processed_modalities[modality_name][view_name] = {
-                        "matrix": M,
-                        "vectorizer": vec,
-                        "type": "bow"
-                    }
+                        vec = view_config.get("vectorizer", CountVectorizer())
+                        if hasattr(vec, "vocabulary_"):
+                            M = vec.transform(df[view_column])
+                        else:
+                            M = vec.fit_transform(df[view_column])
+                        self.processed_modalities[modality_name][view_name] = {
+                            "matrix": M,
+                            "vectorizer": vec,
+                            "type": "bow"
+                        }
 
                 elif view_type == "embedding":
                     if "matrix" in view_config:
@@ -188,7 +211,12 @@ class Corpus(Dataset):
         for modality_name, views in self.processed_modalities.items():
             for view_name, info in views.items():
                 if info.get("type") == "bow":
-                    vocab = info["vectorizer"].get_feature_names_out()
+                    if "vectorizer" in info:
+                        vocab = info["vectorizer"].get_feature_names_out()
+                    else:
+                        vocab = info["vocab"] or [
+                            str(j) for j in range(info["matrix"].shape[1])
+                        ]
                     self.id2token[f"{modality_name}_{view_name}"] = {
                         i: token for i, token in enumerate(vocab)
                     }

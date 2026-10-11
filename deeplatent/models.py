@@ -19,6 +19,7 @@ from umap import UMAP
 from .autoencoders import (
     EncoderMLP,
     DecoderMLP,
+    SAGEDecoder,
     MultiModalEncoder,
     ImageEncoder,
     ImageDecoder,
@@ -280,6 +281,7 @@ class DeepLatent:
                         RuntimeWarning,
                     )
 
+        self.n_train_docs = len(train_data)
         self.prevalence_covariate_size = (
             train_data.M_prevalence_covariates.shape[1] if train_data.prevalence else 0
         )
@@ -469,6 +471,61 @@ class DeepLatent:
                         dropout=config.get("dropout", 0.0),
                     ).to(self.device)
                 self.decoders[key] = sub_decoders
+            elif config.get("type", "mlp") == "sage":
+                # Mixture-of-topics decoder with SAGE word distributions (the STM's
+                # content model); see SAGEDecoder.
+                if view_type != "bow":
+                    raise ValueError(
+                        f"decoder_args['{key}']: type 'sage' is for bag-of-words views."
+                    )
+                unknown = set(config) - {
+                    "type", "background", "interactions", "l1", "init_topics", "jeffreys",
+                    "jeffreys_blocks", "jeffreys_strength", "jeffreys_floor", "jeffreys_start",
+                    "jeffreys_every",
+                }
+                if unknown:
+                    raise ValueError(
+                        f"decoder_args['{key}']: options {sorted(unknown)} do not apply "
+                        "to type 'sage' (it has no hidden layers)."
+                    )
+                background = config.get("background", "fixed")
+                if background not in {"fixed", "learned"}:
+                    raise ValueError(
+                        f"decoder_args['{key}']['background'] must be 'fixed' or "
+                        f"'learned'; got {background!r}."
+                    )
+                # interactions: {name: [content columns]}; each name is a covariate whose
+                # effect differs by topic, equal to the sum of the listed columns.
+                inter = config.get("interactions") or {}
+                A = np.zeros((self.content_covariate_size, len(inter)), dtype=np.float32)
+                for j, cols in enumerate(inter.values()):
+                    for c in [cols] if isinstance(cols, str) else cols:
+                        if c not in self.content_colnames:
+                            raise ValueError(
+                                f"decoder_args['{key}']['interactions']: '{c}' is not a "
+                                "content covariate."
+                            )
+                        A[self.content_colnames.index(c), j] = 1.0
+                counts = np.asarray(view_data["matrix"].sum(axis=0)).ravel()
+                self.decoders[key] = SAGEDecoder(
+                    n_topics=n_factors,
+                    content_covariate_size=self.content_covariate_size,
+                    vocab_size=view_data["matrix"].shape[1],
+                    background_counts=counts,
+                    learn_background=background == "learned",
+                    interactions=A if inter else None,
+                    l1=config.get("l1", 0.0),
+                    init_topics=config.get("init_topics"),
+                    jeffreys=config.get("jeffreys", False),
+                    jeffreys_blocks=tuple(
+                        config.get("jeffreys_blocks", ("topics", "covariates", "interactions"))
+                    ),
+                    jeffreys_strength=config.get("jeffreys_strength", 1.0),
+                    jeffreys_floor=config.get("jeffreys_floor", 1e-7),
+                    jeffreys_start=config.get("jeffreys_start"),
+                    jeffreys_every=config.get("jeffreys_every"),
+                ).to(self.device)
+                self.decoders[key].interaction_names = list(inter)
             else:
                 output_dim = view_data["matrix"].shape[1]
                 dims = (
@@ -693,6 +750,14 @@ class DeepLatent:
             best_loss = self.loss
             best_step = self.steps
 
+        for key, d in self.decoders.items():
+            if isinstance(d, SAGEDecoder) and d.jeffreys and d.jeffreys_start > self.num_steps:
+                warnings.warn(
+                    f"Decoder '{key}': jeffreys_start={d.jeffreys_start} > num_steps={self.num_steps}; "
+                    "the Jeffreys precisions are never refreshed (a variance-1 ridge throughout).",
+                    RuntimeWarning,
+                )
+
         # Create infinite iterator for training data
         train_iter = iter(train_data_loader)
 
@@ -708,6 +773,16 @@ class DeepLatent:
             training_loss = self.step_batch(
                 train_data_batch, train_data, validation=False
             )
+
+            # Jeffreys prior on SAGE deviations: EM step for the per-coefficient variances.
+            for key, d in self.decoders.items():
+                if isinstance(d, SAGEDecoder) and d.jeffreys_due(step + 1):
+                    shares = d.refresh_jeffreys()
+                    print(
+                        f"Jeffreys refresh at step {step + 1} ({key}): share of |deviation| < 1e-3: "
+                        + ", ".join(f"{b} {v:.3f}" for b, v in shares.items()),
+                        flush=True,
+                    )
 
             # Record training losses
             self.train_losses.append(training_loss)
@@ -1721,7 +1796,16 @@ class DeepLatent:
             self.prediction_loss = prediction_loss
 
             if not validation:
-                loss.backward()
+                # Penalties on decoder parameters (SAGEDecoder l1 or Jeffreys prior) are a
+                # prior on corpus-level parameters: counted once per corpus, so 1/N_train
+                # per document. They enter the gradient, not the reported (ELBO) loss.
+                penalty = sum(
+                    (d.l1 * d.l1_norm() if d.l1 > 0 else 0.0)
+                    + (d.jeffreys_penalty() if d.jeffreys else 0.0)
+                    for d in self.decoders.values()
+                    if isinstance(d, SAGEDecoder)
+                )
+                (loss + penalty / self.n_train_docs).backward()
                 self.optimizer.step()
 
             # Print progress if needed
@@ -2376,7 +2460,11 @@ class DeepLatent:
         return final_predictions
 
     def get_modality_weights(
-        self, dataset, num_workers: Optional[int] = None, to_numpy: bool = True
+        self,
+        dataset,
+        num_workers: Optional[int] = None,
+        to_numpy: bool = True,
+        increments: bool = False,
     ):
         """
         Returns modality weights per observation for multimodal models.
@@ -2419,10 +2507,15 @@ class DeepLatent:
             dataset: A Corpus object containing the documents
             num_workers: Number of workers for data loaders. If None, uses self.num_workers.
             to_numpy: Whether to return as numpy array (True) or torch tensor (False).
+            increments: corrected PoE only. If True, return the precision increments
+                themselves instead of their shares: tr(Δ_m) per unit and modality
+                (for mean_field the sum of Δ_m over dimensions), in the latent's
+                units; a unit's posterior precision is then Λ_0 + Σ_m Δ_m.
 
         Returns:
             Modality weights [N, M] where N is number of documents and M is number of modalities.
-            Each row sums to 1 (weights are normalized).
+            Each row sums to 1 (weights are normalized). With increments=True, the
+            unnormalized increments [N, M].
 
         Examples:
             >>> # Get modality importance for each document
@@ -2432,8 +2525,18 @@ class DeepLatent:
         """
         if num_workers is None:
             num_workers = self.num_workers
+        return_increments = increments
         if getattr(dataset, "availability", None):
             self._check_unit_availability()
+        if return_increments and not (
+            self.fusion == "corrected_poe"
+            and self.ae_type == "vae"
+            and self.vi_type in {"mean_field", "full_rank", "mixture_of_gaussians"}
+        ):
+            raise ValueError(
+                "increments=True requires a VAE with fusion='corrected_poe' and "
+                "vi_type 'mean_field', 'full_rank' or 'mixture_of_gaussians'."
+            )
 
         # Under MoE fusion a Gaussian mixture concatenates components, so no
         # precision-based modality weight is defined. Report equal descriptive
@@ -2469,10 +2572,15 @@ class DeepLatent:
                 if corrected:
                     # Shares of the precision increments Δ_m, over the modalities
                     # each unit has (NaN for the others).
-                    increments, has = self._corrected_poe_increments(
+                    increments_m, has = self._corrected_poe_increments(
                         data, modality_inputs, prevalence_covariates
                     )
-                    stack = torch.stack(increments, dim=1)  # (B, M[, D])
+                    stack = torch.stack(increments_m, dim=1)  # (B, M[, D])
+                    if return_increments:
+                        weights_list.append(
+                            stack.sum(dim=2) if stack.dim() == 3 else stack
+                        )
+                        continue
                     if self.vi_type == "mean_field":
                         delta_sum = torch.where(has.unsqueeze(-1), stack, 0.0).sum(
                             dim=1, keepdim=True
@@ -3510,6 +3618,20 @@ class DeepLatent:
                 f"out the pre-0.2.0 commit to load this checkpoint."
             )
 
+        # Jeffreys-prior guard (SAGEDecoder): the checkpoint's precision buffers must match the
+        # blocks of this model; checked before anything is overwritten.
+        for key, state_dict in ckpt["decoders"].items():
+            decoder = self.decoders[key] if key in self.decoders else None
+            if isinstance(decoder, SAGEDecoder):
+                saved = sorted(k for k in state_dict if k.startswith("prec_"))
+                built = sorted(f"prec_{SAGEDecoder.JEFFREYS_BLOCKS[b]}" for b in decoder.jeffreys_blocks)
+                if saved != built:
+                    raise ValueError(
+                        f"Decoder '{key}': the checkpoint has Jeffreys precisions {saved or 'none'}, "
+                        f"the model expects {built or 'none'}; rebuild the model with the same "
+                        "decoder_args (jeffreys and jeffreys_blocks) as the fit."
+                    )
+
         for key, value in ckpt.items():
             if key not in ["encoder", "decoders", "predictor", "optimizer"]:
                 setattr(self, key, value)
@@ -3720,43 +3842,51 @@ class GTM(DeepLatent):
         # The priors already handle the softmax normalization for simplex, so we just return the result
         return result
 
-    def get_topic_words(self, l_content_covariates=[], topK=8):
+    def _bow_decoder(self):
+        """(key, decoder) of the first bag-of-words view."""
+        for key in self.decoders:
+            if key.endswith("bow"):
+                return key, self.decoders[key]
+        raise ValueError("No BOW decoder found — topic-words not available.")
+
+    def _content_vector(self, l_content_covariates=(), content_covariates=None):
+        """Content covariates x (length p): the given vector, else 1 for each named column."""
+        if content_covariates is not None:
+            x = torch.as_tensor(
+                np.asarray(content_covariates, dtype=np.float32), device=self.device
+            ).ravel()
+            if x.numel() != self.content_covariate_size:
+                raise ValueError(
+                    f"content_covariates has length {x.numel()}, expected "
+                    f"{self.content_covariate_size}."
+                )
+            return x
+        x = torch.zeros(self.content_covariate_size, device=self.device)
+        for k in l_content_covariates:
+            if k not in self.content_colnames:
+                raise ValueError(f"Content covariate '{k}' not found in content_colnames.")
+            x[self.content_colnames.index(k)] += 1
+        return x
+
+    def get_topic_words(self, l_content_covariates=[], topK=8, content_covariates=None):
         """
         Get the top words per topic, potentially influenced by content covariates.
 
         Args:
-            l_content_covariates: list of content covariate names to influence the topic-word distribution.
+            l_content_covariates: list of content covariate names set to 1.
             topK: number of top words to return per topic.
+            content_covariates: a full content-covariate vector (length p) instead.
         """
-        for key in self.decoders:
-            if key.endswith("bow"):
-                decoder = self.decoders[key]
-                id2token = self.id2token.get(key, {})
-                break
-        else:
-            raise ValueError("No BOW decoder found — topic-words not available.")
-
-        decoder.eval()
-        with torch.no_grad():
-            topic_words = {}
-            idxes = torch.eye(self.n_topics + self.content_covariate_size).to(
-                self.device
-            )
-
-            for k in l_content_covariates:
-                idx = [i for i, l in enumerate(self.content_colnames) if l == k][0]
-                idxes[:, (self.n_topics + idx)] += 1
-
-            word_dist = decoder(idxes)
-            word_dist = F.softmax(word_dist, dim=1)
-            _, indices = torch.topk(word_dist, topK, dim=1)
-            indices = indices.cpu().tolist()
-
-            for topic_id in range(self.n_topics):
-                topic_words[f"Topic_{topic_id}"] = [
-                    id2token.get(idx, f"<UNK_{idx}>") for idx in indices[topic_id]
-                ]
-        return topic_words
+        key, _ = self._bow_decoder()
+        id2token = self.id2token.get(key, {})
+        dist = self.get_topic_word_distribution(
+            l_content_covariates, to_numpy=False, content_covariates=content_covariates
+        )
+        indices = torch.topk(dist, topK, dim=1).indices.cpu().tolist()
+        return {
+            f"Topic_{k}": [id2token.get(i, f"<UNK_{i}>") for i in indices[k]]
+            for k in range(self.n_topics)
+        }
 
     def get_covariate_words(self, topK=8):
         """
@@ -3765,122 +3895,107 @@ class GTM(DeepLatent):
         Args:
             topK: number of top words to return per content covariate.
         """
-        for key in self.decoders:
-            if key.endswith("bow"):
-                decoder = self.decoders[key]
-                id2token = self.id2token.get(key, {})
-                break
-        else:
-            raise ValueError("No BOW decoder found — covariate-words not available.")
+        key, _ = self._bow_decoder()
+        id2token = self.id2token.get(key, {})
+        dist = self.get_covariate_word_distribution(to_numpy=False)
+        indices = torch.topk(dist, topK, dim=1).indices.cpu().tolist()
+        return {
+            name: [id2token.get(i, f"<UNK_{i}>") for i in indices[j]]
+            for j, name in enumerate(self.content_colnames)
+        }
 
-        decoder.eval()
-        with torch.no_grad():
-            covariate_words = {}
-            idxes = torch.eye(self.n_topics + self.content_covariate_size).to(
-                self.device
-            )
-            word_dist = decoder(idxes)
-            word_dist = F.softmax(word_dist, dim=1)
-            _, indices = torch.topk(word_dist, topK, dim=1)
-            indices = indices.cpu().tolist()
-            for i in range(self.n_topics, self.n_topics + self.content_covariate_size):
-                cov_name = self.content_colnames[i - self.n_topics]
-                covariate_words[cov_name] = [
-                    id2token.get(idx, f"<UNK_{idx}>") for idx in indices[i]
-                ]
-        return covariate_words
-
-    def get_topic_word_distribution(self, l_content_covariates=[], to_numpy=True):
+    def get_topic_word_distribution(
+        self, l_content_covariates=[], to_numpy=True, content_covariates=None
+    ):
         """
-        Get the topic-word distribution of each topic, potentially influenced by covariates.
+        Get the word distribution of each topic (K x V), at given content covariates.
+
+        With the default MLP decoder this is softmax(decoder([e_k, x])); with a SAGEDecoder
+        it is beta_k(x) = softmax(m + kappa_k + x' kappa_cov + topic interactions).
 
         Args:
-            l_content_covariates: list with the names of the content covariates to influence the topic-word distribution.
-            to_numpy: whether to return the topic-word distribution as a numpy array.
+            l_content_covariates: list with the names of content covariates set to 1
+                (the others at 0).
+            to_numpy: whether to return a numpy array.
+            content_covariates: a full content-covariate vector (length p) instead, e.g.
+                the average of the design rows of several covariate values.
         """
-        for key in self.decoders:
-            if key.endswith("bow"):
-                decoder = self.decoders[key]
-                break
-        else:
-            raise ValueError(
-                "No BOW decoder found — topic-word distribution not available."
-            )
-
+        _, decoder = self._bow_decoder()
+        x = self._content_vector(l_content_covariates, content_covariates)
         decoder.eval()
         with torch.no_grad():
-            idxes = torch.eye(self.n_topics + self.content_covariate_size).to(
-                self.device
-            )
-            for k in l_content_covariates:
-                try:
-                    idx = self.content_colnames.index(k)
-                    idxes[:, self.n_topics + idx] += 1
-                except ValueError:
-                    raise ValueError(
-                        f"Content covariate '{k}' not found in content_colnames."
-                    )
-            topic_word_distribution = decoder(idxes)
-            topic_word_distribution = F.softmax(topic_word_distribution, dim=1)
+            if isinstance(decoder, SAGEDecoder):
+                dist = decoder.topic_log_probs(x).exp()
+            else:
+                rows = torch.cat(
+                    [
+                        torch.eye(self.n_topics, device=self.device),
+                        x.unsqueeze(0).expand(self.n_topics, -1),
+                    ],
+                    dim=1,
+                )
+                dist = F.softmax(decoder(rows), dim=1)
+        return dist.cpu().numpy() if to_numpy else dist
 
-        return (
-            topic_word_distribution[: self.n_topics, :].cpu().numpy()
-            if to_numpy
-            else topic_word_distribution[: self.n_topics, :]
-        )
+    def get_word_logit_components(self):
+        """
+        The additive parts of the word logits of the bag-of-words decoder, as numpy arrays:
+        background (V), topics (K x V), covariates (p x V) and, for a SAGEDecoder with
+        interactions, interactions (J x K x V) with interaction_names.
+
+        SAGEDecoder: topic k's word logits at covariates x are background + topics[k] +
+        x' covariates + sum_j z_j interactions[j, k]. Linear MLP decoder (no hidden
+        nonlinearity, no bias): the word logits are theta' topics + x' covariates (the
+        rows of the effective matrix W_L ... W_1) and background is 0.
+        """
+        _, decoder = self._bow_decoder()
+        decoder.eval()
+        with torch.no_grad():
+            if isinstance(decoder, SAGEDecoder):
+                out = {
+                    "background": decoder.background.cpu().numpy(),
+                    "topics": decoder.kappa_topic.cpu().numpy(),
+                    "covariates": decoder.kappa_cov.cpu().numpy(),
+                }
+                if decoder.n_interactions:
+                    out["interactions"] = decoder.kappa_int.cpu().numpy()
+                    out["interaction_names"] = list(decoder.interaction_names)
+                return out
+            if decoder.decoder_non_linear_activation is not None or decoder.decoder_bias:
+                raise ValueError(
+                    "Word-logit components need a linear decoder without bias."
+                )
+            W = decoder(
+                torch.eye(self.n_topics + self.content_covariate_size, device=self.device)
+            ).cpu().numpy()
+        return {
+            "background": np.zeros(W.shape[1], dtype=W.dtype),
+            "topics": W[: self.n_topics],
+            "covariates": W[self.n_topics :],
+        }
 
     def get_covariate_word_distribution(self, to_numpy=True):
         """
-        Get the word distribution associated with each content covariate.
+        Get the word distribution associated with each content covariate (p x V).
 
-        For models with content covariates, this method returns the word distributions
-        that are uniquely associated with each covariate (controlling for topics).
-        This helps identify which words are characteristic of different document
-        attributes (e.g., time periods, authors, genres).
+        MLP decoder: softmax of the decoder output for the unit input of the covariate
+        (no topic). SAGEDecoder: softmax(m + kappa_cov[j]), the background shifted by the
+        covariate's deviation.
 
         Args:
             to_numpy: Whether to return as numpy array (True) or torch tensor (False).
-
-        Returns:
-            Word distributions [num_covariates, vocab_size] as numpy array or tensor.
-            Each row is a probability distribution over the vocabulary.
-
-        Raises:
-            ValueError: If no BOW decoder is found in the model.
-
-        Examples:
-            >>> # Get words associated with each covariate
-            >>> covariate_dists = model.get_covariate_word_distribution()
-            >>> top_words_cov0 = covariate_dists[0].argsort()[-10:]  # Top 10 words
         """
-        """
-        Get the covariate-word distribution of each topic.
-
-        Args:
-            to_numpy: whether to return the covariate-word distribution as a numpy array.
-        """
-        for key in self.decoders:
-            if key.endswith("bow"):
-                decoder = self.decoders[key]
-                break
-        else:
-            raise ValueError(
-                "No BOW decoder found — covariate-word distributions not available."
-            )
-
+        _, decoder = self._bow_decoder()
         decoder.eval()
         with torch.no_grad():
-            idxes = torch.eye(self.n_topics + self.content_covariate_size).to(
-                self.device
-            )
-            word_dist = decoder(idxes)
-            word_dist = F.softmax(word_dist, dim=1)
-
-        return (
-            word_dist[self.n_topics :, :].cpu().numpy()
-            if to_numpy
-            else word_dist[self.n_topics :, :]
-        )
+            if isinstance(decoder, SAGEDecoder):
+                dist = decoder.covariate_log_probs().exp()
+            else:
+                idxes = torch.eye(self.n_topics + self.content_covariate_size).to(
+                    self.device
+                )
+                dist = F.softmax(decoder(idxes), dim=1)[self.n_topics :]
+        return dist.cpu().numpy() if to_numpy else dist
 
     def get_top_docs(
         self,

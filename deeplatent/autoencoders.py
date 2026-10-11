@@ -503,6 +503,252 @@ class DecoderMLP(nn.Module):
         return hid
 
 
+class SAGEDecoder(nn.Module):
+    """
+    Bag-of-words decoder of the Structural Topic Model: a mixture of topics whose word
+    distributions are SAGE log-linear models (Eisenstein, Ahmed & Xing 2011; Roberts,
+    Stewart & Airoldi 2016).
+
+    Each token of document d draws a topic k with probability theta_dk, then a word from
+
+        beta_dk = softmax(m + kappa_k + x_d' kappa_cov + sum_j z_dj kappa_int[j, k]),
+
+    with m the background log word frequency, kappa_k topic k's deviation from it, x_d the
+    content covariates and z_d = x_d' A the covariates whose effect differs by topic
+    (``interactions``). Summing out the token's topic,
+
+        p(w | theta_d, x_d) = sum_k theta_dk beta_dkw.
+
+    DecoderMLP instead adds the topics inside the softmax (word logits theta' B + x' C, a
+    product of experts); here they are mixed outside it, as in LDA and the STM.
+
+    forward() takes [theta, x] like DecoderMLP and returns the normalized log-probabilities
+    log p(w | theta, x), so callers that apply log_softmax/softmax to a decoder's output get
+    log p / p unchanged. beta is never materialized per document: with S_dk = sum_w
+    exp(a_kw + c_dw) (a = topic logits, c = covariate logits), p_dw = exp(c_dw)
+    sum_k (theta_dk / S_dk) exp(a_kw), two matrix products per group of rows that share z.
+
+    Args:
+        n_topics: K.
+        content_covariate_size: p, the length of x.
+        vocab_size: V.
+        background_counts: length-V word counts of the training corpus; m starts at their
+            add-one smoothed log frequencies (zeros when None).
+        learn_background: learn m (True) or keep it fixed at the corpus frequencies (False,
+            as in SAGE and the STM).
+        interactions: optional p x J 0/1 array A; z = x' A are the J covariates with
+            topic-specific deviations kappa_int (J x K x V).
+        l1: weight of the L1 penalty on all deviations (kappa_topic, kappa_cov, kappa_int),
+            in units of word counts over the whole corpus (the model adds
+            l1 * |kappa|_1 / N_train to the per-document training loss: MAP under a
+            Laplace prior, as in SAGE). 0 = maximum likelihood.
+        init_topics: optional K x V nonnegative matrix of initial topic word
+            distributions (rows are normalized; e.g. the word frequencies of K clusters
+            of documents). kappa_k starts at log(init_k) - m, so that topic k's
+            distribution at x = 0 is init_k. Without it, kappa_k starts small and random:
+            all topics start near the background, and in a mixture the first topics to
+            specialize can take every document (topic collapse; the STM initializes its
+            topics from the data for the same reason).
+        jeffreys: put SAGE's Normal-Jeffreys prior on the deviations of the blocks in
+            jeffreys_blocks ("topics": kappa_topic, "covariates": kappa_cov,
+            "interactions": kappa_int), estimated as in SCHOLAR (Card, Tan & Smith 2018):
+            every coefficient eta has its own variance tau, eta ~ N(0, tau), p(tau) ~ 1/tau
+            (improper, no hyperparameter). EM over tau gives E[1/tau] = 1/eta^2 (Eisenstein,
+            Ahmed & Xing 2011, sec. 3.2), so the penalty is a ridge with a precision per
+            coefficient, prec = 1/max(eta^2, jeffreys_floor) recomputed from the current
+            deviations every jeffreys_every training steps (refresh_jeffreys, called by the
+            training loop); before the first refresh prec = 1 (a variance-1 ridge, as
+            SCHOLAR's first epoch), which lets deviations that start at 0 move. The model adds
+            jeffreys_penalty() / N_train = jeffreys_strength * 1/2 sum prec * eta^2 / N_train
+            to the per-document training loss (SCHOLAR: 0.5 / weights_sq / n_train, strength
+            1 with -r). Under a quadratic approximation of the likelihood (curvature h, so
+            SE = 1/sqrt(h)), a refresh maps x to about xhat h x^2 / (h x^2 + s) (s the
+            strength): 0 is always an attracting fixed point, and a nonzero one exists only
+            if the unpenalized estimate has |z| >= 2 sqrt(s) (h x^2 - h xhat x + s = 0). A
+            deviation survives only if it is near its unpenalized value when the refreshes
+            start, hence the warm-up (jeffreys_start): deviations that start at 0 (kappa_cov,
+            kappa_int) would otherwise be killed at the first refresh whatever their z.
+        jeffreys_blocks: the blocks under the prior (default all three).
+        jeffreys_strength: multiplier of the penalty (1 = the Normal-Jeffreys prior).
+        jeffreys_floor: floor on eta^2 in the precision (SCHOLAR's min_weights_sq).
+        jeffreys_start: training step of the first refresh (required with jeffreys). Until
+            then prec = 1. Long enough for the deviations that start at 0 to approach their
+            unpenalized values (SCHOLAR refreshes after its first epoch; an epoch is no
+            fixed number of steps, so this is set directly).
+        jeffreys_every: training steps between refreshes after the first (required with
+            jeffreys). Each refresh is one EM step for the variances; deviations near the
+            |z| = 2 threshold need many of them (SCHOLAR: about 200, one per epoch).
+    """
+
+    JEFFREYS_BLOCKS = {"topics": "kappa_topic", "covariates": "kappa_cov", "interactions": "kappa_int"}
+
+    def __init__(
+        self,
+        n_topics: int,
+        content_covariate_size: int,
+        vocab_size: int,
+        background_counts: Optional[np.ndarray] = None,
+        learn_background: bool = False,
+        interactions: Optional[np.ndarray] = None,
+        l1: float = 0.0,
+        init_topics: Optional[np.ndarray] = None,
+        jeffreys: bool = False,
+        jeffreys_blocks: Tuple[str, ...] = ("topics", "covariates", "interactions"),
+        jeffreys_strength: float = 1.0,
+        jeffreys_floor: float = 1e-7,
+        jeffreys_start: Optional[int] = None,
+        jeffreys_every: Optional[int] = None,
+    ):
+        super().__init__()
+        self.n_topics = n_topics
+        self.content_covariate_size = content_covariate_size
+        self.vocab_size = vocab_size
+        self.learn_background = learn_background
+        self.l1 = float(l1)
+        if jeffreys and self.l1 > 0:
+            raise ValueError("Use either the L1 penalty or the Jeffreys prior, not both.")
+        unknown = set(jeffreys_blocks) - set(self.JEFFREYS_BLOCKS)
+        if unknown:
+            raise ValueError(f"Unknown jeffreys_blocks {sorted(unknown)}; use {sorted(self.JEFFREYS_BLOCKS)}.")
+        for name, v in (("jeffreys_start", jeffreys_start), ("jeffreys_every", jeffreys_every)):
+            if jeffreys and (v is None or int(v) < 1):
+                raise ValueError(f"With jeffreys, set {name} to a positive number of training steps.")
+        self.jeffreys = bool(jeffreys)
+        self.jeffreys_blocks = tuple(b for b in self.JEFFREYS_BLOCKS if b in jeffreys_blocks) if jeffreys else ()
+        self.jeffreys_strength = float(jeffreys_strength)
+        self.jeffreys_floor = float(jeffreys_floor)
+        self.jeffreys_start = None if jeffreys_start is None else int(jeffreys_start)
+        self.jeffreys_every = None if jeffreys_every is None else int(jeffreys_every)
+
+        if background_counts is None:
+            m = torch.zeros(vocab_size)
+        else:
+            counts = torch.as_tensor(np.asarray(background_counts, dtype=np.float64)).ravel()
+            assert counts.numel() == vocab_size, "background_counts must have length V"
+            m = torch.log((counts + 1.0) / (counts.sum() + vocab_size)).float()
+        if learn_background:
+            self.background = nn.Parameter(m)
+        else:
+            self.register_buffer("background", m)
+
+        # Topic deviations start small and random (identical topics would get identical
+        # gradients); covariate and interaction deviations start at 0 (the background).
+        if init_topics is None:
+            bound = 1.0 / math.sqrt(n_topics)
+            kappa = torch.empty(n_topics, vocab_size).uniform_(-bound, bound)
+        else:
+            init = torch.as_tensor(np.asarray(init_topics, dtype=np.float64))
+            assert init.shape == (n_topics, vocab_size) and (init >= 0).all(), (
+                "init_topics must be a nonnegative K x V matrix"
+            )
+            init = init / init.sum(dim=1, keepdim=True)
+            kappa = (torch.log(init.clamp_min(1e-12)) - m.double()).float()
+            kappa = kappa - kappa.mean(dim=1, keepdim=True)  # softmax shift: no effect on beta
+        self.kappa_topic = nn.Parameter(kappa)
+        self.kappa_cov = nn.Parameter(torch.zeros(content_covariate_size, vocab_size))
+
+        A = np.zeros((content_covariate_size, 0)) if interactions is None else np.asarray(interactions)
+        assert A.ndim == 2 and A.shape[0] == content_covariate_size, "interactions must be p x J"
+        self.register_buffer("interactions", torch.as_tensor(A, dtype=torch.float32))
+        self.kappa_int = nn.Parameter(torch.zeros(A.shape[1], n_topics, vocab_size))
+
+        # Normal-Jeffreys prior: one precision per coefficient of each block under the prior,
+        # 1 until the first refresh. Buffers, so checkpoints keep them.
+        for block in self.jeffreys_blocks:
+            name = self.JEFFREYS_BLOCKS[block]
+            self.register_buffer(f"prec_{name}", torch.ones_like(getattr(self, name)))
+
+    @property
+    def n_interactions(self) -> int:
+        return self.interactions.shape[1]
+
+    def _topic_logits(self, z: torch.Tensor) -> torch.Tensor:
+        """K x V word logits of the topics (background + topic + interaction deviations) for
+        one row z of the interaction covariates."""
+        a = self.background.unsqueeze(0) + self.kappa_topic
+        if self.n_interactions:
+            a = a + torch.einsum("j,jkv->kv", z, self.kappa_int)
+        return a
+
+    def forward(self, theta_input: torch.Tensor) -> torch.Tensor:
+        K = self.n_topics
+        theta, x = theta_input[:, :K], theta_input[:, K:]
+        if self.content_covariate_size:
+            c = x @ self.kappa_cov
+        else:
+            c = theta_input.new_zeros(theta_input.shape[0], self.vocab_size)
+        c = c - c.max(dim=1, keepdim=True).values.detach()  # a shift within each row cancels
+        Cexp = torch.exp(c)
+        a0 = self.background.unsqueeze(0) + self.kappa_topic  # K x V
+
+        def log_mix(c_rows, C_rows, theta_rows, a):
+            Aexp = torch.exp(a - a.max(dim=-1, keepdim=True).values.detach())  # K x V
+            S = C_rows @ Aexp.T  # n x K: normalizers of the topics, up to the shifts
+            return c_rows + torch.log(((theta_rows / S) @ Aexp).clamp_min(1e-30))
+
+        if not self.n_interactions:
+            return log_mix(c, Cexp, theta, a0)
+
+        # Rows share topic logits when they share z: one K x V block per distinct z, all
+        # computed in one matrix product; rows are sorted by z and processed in contiguous
+        # slices. Covariates are data: no gradient flows to them (x is a slice of the input).
+        z = (x @ self.interactions).detach()
+        uz, inverse = torch.unique(z, dim=0, return_inverse=True)
+        U = uz.shape[0]
+        A = a0.unsqueeze(0) + (uz @ self.kappa_int.reshape(self.n_interactions, -1)).reshape(
+            U, K, -1
+        )
+        order = torch.argsort(inverse)
+        sizes = torch.bincount(inverse, minlength=U).tolist()
+        parts = zip(
+            c[order].split(sizes), Cexp[order].split(sizes), theta[order].split(sizes)
+        )
+        log_p = torch.cat([log_mix(cg, Cg, tg, A[g]) for g, (cg, Cg, tg) in enumerate(parts)])
+        return log_p.index_select(0, torch.argsort(order))
+
+    def topic_log_probs(self, x: torch.Tensor) -> torch.Tensor:
+        """K x V log word distributions log beta_k(x) of the topics at covariates x (length p)."""
+        z = x @ self.interactions if self.n_interactions else x.new_zeros(0)
+        logits = self._topic_logits(z)
+        if self.content_covariate_size:
+            logits = logits + (x @ self.kappa_cov).unsqueeze(0)
+        return F.log_softmax(logits, dim=1)
+
+    def covariate_log_probs(self) -> torch.Tensor:
+        """p x V log word distributions of the covariates: softmax(m + kappa_cov[j])."""
+        return F.log_softmax(self.background.unsqueeze(0) + self.kappa_cov, dim=1)
+
+    def l1_norm(self) -> torch.Tensor:
+        return self.kappa_topic.abs().sum() + self.kappa_cov.abs().sum() + self.kappa_int.abs().sum()
+
+    def jeffreys_penalty(self) -> torch.Tensor:
+        """jeffreys_strength * 1/2 sum prec * eta^2 over the blocks under the Jeffreys prior
+        (corpus level: the model divides it by N_train)."""
+        total = self.kappa_topic.new_zeros(())
+        for block in self.jeffreys_blocks:
+            name = self.JEFFREYS_BLOCKS[block]
+            total = total + (getattr(self, f"prec_{name}") * getattr(self, name) ** 2).sum()
+        return 0.5 * self.jeffreys_strength * total
+
+    def jeffreys_due(self, step: int) -> bool:
+        """Whether to refresh after training step `step` (1-based): at jeffreys_start, then every
+        jeffreys_every steps."""
+        return (self.jeffreys and step >= self.jeffreys_start
+                and (step - self.jeffreys_start) % self.jeffreys_every == 0)
+
+    @torch.no_grad()
+    def refresh_jeffreys(self) -> dict:
+        """EM step for the variances: prec = E[1/tau] = 1 / max(eta^2, floor). Returns, per block,
+        the share of coefficients with |eta| < 1e-3 (to follow the reweighting)."""
+        shares = {}
+        for block in self.jeffreys_blocks:
+            name = self.JEFFREYS_BLOCKS[block]
+            eta = getattr(self, name).detach()
+            getattr(self, f"prec_{name}").copy_(1.0 / eta.pow(2).clamp_min(self.jeffreys_floor))
+            shares[block] = float((eta.abs() < 1e-3).float().mean()) if eta.numel() else float("nan")
+        return shares
+
+
 class MaskedLinear(nn.Module):
     """A linear layer with a mask to ensure autoregressive property."""
 

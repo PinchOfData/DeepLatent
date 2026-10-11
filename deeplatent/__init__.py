@@ -16,6 +16,7 @@ from .corpus import Corpus
 from .autoencoders import (
     EncoderMLP,
     DecoderMLP,
+    SAGEDecoder,
     MultiModalEncoder,
     ImageEncoder,
     ImageDecoder,
@@ -46,6 +47,7 @@ __all__ = [
     "Corpus",
     "EncoderMLP",
     "DecoderMLP",
+    "SAGEDecoder",
     "MultiModalEncoder",
     "ImageEncoder",
     "ImageDecoder",

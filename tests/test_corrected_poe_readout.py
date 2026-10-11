@@ -107,6 +107,31 @@ def test_modality_weights_are_precision_increment_shares(update_prior):
 
 
 @pytest.mark.parametrize("update_prior", [False, True])
+def test_modality_increments_are_the_unnormalized_weights(update_prior):
+    model, corpus, inputs = _model(update_prior)
+    _shift_raw_logvar(model, "a_w", -3.0)
+    _shift_raw_logvar(model, "b_w", 3.0)
+    inc = model.get_modality_weights(corpus, increments=True)
+    for m, k in enumerate(KEYS):
+        expected = torch.exp(-_raw_logvar(model, inputs, k)).squeeze(1).numpy()
+        np.testing.assert_allclose(inc[:, m], expected, rtol=1e-5)
+    np.testing.assert_allclose(
+        model.get_modality_weights(corpus), inc / inc.sum(1, keepdims=True), rtol=1e-5
+    )
+    # with the fixed N(0, 1) prior, the fused precision is 1 + the increments
+    if not update_prior:
+        with torch.no_grad():
+            fused_logvar = model.encoder(inputs)[2][0][1][:, 0]
+        np.testing.assert_allclose(np.exp(-fused_logvar.numpy()), 1 + inc.sum(1), rtol=1e-5)
+
+
+def test_modality_increments_require_corrected_poe():
+    model, corpus, _ = _model(False, fusion="poe")
+    with pytest.raises(ValueError, match="corrected_poe"):
+        model.get_modality_weights(corpus, increments=True)
+
+
+@pytest.mark.parametrize("update_prior", [False, True])
 def test_single_modality_posterior_matches_training_expert(update_prior):
     model, _, inputs = _model(update_prior)
     for key in KEYS:
