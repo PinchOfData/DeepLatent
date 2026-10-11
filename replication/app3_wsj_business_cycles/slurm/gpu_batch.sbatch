@@ -16,10 +16,12 @@ cd $APP3/code
 PY=${PY:-/home/Gauthier/.conda/envs/deeplatent/bin/python}
 echo "JOB $SLURM_JOB_ID on $(hostname): STEP=$STEP ARGS_FILE=$ARGS_FILE"
 md5sum ./*.py
+failed=0
 while IFS= read -r line; do
   [ -z "$line" ] && continue
   echo "=== $line"
   # shellcheck disable=SC2086
-  $PY -u "$STEP" $line
+  $PY -u "$STEP" $line || { echo "FAILED: $line"; failed=$((failed + 1)); }  # the other fits still run
 done < "$ARGS_FILE"
-echo WORKER_DONE
+echo "WORKER_DONE ($failed failed)"
+exit $(( failed > 0 ))
