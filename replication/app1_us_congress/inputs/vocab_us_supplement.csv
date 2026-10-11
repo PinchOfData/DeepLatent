@@ -1,0 +1,275 @@
+theme,term,share % 1873-1911,share % 1913-1951,share % 1953-1991,share % 1993-2024
+"War, army and navy",secretary war,0.568,0.398,0.008,0.006
+"War, army and navy",war department,0.403,0.6,0.008,0.019
+"War, army and navy",secretary navy,0.258,0.2,0.062,0.042
+"War, army and navy",navy department,0.165,0.223,0.018,0.002
+"War, army and navy",military affairs,0.368,0.317,0.01,0.006
+"War, army and navy",naval affairs,0.188,0.143,0.01,0.0
+"War, army and navy",army navy,0.178,0.373,0.102,0.06
+"War, army and navy",regular army,0.093,0.112,0.017,0.008
+"War, army and navy",army officer,0.103,0.115,0.015,0.019
+"War, army and navy",officer army,0.123,0.058,0.012,0.019
+"War, army and navy",naval officer,0.097,0.048,0.01,0.021
+"War, army and navy",officer navy,0.078,0.038,0.005,0.01
+"War, army and navy",navy yard,0.027,0.11,0.018,0.017
+"War, army and navy",navyyard,0.178,0.003,0.0,0.0
+"War, army and navy",navy,1.032,1.317,0.603,0.783
+"War, army and navy",battle ship,0.142,0.0,0.002,0.0
+"War, army and navy",armor plate,0.052,0.01,0.0,0.0
+"War, army and navy",build ship,0.063,0.038,0.012,0.01
+"War, army and navy",military reservation,0.053,0.015,0.013,0.004
+"War, army and navy",military establishment,0.033,0.068,0.057,0.006
+"War, army and navy",army appropriation,0.092,0.038,0.002,0.002
+"War, army and navy",naval appropriation,0.1,0.043,0.003,0.0
+"War, army and navy",enlisted man,0.055,0.082,0.038,0.01
+"War, army and navy",army engineer,0.012,0.082,0.017,0.002
+"War, army and navy",selective service,0.0,0.078,0.075,0.017
+"War, army and navy",war production,0.0,0.087,0.003,0.002
+"War, army and navy",war material,0.003,0.065,0.015,0.002
+"War, army and navy",war effort,0.003,0.157,0.038,0.09
+"War, army and navy",prosecution war,0.012,0.065,0.012,0.01
+"War, army and navy",great war,0.047,0.107,0.022,0.023
+"War, army and navy",late war,0.115,0.035,0.003,0.002
+"War, army and navy",mexican war,0.098,0.013,0.003,0.008
+"War, army and navy",spanish war,0.057,0.032,0.007,0.0
+"War, army and navy",spanishamerican,0.032,0.078,0.035,0.019
+"War, army and navy",indian war,0.052,0.022,0.007,0.004
+"War, army and navy",union army,0.055,0.003,0.005,0.021
+"War, army and navy",union soldier,0.065,0.007,0.0,0.01
+"War, army and navy",grand army,0.05,0.007,0.003,0.0
+"War, army and navy",old soldier,0.072,0.04,0.002,0.002
+"War, army and navy",soldier war,0.055,0.023,0.002,0.019
+"War, army and navy",courtmartial,0.078,0.022,0.012,0.012
+"War, army and navy",volunteers,0.072,0.005,0.008,0.023
+"War, army and navy",exservice,0.0,0.052,0.0,0.0
+"War, army and navy",veterans bureau,0.0,0.077,0.0,0.002
+"War, army and navy",nationaldefense,0.0,0.06,0.0,0.0
+"War, army and navy",lendlease,0.0,0.083,0.002,0.0
+"War, army and navy",war claim,0.127,0.017,0.012,0.01
+Pensions,grant pension,0.267,0.035,0.002,0.0
+Pensions,invalid pensions,0.197,0.015,0.0,0.0
+Pensions,pension office,0.16,0.01,0.0,0.0
+Pensions,pension bureau,0.085,0.012,0.0,0.0
+Pensions,commissioner pensions,0.152,0.005,0.0,0.0
+Pensions,increase pension,0.148,0.053,0.013,0.006
+Pensions,pension law,0.127,0.022,0.012,0.01
+Pensions,pension month,0.08,0.008,0.007,0.008
+Pensions,pension case,0.062,0.002,0.0,0.006
+Pensions,pension soldier,0.055,0.007,0.0,0.0
+Pensions,pension widow,0.05,0.023,0.0,0.002
+Pensions,give pension,0.06,0.012,0.002,0.004
+Pensions,entitle pension,0.072,0.013,0.002,0.0
+Pensions,pensionroll,0.082,0.0,0.0,0.0
+Tariffs and taxes,cent pound,0.282,0.248,0.07,0.012
+Tariffs and taxes,duty cent,0.158,0.062,0.007,0.0
+Tariffs and taxes,rate duty,0.12,0.053,0.017,0.002
+Tariffs and taxes,cent valorem,0.127,0.05,0.0,0.0
+Tariffs and taxes,valorem,0.208,0.078,0.028,0.0
+Tariffs and taxes,valorem duty,0.058,0.02,0.003,0.0
+Tariffs and taxes,specific duty,0.053,0.013,0.0,0.0
+Tariffs and taxes,protective tariff,0.117,0.063,0.003,0.0
+Tariffs and taxes,tariff law,0.115,0.065,0.007,0.0
+Tariffs and taxes,free list,0.138,0.077,0.007,0.0
+Tariffs and taxes,freelist,0.073,0.002,0.0,0.0
+Tariffs and taxes,dutiable,0.055,0.035,0.007,0.002
+Tariffs and taxes,increase duty,0.062,0.028,0.005,0.0
+Tariffs and taxes,high duty,0.065,0.028,0.008,0.012
+Tariffs and taxes,tariff commission,0.052,0.135,0.06,0.0
+Tariffs and taxes,tariff rate,0.038,0.072,0.01,0.004
+Tariffs and taxes,home market,0.057,0.017,0.015,0.008
+Tariffs and taxes,woolen good,0.05,0.007,0.002,0.0
+Tariffs and taxes,iron steel,0.087,0.03,0.013,0.01
+Tariffs and taxes,sugar trust,0.053,0.012,0.0,0.0
+Tariffs and taxes,internalrevenue,0.138,0.033,0.0,0.0
+Tariffs and taxes,commissioner internal,0.07,0.03,0.017,0.006
+Tariffs and taxes,raise revenue,0.082,0.045,0.067,0.067
+Tariffs and taxes,incometax,0.015,0.12,0.023,0.0
+Tariffs and taxes,excessprofit,0.0,0.083,0.012,0.0
+Tariffs and taxes,excess profit,0.002,0.052,0.032,0.004
+Tariffs and taxes,processing tax,0.0,0.062,0.0,0.0
+Tariffs and taxes,net income,0.007,0.068,0.057,0.023
+Tariffs and taxes,whisky,0.138,0.06,0.013,0.0
+Tariffs and taxes,oleomargarine,0.1,0.048,0.008,0.0
+Tariffs and taxes,customhouse,0.1,0.017,0.002,0.002
+Tariffs and taxes,dingley,0.092,0.008,0.0,0.0
+"Money, banking and prices",gold silver,0.195,0.042,0.012,0.021
+"Money, banking and prices",silver dollar,0.147,0.017,0.007,0.004
+"Money, banking and prices",coinage silver,0.12,0.005,0.0,0.0
+"Money, banking and prices",free coinage,0.102,0.002,0.0,0.0
+"Money, banking and prices",silver coin,0.098,0.01,0.008,0.006
+"Money, banking and prices",silver bullion,0.087,0.007,0.002,0.0
+"Money, banking and prices",silver certificate,0.058,0.012,0.01,0.0
+"Money, banking and prices",legaltender,0.123,0.003,0.0,0.0
+"Money, banking and prices",legaltender note,0.058,0.0,0.0,0.0
+"Money, banking and prices",nationalbank,0.097,0.01,0.0,0.0
+"Money, banking and prices",nationalbank note,0.055,0.003,0.0,0.0
+"Money, banking and prices",treasury note,0.08,0.012,0.007,0.006
+"Money, banking and prices",specie payment,0.06,0.002,0.0,0.0
+"Money, banking and prices",standard value,0.062,0.007,0.005,0.0
+"Money, banking and prices",circulate medium,0.053,0.02,0.0,0.0
+"Money, banking and prices",demonetize,0.057,0.002,0.003,0.002
+"Money, banking and prices",sink fund,0.087,0.03,0.002,0.0
+"Money, banking and prices",interest bond,0.057,0.035,0.008,0.002
+"Money, banking and prices",reserve bank,0.008,0.128,0.058,0.025
+"Money, banking and prices",reserve system,0.0,0.093,0.08,0.029
+"Money, banking and prices",state bank,0.055,0.077,0.023,0.01
+"Money, banking and prices",land bank,0.002,0.06,0.018,0.006
+"Money, banking and prices",farm loan,0.0,0.06,0.02,0.015
+"Money, banking and prices",finance corporation,0.0,0.17,0.022,0.006
+"Money, banking and prices",reconstruction finance,0.0,0.14,0.01,0.002
+"Money, banking and prices",credit corporation,0.0,0.105,0.142,0.015
+"Money, banking and prices",commodity credit,0.0,0.085,0.143,0.019
+"Money, banking and prices",capital stock,0.053,0.08,0.02,0.008
+"Money, banking and prices",hold company,0.007,0.052,0.042,0.044
+"Money, banking and prices",banking currency,0.062,0.223,0.248,0.0
+"Money, banking and prices",balance payment,0.0,0.003,0.13,0.017
+"Money, banking and prices",interest rate,0.02,0.073,0.585,0.55
+"Money, banking and prices",cost living,0.037,0.125,0.152,0.137
+"Money, banking and prices",consumer price,0.003,0.013,0.112,0.088
+"Money, banking and prices",national product,0.0,0.0,0.167,0.031
+"Money, banking and prices",price control,0.007,0.103,0.083,0.048
+"Money, banking and prices",price administration,0.0,0.053,0.012,0.012
+"Money, banking and prices",rent control,0.0,0.063,0.005,0.0
+"Money, banking and prices",fix price,0.065,0.125,0.027,0.019
+"Money, banking and prices",parity price,0.0,0.07,0.032,0.0
+"Money, banking and prices",commodity price,0.002,0.057,0.032,0.031
+"Railroads, commerce and shipping",railroad company,0.498,0.08,0.015,0.01
+"Railroads, commerce and shipping",railroad corporation,0.077,0.01,0.002,0.0
+"Railroads, commerce and shipping",railway company,0.09,0.013,0.002,0.004
+"Railroads, commerce and shipping",union pacific,0.077,0.012,0.013,0.008
+"Railroads, commerce and shipping",freight rate,0.063,0.102,0.022,0.004
+"Railroads, commerce and shipping",common carrier,0.06,0.035,0.038,0.004
+"Railroads, commerce and shipping",cost transportation,0.06,0.033,0.025,0.0
+"Railroads, commerce and shipping",regulate commerce,0.068,0.022,0.013,0.015
+"Railroads, commerce and shipping",commerce commission,0.128,0.233,0.1,0.012
+"Railroads, commerce and shipping",interstatecommerce,0.065,0.015,0.002,0.0
+"Railroads, commerce and shipping",foreign commerce,0.115,0.18,0.213,0.021
+"Railroads, commerce and shipping",shipping board,0.0,0.117,0.0,0.0
+"Railroads, commerce and shipping",maritime commission,0.0,0.07,0.018,0.019
+"Railroads, commerce and shipping",merchant marine,0.09,0.137,0.228,0.048
+"Railroads, commerce and shipping",american ship,0.055,0.047,0.015,0.012
+"Railroads, commerce and shipping",american vessel,0.052,0.017,0.01,0.004
+"Railroads, commerce and shipping",steamer,0.135,0.025,0.0,0.002
+"Railroads, commerce and shipping",civil aeronautics,0.0,0.05,0.045,0.002
+"Railroads, commerce and shipping",standard oil,0.053,0.055,0.012,0.008
+Post office,postoffice,0.708,0.06,0.007,0.0
+Post office,postoffices,0.077,0.0,0.0,0.0
+Post office,postoffice department,0.272,0.002,0.0,0.0
+Post office,postmastergeneral,0.342,0.0,0.0,0.0
+Post office,assistant postmastergeneral,0.058,0.0,0.0,0.0
+Post office,postroads,0.157,0.0,0.0,0.0
+Post office,postoffice postroads,0.08,0.0,0.0,0.0
+Post office,carry mail,0.133,0.053,0.002,0.004
+Post office,mail service,0.098,0.025,0.008,0.002
+Post office,railway mail,0.05,0.012,0.002,0.0
+Post office,free delivery,0.052,0.012,0.002,0.0
+Post office,transportation mail,0.05,0.008,0.0,0.0
+Post office,postal employee,0.003,0.068,0.045,0.015
+Post office,air mail,0.0,0.055,0.002,0.0
+Post office,postoffice appropriation,0.067,0.0,0.0,0.0
+"Public works, land and Indians",river harbor,0.332,0.168,0.03,0.004
+"Public works, land and Indians",rivers harbors,0.05,0.063,0.007,0.006
+"Public works, land and Indians",improvement river,0.073,0.012,0.003,0.004
+"Public works, land and Indians",public building,0.278,0.067,0.04,0.038
+"Public works, land and Indians",public buildings,0.117,0.05,0.022,0.025
+"Public works, land and Indians",buildings grounds,0.113,0.035,0.013,0.002
+"Public works, land and Indians",land office,0.202,0.038,0.007,0.0
+"Public works, land and Indians",general land,0.133,0.015,0.002,0.002
+"Public works, land and Indians",public domain,0.12,0.047,0.04,0.023
+"Public works, land and Indians",grant land,0.072,0.017,0.01,0.002
+"Public works, land and Indians",homestead law,0.075,0.015,0.002,0.002
+"Public works, land and Indians",land claim,0.067,0.007,0.018,0.017
+"Public works, land and Indians",tract land,0.08,0.052,0.023,0.01
+"Public works, land and Indians",forest reserve,0.058,0.042,0.007,0.0
+"Public works, land and Indians",commissioner indian,0.112,0.032,0.002,0.0
+"Public works, land and Indians",indian appropriation,0.097,0.018,0.0,0.0
+"Public works, land and Indians",indian agent,0.058,0.008,0.0,0.0
+"Public works, land and Indians",tribe indians,0.058,0.018,0.007,0.004
+"Public works, land and Indians",irrigation project,0.007,0.052,0.037,0.006
+"Public works, land and Indians",water power,0.043,0.083,0.058,0.046
+"Public works, land and Indians",muscle shoals,0.003,0.095,0.002,0.0
+"Public works, land and Indians",tennessee valley,0.0,0.065,0.043,0.033
+"Public works, land and Indians",valley authority,0.0,0.072,0.045,0.033
+"Public works, land and Indians",floodcontrol,0.0,0.093,0.028,0.0
+"Public works, land and Indians",soil conservation,0.0,0.072,0.067,0.01
+"Public works, land and Indians",insular affairs,0.018,0.035,0.262,0.004
+Agriculture,agricultural department,0.08,0.068,0.003,0.0
+Agriculture,agricultural interest,0.052,0.038,0.008,0.01
+Agriculture,farm product,0.047,0.133,0.062,0.019
+Agriculture,farm board,0.0,0.09,0.0,0.0
+Agriculture,farm organization,0.002,0.057,0.038,0.008
+Agriculture,cotton,0.408,0.72,0.31,0.196
+Agriculture,cotton farmer,0.01,0.077,0.035,0.012
+Agriculture,bale cotton,0.038,0.073,0.013,0.0
+Agriculture,price cotton,0.028,0.077,0.022,0.0
+Agriculture,bushel wheat,0.04,0.085,0.023,0.004
+Agriculture,price wheat,0.022,0.073,0.03,0.006
+Agriculture,cent bushel,0.047,0.063,0.033,0.0
+Agriculture,agricultural adjustment,0.0,0.072,0.025,0.0
+Agriculture,agriculture forestry,0.022,0.105,0.105,0.012
+Agriculture,feed grain,0.0,0.0,0.137,0.006
+Agriculture,food product,0.048,0.06,0.037,0.031
+Labor,eighthour,0.05,0.007,0.002,0.0
+Labor,american federation,0.007,0.09,0.022,0.062
+Labor,american labor,0.067,0.048,0.042,0.015
+Labor,aflcio,0.0,0.0,0.083,0.077
+Labor,labormanagement,0.0,0.028,0.07,0.01
+Labor,tafthartley,0.0,0.038,0.053,0.004
+"Government, courts and law",revised statutes,0.308,0.033,0.005,0.006
+"Government, courts and law",court claims,0.237,0.07,0.01,0.008
+"Government, courts and law",sundry civil,0.203,0.027,0.0,0.0
+"Government, courts and law",public printer,0.113,0.015,0.012,0.002
+"Government, courts and law",printing office,0.107,0.04,0.025,0.015
+"Government, courts and law",civilservice,0.145,0.123,0.02,0.0
+"Government, courts and law",service commission,0.062,0.128,0.105,0.017
+"Government, courts and law",attorneygeneral,0.288,0.0,0.005,0.0
+"Government, courts and law",deputy marshal,0.055,0.007,0.002,0.01
+"Government, courts and law",bureau statistics,0.058,0.002,0.002,0.0
+"Government, courts and law",budget bureau,0.0,0.062,0.028,0.0
+"Government, courts and law",bureau budget,0.0,0.145,0.185,0.0
+"Government, courts and law",budget estimate,0.0,0.122,0.098,0.029
+"Government, courts and law",accounting office,0.0,0.045,0.262,0.225
+"Government, courts and law",alien property,0.0,0.052,0.003,0.0
+"Government, courts and law",government ownership,0.015,0.055,0.012,0.004
+"Government, courts and law",prohibition law,0.008,0.055,0.007,0.01
+"Government, courts and law",volstead,0.0,0.052,0.002,0.0
+"Government, courts and law",contingent fund,0.09,0.027,0.008,0.0
+"Government, courts and law",spoliation,0.053,0.01,0.0,0.0
+"Elections, race and citizenship",election case,0.068,0.007,0.008,0.002
+"Elections, race and citizenship",election officer,0.063,0.005,0.003,0.01
+"Elections, race and citizenship",right suffrage,0.05,0.005,0.003,0.004
+"Elections, race and citizenship",ballotbox,0.05,0.0,0.0,0.0
+"Elections, race and citizenship",precinct,0.107,0.037,0.043,0.048
+"Elections, race and citizenship",elector,0.145,0.043,0.04,0.031
+"Elections, race and citizenship",colored man,0.09,0.02,0.002,0.0
+"Elections, race and citizenship",white man,0.142,0.038,0.012,0.05
+"Elections, race and citizenship",admit union,0.067,0.008,0.023,0.01
+"Elections, race and citizenship",selfgovernment,0.087,0.058,0.087,0.029
+"Elections, race and citizenship",republican form,0.052,0.012,0.015,0.006
+Postwar and Cold War,free world,0.002,0.032,0.407,0.123
+Postwar and Cold War,free nation,0.003,0.027,0.108,0.04
+Postwar and Cold War,education welfare,0.0,0.0,0.373,0.012
+Postwar and Cold War,public welfare,0.018,0.072,0.225,0.023
+Postwar and Cold War,oldage,0.0,0.075,0.053,0.006
+Postwar and Cold War,economic aid,0.0,0.007,0.102,0.015
+Postwar and Cold War,foreignaid,0.0,0.013,0.062,0.0
+Postwar and Cold War,interamerican,0.0,0.015,0.092,0.002
+Postwar and Cold War,latin american,0.0,0.013,0.118,0.048
+Postwar and Cold War,anticommunist,0.0,0.012,0.052,0.006
+Postwar and Cold War,tva,0.0,0.017,0.098,0.023
+Postwar and Cold War,oeo,0.0,0.0,0.052,0.002
+Postwar and Cold War,erda,0.0,0.0,0.05,0.0
+Postwar and Cold War,energy commission,0.0,0.037,0.17,0.012
+Postwar and Cold War,power commission,0.018,0.068,0.125,0.008
+Postwar and Cold War,afdc,0.0,0.0,0.055,0.04
+Postwar and Cold War,grammrudman,0.0,0.0,0.073,0.006
+Postwar and Cold War,sst,0.0,0.0,0.062,0.0
+Postwar and Cold War,weapon system,0.0,0.0,0.18,0.133
+Postwar and Cold War,landbased,0.0,0.002,0.053,0.012
+Postwar and Cold War,sandinistas,0.0,0.0,0.09,0.002
+Postwar and Cold War,exportimport,0.0,0.035,0.1,0.065
+Postwar and Cold War,appalachian,0.013,0.002,0.065,0.056
+Postwar and Cold War,metropolitan area,0.0,0.015,0.182,0.108
+Postwar and Cold War,urban area,0.0,0.008,0.207,0.202
+Postwar and Cold War,selfdetermination,0.0,0.02,0.128,0.071
+Postwar and Cold War,eca,0.003,0.083,0.002,0.0
