@@ -6,24 +6,25 @@ forecasting equations are re-estimated at every forecast origin, as in the liter
 up to s and industrial production up to s-1, so an equation is fit on the months s' <= s-3 (whose target, growth over
 s'..s'+2, is published by then) and forecasts month s's target.
 
-For every window and every topic model (LDA; the joint model at each lam, lam = 0 being our topic model alone):
+For every window and every topic model (LDA; the joint model at each lam, lam = 0 being our topic model alone), with
+the forecasting regression ("layer") a ridge (--layer ridge, the default since 2026-10-12) or the LASSO:
   - inputs: w2_common.literature_inputs of the model's monthly attention (backward 3-month average, linear trend and
     scale estimated on the months up to the origin, months t .. t-6);
-  - the LASSO penalty is chosen once per window: fit on the training months (inputs detrended and standardized on
+  - the layer's penalty is chosen once per window: fit on the training months (inputs detrended and standardized on
     them), scored on the validation months;
-  - at every origin of the block the LASSO is refit with that penalty and forecasts.
+  - at every origin of the block the layer is refit with that penalty and forecasts.
 Forecasts are averaged over seeds (missing seeds are skipped with a warning). "joint (lam chosen)" takes, in each
-window, the lam > 0 with the lowest validation error of that LASSO (averaged over seeds); the joint models' own heads
+window, the lam > 0 with the lowest validation error of that layer (averaged over seeds); the joint models' own heads
 (frozen) are reported too. Benchmarks, re-estimated at every origin: the historical mean, and a direct
 autoregression on the published monthly growth (lag order by BIC, chosen once per window). "AR + <model>" adds the
 text inputs to the autoregression: the AR terms are not penalized (Frisch-Waugh: both the target and the text inputs
-are residualized on them, the LASSO runs on the residuals), so the larger model nests the AR as Clark-West requires.
+are residualized on them, the penalized regression runs on the residuals), so the larger model nests the AR as Clark-West requires.
 
 Evaluation over the concatenated blocks: out-of-sample R^2 against the historical mean, MSE relative to the AR, both
 also over NBER recession and expansion months (a target month is a recession month if its middle month, s+1, is);
 Diebold-Mariano (joint vs each two-step model; every model vs the AR) and Clark-West (AR vs AR + text) tests,
 Newey-West with 3 lags. Industrial production is the current FRED vintage (revised data), not real-time vintages.
-Writes <results>/w2/<grid>/: forecasts.csv, summary.csv, tests.csv, windows.csv, forecasts.png.
+Writes <results>/w2/<grid>/: forecasts_<layer><out-name>.csv, summary_..., tests_..., windows_..., forecasts_....png.
 
 Usage: python w2_forecast.py --grid k50 --dtm-dir <scratch>/data/dtm_w2 --lams 0 1e2 1e3 1e4 1e5 --seeds 0 1 2
 """
@@ -37,17 +38,19 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-from sklearn.linear_model import Lasso
+from sklearn.linear_model import Lasso, Ridge
 
 import common
 import w2_common as w2
 
-ALPHAS = np.logspace(-3, 0.5, 36)
+GRIDS = {"lasso": np.logspace(-3, 0.5, 36), "ridge": np.logspace(-1, 5, 37)}
+LAYER = "ridge"  # set from --layer
 
 
 class FWLLasso:
-    """y = A phi + X beta with phi unpenalized (A includes the constant) and an L1 penalty on beta: X and y are
-    residualized on A (OLS), the LASSO runs on the residuals without intercept, then phi is refit by OLS."""
+    """y = A phi + X beta with phi unpenalized (A includes the constant) and a penalty on beta (the ridge's L2 with
+    --layer ridge, the LASSO's L1 with --layer lasso): X and y are residualized on A (OLS), the penalized regression
+    runs on the residuals without intercept, then phi is refit by OLS."""
 
     def __init__(self, alpha):
         self.alpha = alpha
@@ -55,7 +58,9 @@ class FWLLasso:
     def fit(self, X, A, y):
         bx = np.linalg.lstsq(A, X, rcond=None)[0]
         by = np.linalg.lstsq(A, y, rcond=None)[0]
-        self.las = Lasso(alpha=self.alpha, fit_intercept=False, max_iter=50_000).fit(X - A @ bx, y - A @ by)
+        est = Ridge(alpha=self.alpha, fit_intercept=False) if LAYER == "ridge" else \
+            Lasso(alpha=self.alpha, fit_intercept=False, max_iter=50_000)
+        self.las = est.fit(X - A @ bx, y - A @ by)
         self.phi = np.linalg.lstsq(A, y - X @ self.las.coef_, rcond=None)[0]
         return self
 
@@ -65,7 +70,7 @@ class FWLLasso:
 
 def choose_alpha(F, A, y, fit_m, val_m):
     best = None
-    for alpha in ALPHAS:
+    for alpha in GRIDS[LAYER]:
         m = FWLLasso(alpha).fit(F[fit_m], A[fit_m], y[fit_m])
         err = ((y[val_m] - m.predict(F[val_m], A[val_m])) ** 2).mean()
         if best is None or err < best[0]:
@@ -90,7 +95,12 @@ def main() -> None:
     ap.add_argument("--last-year", type=int, default=2011)
     ap.add_argument("--smooth", type=int, default=3)
     ap.add_argument("--lags", type=int, default=6)
+    ap.add_argument("--lda-grid", default=None, help="read the LDA fits from this grid (default: --grid)")
+    ap.add_argument("--layer", choices=["ridge", "lasso"], default="ridge", help="the forecasting regression")
+    ap.add_argument("--out-name", default="", help="suffix of the output files (e.g. _early)")
     a = ap.parse_args()
+    global LAYER
+    LAYER = a.layer
     root = common.RESULTS / "w2" / a.grid
     months = sorted(pd.read_csv(Path(a.dtm_dir) / "records.csv.gz", dtype={"month": str}, usecols=["month"]).month.unique())
     T = len(months)
@@ -99,8 +109,8 @@ def main() -> None:
     g1 = pd.read_csv(common.DATA / "dtm" / "monthly_ip.csv", dtype={"month": str}).set_index("month")["growth"]
     common_m = growth.index.intersection(g1.index)
     assert np.allclose(growth[common_m], g1[common_m], equal_nan=True), "the two monthly_ip.csv files differ"
-    lam_names = {f"lam{float(l):g}": f"joint_lam{float(l):g}" for l in a.lams}
-    models = {"lda": "lda", **lam_names}
+    lda_root = common.RESULTS / "w2" / (a.lda_grid or a.grid)
+    models = {"lda": (lda_root, "lda"), **{f"lam{float(l):g}": (root, f"joint_lam{float(l):g}") for l in a.lams}}
 
     # Target settings of the joint runs (all the same); targets without split masking, for the origins
     cfgs = [json.loads(p.read_text()) for p in root.glob("joint_*/config.json")]
@@ -137,10 +147,10 @@ def main() -> None:
             put("AR", i, A_ar[i] @ np.linalg.lstsq(A_ar[m], y_all[m], rcond=None)[0])
 
         val_err = {}
-        for name, prefix in models.items():
+        for name, (mroot, prefix) in models.items():
             runs = []
             for s in a.seeds:
-                d = root / f"{prefix}_e{w['end']}_s{s}"
+                d = mroot / f"{prefix}_e{w['end']}_s{s}"
                 if not (d / f"theta_{a.which}.npy").exists():
                     print(f"WARNING: {d.name} missing, skipped", flush=True)
                     continue
@@ -164,11 +174,11 @@ def main() -> None:
                     f_ar[i] = FWLLasso(alpha_ar).fit(F[av], A_ar[av], y_all[av]).predict(F[i:i + 1], A_ar[i:i + 1])[0]
                 fc.append(f)
                 fc_ar.append(f_ar)
-                put(f"{name} + LASSO [seed {s}]", block, f[block])
+                put(f"{name} + layer [seed {s}]", block, f[block])
                 pred = d / f"predictions_{a.which}.csv"
                 if name not in ("lda", "lam0") and pred.exists():
                     heads.append(pd.read_csv(pred)["prediction"].to_numpy())
-            put(f"{name} + LASSO", block, np.mean(fc, 0)[block])
+            put(f"{name} + layer", block, np.mean(fc, 0)[block])
             put(f"AR + {name}", block, np.mean(fc_ar, 0)[block])
             if heads:
                 put(f"{name} own head", block, np.mean(heads, 0)[block])
@@ -176,7 +186,7 @@ def main() -> None:
             info[f"val_mse {name}"] = val_err[name]
         chosen = min((n for n in models if n.startswith("lam") and n != "lam0"), key=lambda n: val_err[n])
         info["lam chosen"] = chosen
-        put("joint (lam chosen) + LASSO", block, cols[f"{chosen} + LASSO"][block])
+        put("joint (lam chosen) + layer", block, cols[f"{chosen} + layer"][block])
         put("AR + joint (lam chosen)", block, cols[f"AR + {chosen}"][block])
         if f"{chosen} own head" in cols:
             put("joint (lam chosen) own head", block, cols[f"{chosen} own head"][block])
@@ -187,8 +197,8 @@ def main() -> None:
     fc["recession"] = np.r_[w2.recession(months)[1:], False]  # the target's middle month
     fc = fc[fc["historical mean"].notna() & fc.target.notna()].reset_index(drop=True)
     root.mkdir(parents=True, exist_ok=True)
-    fc.to_csv(root / "forecasts.csv", index=False)
-    pd.DataFrame(win_rows).to_csv(root / "windows.csv", index=False)
+    fc.to_csv(root / f"forecasts_{a.layer}{a.out_name}.csv", index=False)
+    pd.DataFrame(win_rows).to_csv(root / f"windows_{a.layer}{a.out_name}.csv", index=False)
 
     y, hm, ar = fc.target.to_numpy(), fc["historical mean"].to_numpy(), fc["AR"].to_numpy()
     rows = []
@@ -201,20 +211,20 @@ def main() -> None:
             r[f"mse_ratio_vs_ar_{lab}"] = float(((y[m] - f[m]) ** 2).mean() / ((y[m] - ar[m]) ** 2).mean())
         rows.append(r)
     summary = pd.DataFrame(rows)
-    summary.to_csv(root / "summary.csv", index=False)
+    summary.to_csv(root / f"summary_{a.layer}{a.out_name}.csv", index=False)
 
     tests = []
-    for other in ["lda + LASSO", "lam0 + LASSO"]:
-        st, pv = w2.diebold_mariano(y - fc[other], y - fc["joint (lam chosen) + LASSO"])
-        tests.append({"test": "DM", "model 1": other, "model 2": "joint (lam chosen) + LASSO", "stat": st, "p": pv})
-    for c in ["lda + LASSO", "lam0 + LASSO", "joint (lam chosen) + LASSO"]:
+    for other in ["lda + layer", "lam0 + layer"]:
+        st, pv = w2.diebold_mariano(y - fc[other], y - fc["joint (lam chosen) + layer"])
+        tests.append({"test": "DM", "model 1": other, "model 2": "joint (lam chosen) + layer", "stat": st, "p": pv})
+    for c in ["lda + layer", "lam0 + layer", "joint (lam chosen) + layer"]:
         st, pv = w2.diebold_mariano(y - ar, y - fc[c])
         tests.append({"test": "DM", "model 1": "AR", "model 2": c, "stat": st, "p": pv})
     for c in ["AR + lda", "AR + lam0", "AR + joint (lam chosen)"]:
         st, pv = w2.clark_west(y, ar, fc[c])
         tests.append({"test": "CW", "model 1": "AR", "model 2": c, "stat": st, "p": pv})
     tests = pd.DataFrame(tests)
-    tests.to_csv(root / "tests.csv", index=False)
+    tests.to_csv(root / f"tests_{a.layer}{a.out_name}.csv", index=False)
 
     show = [c for c in cols if "[seed" not in c]
     print(summary[summary.method.isin(show)].round(3).to_string(index=False))
@@ -230,8 +240,8 @@ def main() -> None:
                            color="#e8e8e8", zorder=0)
         ax.spines[["top", "right"]].set_visible(False)
     ax1.plot(x, y, color="black", lw=1.2, label="Truth")
-    lines = [("AR", "#999999"), ("lda + LASSO", "#2a78d6"), ("lam0 + LASSO", "#d6a12a"),
-             ("joint (lam chosen) + LASSO", "#eb6834")]
+    lines = [("AR", "#999999"), ("lda + layer", "#2a78d6"), ("lam0 + layer", "#d6a12a"),
+             ("joint (lam chosen) + layer", "#eb6834")]
     for c, col in lines:
         ax1.plot(x, fc[c], color=col, lw=1.0, label=c)
         ax2.plot(x, np.cumsum((y - hm) ** 2 - (y - fc[c]) ** 2), color=col, lw=1.1, label=c)
@@ -244,7 +254,7 @@ def main() -> None:
              "month); NBER recessions shaded. Rising lines in the lower panel: the model beats the historical mean.",
              ha="center", fontsize=8)
     fig.tight_layout(rect=(0, 0.02, 1, 1))
-    fig.savefig(root / "forecasts.png", dpi=150)
+    fig.savefig(root / f"forecasts_{a.layer}{a.out_name}.png", dpi=150)
     print(f"wrote {root}")
 
 

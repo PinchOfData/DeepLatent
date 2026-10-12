@@ -13,6 +13,11 @@ the gradient through the batch records, and the objective is
 
     mean_i [ -ELBO_i ]  +  lam * (T_y / N) * mean_t [ (y_t - yhat_t)^2 / 2 ]      (y standardized on training months)
 
+--head ridge replaces the learned head by a ridge regression re-solved exactly at every step on the training months,
+on the same inputs as the forecasting layer (months t .. t-6), its penalty chosen every 50 steps by generalized
+cross-validation (w2_common.ridge_gcv_t: no gradient through the choice; the gradient reaches the topics through
+the solution). With the penalty, the head can see all 7 x K inputs without fitting the training months exactly.
+
 Every --eval-every steps: the attention of every month of the sample (the frozen model applied to all records),
 the head's R^2 by period, the validation perplexity bound, a checkpoint. The selected step is the best validation
 R^2 from --select-after on (lam > 0; the last step for lam = 0).
@@ -52,7 +57,9 @@ def main() -> None:
     ap.add_argument("--target-window", type=int, default=3)
     ap.add_argument("--smooth", type=int, default=3)
     ap.add_argument("--lags", type=int, default=6, help="lags of the inputs (history required for a target)")
-    ap.add_argument("--head-lags", type=int, default=0, help="lags the head itself sees")
+    ap.add_argument("--head-lags", type=int, default=0, help="lags the head itself sees (--head adam)")
+    ap.add_argument("--head", choices=["adam", "ridge"], default="adam",
+                    help="adam: a linear head learned with the topics; ridge: re-solved at every step, penalty by GCV")
     ap.add_argument("--num-steps", type=int, default=20000)
     ap.add_argument("--docs-per-month", type=int, default=32)
     ap.add_argument("--lr", type=float, default=1e-3)
@@ -68,6 +75,8 @@ def main() -> None:
     a = ap.parse_args()
     if a.select_after is None:
         a.select_after = a.kl_anneal[1]
+    if a.head == "ridge":
+        a.head_lags = a.lags  # the forecasting layer's inputs
     torch.manual_seed(a.seed)
     np.random.seed(a.seed)
     dev = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -135,6 +144,7 @@ def main() -> None:
     month_tr = month_of_t[:N_train]
     est = split == "train"
     est_t = torch.as_tensor(np.flatnonzero(est), device=dev)
+    tr_t = torch.as_tensor(np.flatnonzero(tr), device=dev)
     (out / "config.json").write_text(json.dumps({**vars(a), "tag": tag, "train_end": train_end, "val_end": val_end,
                                                  "N_train": N_train, "T_y": T_y, "V": X.shape[1], "y_mean": y_mean,
                                                  "y_sd": y_sd, "pred_scale": pred_scale}, indent=1))
@@ -147,8 +157,13 @@ def main() -> None:
 
     def predict(theta):
         Xin, ok = w2_common.literature_inputs(theta, est, a.smooth, a.head_lags)
-        c, b = model.head.detach().cpu().numpy(), model.head_bias.item()
-        return np.where(ok, b + np.nan_to_num(Xin) @ c, np.nan) * y_sd + y_mean, {"c": c, "b": b}
+        if a.head == "ridge":
+            c, b, rho = w2_common.ridge_gcv(Xin[tr], y_std[tr])
+            head = {"c": c, "b": b, "rho": rho}
+        else:
+            c, b = model.head.detach().cpu().numpy(), model.head_bias.item()
+            head = {"c": c, "b": b}
+        return np.where(ok, b + np.nan_to_num(Xin) @ c, np.nan) * y_sd + y_mean, head
 
     def evaluate(step):
         theta = f03.month_attention(model, csr, month_of_t, T, a.eval_samples)
@@ -173,7 +188,7 @@ def main() -> None:
         tw.to_csv(out / f"topic_words_{which}.csv", index=False)
         (out / f"{which}_step.txt").write_text(str(step))
 
-    rows, best, t0 = [], (-np.inf, None), time.time()
+    rows, best, t0, rho = [], (-np.inf, None), time.time(), None
     for step in range(1, a.num_steps + 1):
         mb = train_t
         rand = torch.rand(M, int(count_t[mb].max()), generator=g, device=dev)
@@ -196,9 +211,13 @@ def main() -> None:
             att = msum / count_t.float().clamp_min(1).unsqueeze(1)
             att = att.index_add(0, mb, tb - tb.detach())  # value of the cache, gradient of the batch means
             Xin = w2_common.literature_inputs_t(att, est_t, a.smooth, a.head_lags)
-            yhat = model.head_bias + Xin[mb] @ model.head
-            mask = has_y[mb].float()
-            pred = (((y_t[mb] - yhat) ** 2) * mask).sum() / mask.sum() / 2
+            if a.head == "ridge":
+                c, b, rho = w2_common.ridge_gcv_t(Xin[tr_t], y_t[tr_t], rho=None if step % 50 == 1 else rho)
+                pred = ((y_t[tr_t] - (b + Xin[tr_t] @ c)) ** 2).mean() / 2
+            else:
+                yhat = model.head_bias + Xin[mb] @ model.head
+                mask = has_y[mb].float()
+                pred = (((y_t[mb] - yhat) ** 2) * mask).sum() / mask.sum() / 2
             loss = loss + pred_scale * pred
         if not torch.isfinite(loss):
             raise FloatingPointError(f"non-finite loss at step {step}")
@@ -206,8 +225,9 @@ def main() -> None:
         loss.backward()
         opt.step()
         if step % 500 == 0:
+            extra = f" rho {rho:.3g}" if a.lam > 0 and a.head == "ridge" else ""
             print(f"step {step}: loss {loss.item():.2f} recon/word {(rec_loss.sum() / x.sum()).item():.3f} "
-                  f"kl {kl.mean().item():.2f} pred {pred.item():.4f} ({time.time() - t0:.0f}s)", flush=True)
+                  f"kl {kl.mean().item():.2f} pred {pred.item():.4f}{extra} ({time.time() - t0:.0f}s)", flush=True)
         if step % a.eval_every == 0 or step == a.num_steps:
             row, th_all, yhat_all, head = evaluate(step)
             if a.lam > 0:

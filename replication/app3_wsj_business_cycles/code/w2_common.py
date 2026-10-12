@@ -146,3 +146,42 @@ def clark_west(y: np.ndarray, f_small: np.ndarray, f_big: np.ndarray, lags: int 
     f = (y - f_small) ** 2 - ((y - f_big) ** 2 - (f_small - f_big) ** 2)
     stat = f.mean() / np.sqrt(newey_west_var(f, lags) / len(f))
     return float(stat), float(1 - norm.cdf(stat))
+
+
+RIDGE_GRID = np.logspace(-2, 5, 29)
+
+
+def ridge_gcv(X: np.ndarray, y: np.ndarray, grid=RIDGE_GRID):
+    """Ridge regression of y on X with an intercept, its penalty chosen by generalized cross-validation
+    (GCV = n RSS / (n - df)^2, df = sum s^2 / (s^2 + rho) over the singular values of the centred X).
+    Returns (c, b, rho): yhat = b + X c."""
+    xm, ym = X.mean(0), y.mean()
+    U, s, Vt = np.linalg.svd(X - xm, full_matrices=False)
+    yc = y - ym
+    Uy = U.T @ yc
+    n = len(y)
+    best = None
+    for rho in grid:
+        f = s ** 2 / (s ** 2 + rho)
+        rss = ((yc - U @ (f * Uy)) ** 2).sum()
+        gcv = n * rss / (n - f.sum()) ** 2
+        if best is None or gcv < best[0]:
+            best = (gcv, rho)
+    rho = best[1]
+    c = Vt.T @ (s / (s ** 2 + rho) * Uy)
+    return c, float(ym - xm @ c), float(rho)
+
+
+def ridge_gcv_t(X, y, grid=RIDGE_GRID, rho=None):
+    """ridge_gcv for torch tensors: the penalty is chosen on the detached data (no gradient through the choice;
+    pass rho to reuse an earlier choice), the coefficients solve (Xc'Xc + rho I) c = Xc'yc with the gradient flowing
+    through X and y. Returns (c, b, rho)."""
+    import torch
+
+    if rho is None:
+        _, _, rho = ridge_gcv(X.detach().double().cpu().numpy(), y.detach().double().cpu().numpy(), grid)
+    xm, ym = X.mean(0), y.mean()
+    Xc, yc = X - xm, y - ym
+    P = X.shape[1]
+    c = torch.linalg.solve(Xc.T @ Xc + rho * torch.eye(P, device=X.device, dtype=X.dtype), Xc.T @ yc)
+    return c, ym - xm @ c, rho
