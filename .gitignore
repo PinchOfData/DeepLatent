@@ -40,3 +40,8 @@ tables/*
 audit/*
 experiments/*
 figures/*
+
+# The applications live in their own repositories
+replication/app1_us_congress/
+replication/app2_house_ideal_points/
+replication/app3_wsj_business_cycles/
