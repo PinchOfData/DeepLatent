@@ -25,6 +25,10 @@ R^2 from --select-after on (lam > 0; the last step for lam = 0).
 Writes <results>/w2/<grid>/<tag>/: config.json, metrics.csv, months.csv, theta_<which>.npy (months x K, all months),
 beta_<which>.npy, head_<which>.npz, predictions_<which>.csv, topic_words_<which>.csv for which in {selected, final}.
 
+--inputs change uses w2_common.change_inputs (attention minus its trailing --change-window month mean, standardized)
+instead of the literature's; --head-penalty fixes the ridge head's penalty instead of GCV (which picks no penalty
+on these data: 2026-10-12 diagnostic).
+
 Usage: python w2_fit_joint.py --dtm-dir <scratch>/data/dtm_w2 --grid k50 --window-end 1979 --lam 1e4 --seed 0
 """
 import argparse
@@ -56,6 +60,9 @@ def main() -> None:
     ap.add_argument("--target-start", type=int, default=0)
     ap.add_argument("--target-window", type=int, default=3)
     ap.add_argument("--smooth", type=int, default=3)
+    ap.add_argument("--inputs", choices=["literature", "change"], default="literature")
+    ap.add_argument("--change-window", type=int, default=12)
+    ap.add_argument("--head-penalty", type=float, default=None, help="ridge head: fixed penalty (default: GCV)")
     ap.add_argument("--lags", type=int, default=6, help="lags of the inputs (history required for a target)")
     ap.add_argument("--head-lags", type=int, default=0, help="lags the head itself sees (--head adam)")
     ap.add_argument("--head", choices=["adam", "ridge"], default="adam",
@@ -99,7 +106,7 @@ def main() -> None:
     train_end, val_end = f"{a.window_end - a.val_years}-12", f"{a.window_end}-12"
     mt = common.month_targets(months, train_end, val_end, a.target_start, a.target_window)
     split = mt.split.to_numpy()
-    hist = w2_common.history_mask(T, a.smooth, a.lags)
+    hist = w2_common.history_mask(T, a.smooth, a.lags, a.inputs, a.change_window)
     y_raw = np.where(hist, mt.target.to_numpy(), np.nan)
     tr = (split == "train") & ~np.isnan(y_raw)
     y_mean, y_sd = float(y_raw[tr].mean()), float(y_raw[tr].std())
@@ -156,9 +163,10 @@ def main() -> None:
     cache, msum = refresh_cache() if a.lam > 0 else (None, None)
 
     def predict(theta):
-        Xin, ok = w2_common.literature_inputs(theta, est, a.smooth, a.head_lags)
+        Xin, ok = w2_common.make_inputs(theta, est, a.inputs, a.smooth, a.change_window, a.head_lags)
         if a.head == "ridge":
-            c, b, rho = w2_common.ridge_gcv(Xin[tr], y_std[tr])
+            c, b, rho = w2_common.ridge_gcv(Xin[tr], y_std[tr], **({"grid": [a.head_penalty]} if a.head_penalty
+                                                                    else {}))
             head = {"c": c, "b": b, "rho": rho}
         else:
             c, b = model.head.detach().cpu().numpy(), model.head_bias.item()
@@ -210,9 +218,10 @@ def main() -> None:
             tb = theta.view(M, n, -1).mean(1)
             att = msum / count_t.float().clamp_min(1).unsqueeze(1)
             att = att.index_add(0, mb, tb - tb.detach())  # value of the cache, gradient of the batch means
-            Xin = w2_common.literature_inputs_t(att, est_t, a.smooth, a.head_lags)
+            Xin = w2_common.make_inputs_t(att, est_t, a.inputs, a.smooth, a.change_window, a.head_lags)
             if a.head == "ridge":
-                c, b, rho = w2_common.ridge_gcv_t(Xin[tr_t], y_t[tr_t], rho=None if step % 50 == 1 else rho)
+                c, b, rho = w2_common.ridge_gcv_t(Xin[tr_t], y_t[tr_t],
+                                                  rho=a.head_penalty or (None if step % 50 == 1 else rho))
                 pred = ((y_t[tr_t] - (b + Xin[tr_t] @ c)) ** 2).mean() / 2
             else:
                 yhat = model.head_bias + Xin[mb] @ model.head

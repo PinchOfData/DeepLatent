@@ -9,6 +9,10 @@ Inputs (as Thorsrud 2020 and Ellingsen, Larsen & Thorsrud 2022 handle topic time
 attention is smoothed with a backward-looking moving average, a linear trend is removed and the result standardized,
 the trend and the scale being estimated on the estimation months only and extended to later months; the inputs of
 month t are those of months t, t-1, ..., t-lags (Ellingsen et al. use 6 lags of every predictor).
+
+Change inputs (kind "change", wave 1's finding: attention is a level, the target a growth rate, and levels drift out
+of their training range): each topic's attention minus its mean over the previous `window` months, standardized on
+the estimation months, months t .. t-lags. make_inputs / make_inputs_t / history_mask dispatch on the kind.
 """
 import numpy as np
 import pandas as pd
@@ -84,8 +88,56 @@ def literature_inputs_t(att, est_idx, smooth: int = 3, lags: int = 6):
     return torch.cat(cols, 1)
 
 
-def history_mask(T: int, smooth: int = 3, lags: int = 6) -> np.ndarray:
-    return np.arange(T) >= (smooth - 1) + lags
+def change_inputs(theta: np.ndarray, est: np.ndarray, window: int = 12, lags: int = 6):
+    """Per topic: attention minus its mean over the previous `window` months, standardized on the estimation months
+    `est`; then months t, t-1, ..., t-lags side by side. Returns (X, ok) as literature_inputs."""
+    T, K = theta.shape
+    cs = np.vstack([np.zeros((1, K)), np.cumsum(theta, axis=0)])
+    t = np.arange(window, T)
+    z = np.full((T, K), np.nan)
+    z[window:] = theta[window:] - (cs[t] - cs[t - window]) / window
+    fit = est & ~np.isnan(z).any(axis=1)
+    sd = z[fit].std(axis=0)
+    z = (z - z[fit].mean(axis=0)) / np.where(sd > 0, sd, 1.0)
+    X = np.full((T, K * (lags + 1)), np.nan)
+    for l in range(lags + 1):
+        X[l:, l * K:(l + 1) * K] = z[:T - l]
+    return X, ~np.isnan(X).any(axis=1)
+
+
+def change_inputs_t(att, est_idx, window: int = 12, lags: int = 6):
+    """change_inputs for a torch tensor att (months x K), the mean and scale held constant in the gradient; est_idx:
+    indices of the estimation months. Rows without full history are zeros."""
+    import torch
+
+    prev = att.unfold(0, window, 1)[:-1].mean(-1)  # window i covers months i..i+window-1: month i+window's past
+    z = torch.cat([torch.zeros_like(att[:window]), att[window:] - prev])
+    est_idx = est_idx[est_idx >= window]
+    with torch.no_grad():
+        mu = z[est_idx].mean(0)
+        sd = z[est_idx].std(0, unbiased=False).clamp_min(1e-12)
+    z = (z - mu) / sd
+    z = torch.cat([torch.zeros_like(z[:window]), z[window:]])
+    T = att.shape[0]
+    return torch.cat([torch.cat([torch.zeros_like(z[:l]), z[:T - l]]) for l in range(lags + 1)], 1)
+
+
+def make_inputs(theta, est, kind: str = "literature", smooth: int = 3, window: int = 12, lags: int = 6):
+    if kind == "literature":
+        return literature_inputs(theta, est, smooth, lags)
+    assert kind == "change", kind
+    return change_inputs(theta, est, window, lags)
+
+
+def make_inputs_t(att, est_idx, kind: str = "literature", smooth: int = 3, window: int = 12, lags: int = 6):
+    if kind == "literature":
+        return literature_inputs_t(att, est_idx, smooth, lags)
+    assert kind == "change", kind
+    return change_inputs_t(att, est_idx, window, lags)
+
+
+def history_mask(T: int, smooth: int = 3, lags: int = 6, kind: str = "literature", window: int = 12) -> np.ndarray:
+    return np.arange(T) >= ((smooth - 1) if kind == "literature" else window) + lags
 
 
 def ar_forecast(growth: pd.Series, months: list, target: np.ndarray, fit_mask: np.ndarray, max_p: int = 12,

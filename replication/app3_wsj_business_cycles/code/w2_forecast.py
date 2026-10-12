@@ -97,6 +97,8 @@ def main() -> None:
     ap.add_argument("--lags", type=int, default=6)
     ap.add_argument("--lda-grid", default=None, help="read the LDA fits from this grid (default: --grid)")
     ap.add_argument("--layer", choices=["ridge", "lasso"], default="ridge", help="the forecasting regression")
+    ap.add_argument("--inputs", choices=["literature", "change"], default="literature")
+    ap.add_argument("--change-window", type=int, default=12)
     ap.add_argument("--out-name", default="", help="suffix of the output files (e.g. _early)")
     a = ap.parse_args()
     global LAYER
@@ -114,10 +116,12 @@ def main() -> None:
 
     # Target settings of the joint runs (all the same); targets without split masking, for the origins
     cfgs = [json.loads(p.read_text()) for p in root.glob("joint_*/config.json")]
-    tw = {(c["target_start"], c["target_window"], c["smooth"], c["lags"]) for c in cfgs}
+    tw = {(c["target_start"], c["target_window"], c["smooth"], c["lags"], c.get("inputs", "literature"),
+           c.get("change_window", 12)) for c in cfgs}
     assert len(tw) == 1, f"joint runs disagree on target/inputs: {tw}"
-    t_start, t_win, smooth, lags = tw.pop()
-    assert (smooth, lags) == (a.smooth, a.lags), "the forecasting inputs differ from the runs' settings"
+    t_start, t_win, smooth, lags, kind, cw = tw.pop()
+    assert (smooth, lags, kind, cw) == (a.smooth, a.lags, a.inputs, a.change_window), \
+        "the forecasting inputs differ from the runs' settings"
     y_all = common.month_targets(months, months[-1], months[-1], t_start, t_win).target.to_numpy()
     publish = t_start + t_win  # the target of s' is known at origin s iff s' <= s - publish
 
@@ -159,7 +163,7 @@ def main() -> None:
             info[f"seeds {name}"] = len(runs)
             fc, fc_ar, heads, errs = [], [], [], []
             for s, d, theta in runs:
-                F_sel, ok_sel = w2.literature_inputs(theta, trm, a.smooth, a.lags)
+                F_sel, ok_sel = w2.make_inputs(theta, trm, a.inputs, a.smooth, a.change_window, a.lags)
                 fit_m = trm & ok_sel & ~np.isnan(y_sel)
                 val_m = vam & ok_sel & ~np.isnan(y_sel)
                 alpha, err = choose_alpha(F_sel, A_c, y_sel, fit_m, val_m)
@@ -167,7 +171,7 @@ def main() -> None:
                 errs.append(err)
                 f, f_ar = np.full(T, np.nan), np.full(T, np.nan)
                 for i in block:
-                    F, ok = w2.literature_inputs(theta, np.arange(T) <= i, a.smooth, a.lags)
+                    F, ok = w2.make_inputs(theta, np.arange(T) <= i, a.inputs, a.smooth, a.change_window, a.lags)
                     avail = (np.arange(T) <= i - publish) & ~np.isnan(y_all) & ok
                     f[i] = FWLLasso(alpha).fit(F[avail], A_c[avail], y_all[avail]).predict(F[i:i + 1], A_c[i:i + 1])[0]
                     av = avail & ok_ar
