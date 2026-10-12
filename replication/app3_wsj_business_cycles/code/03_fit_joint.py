@@ -40,6 +40,7 @@ Usage: python 03_fit_joint.py --tag joint_k50_lam1e4 --lam 1e4 [--n-topics 50 --
 import argparse
 import json
 import time
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -215,6 +216,7 @@ def main() -> None:
     ap.add_argument("--eval-samples", type=int, default=8)
     ap.add_argument("--val-docs", type=int, default=50_000)
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--dtm-dir", default=None, help="document-term matrix (default <data>/dtm, 1984-2011)")
     a = ap.parse_args()
     if a.select_after is None:
         a.select_after = a.kl_anneal[1]
@@ -229,9 +231,10 @@ def main() -> None:
     out.mkdir(parents=True, exist_ok=True)
     ckdir.mkdir(parents=True, exist_ok=True)
 
-    dtm = common.DATA / "dtm"
+    dtm = Path(a.dtm_dir) if a.dtm_dir else common.DATA / "dtm"
     built = json.loads((dtm / "settings.json").read_text())
-    assert built["train_end"] == a.train_end, f"DTM vocabulary built for train_end {built['train_end']}"
+    vocab_end = built.get("train_end", built.get("vocab_end"))  # 02: the training period; w2_build_dtm: --vocab-end
+    assert vocab_end <= a.train_end, f"the DTM's vocabulary uses records up to {vocab_end}, after the training period"
     X = sp.load_npz(dtm / "X.npz").tocsr()
     rec = pd.read_csv(dtm / "records.csv.gz", dtype={"month": str})
     vocab = (dtm / "vocab.txt").read_text().split("\n")[:-1]

@@ -15,7 +15,8 @@ Topic quality, from beta_<which>.npy (K x V topic-word probabilities):
   - the topics' average training-period attention and the number of topics with at least 0.5% of it.
 
 Targets and splits are those of the runs (their config.json: target window, split dates; every run must agree, and a
-run's months.csv and attention must cover the same months), so the head is scored on the target it was trained for.
+run's months.csv and attention must cover the same months), so the head is scored on the target it was trained for;
+LDA and lam = 0 runs never see the target, so only their training period must agree.
 The two-step regressions use the head's inputs of the joint runs (--features level or change, from their configs, the
 same for all; common.head_features) for every run, LDA included; months without the features' history are left
 out of every score.
@@ -30,6 +31,7 @@ Usage: python 04_evaluate.py --tags lda_k50 joint_k50_lam0 joint_k50_lam1e4 ... 
 """
 import argparse
 import json
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -108,9 +110,10 @@ def main() -> None:
     ap.add_argument("--diversity-n", type=int, default=25)
     ap.add_argument("--npmi-n", type=int, default=10)
     ap.add_argument("--lags", type=int, default=0, help="regressions on the inputs of months t .. t-lags")
+    ap.add_argument("--dtm-dir", default=None, help="document-term matrix (default <data>/dtm, 1984-2011)")
     ap.add_argument("--out-name", default=None, help="summary file name (default summary_<which>_<features>...)")
     a = ap.parse_args()
-    dtm = common.DATA / "dtm"
+    dtm = Path(a.dtm_dir) if a.dtm_dir else common.DATA / "dtm"
     rec = pd.read_csv(dtm / "records.csv.gz", dtype={"month": str})
     months = sorted(rec.month.unique())
     keys = ["train_end", "val_end", "target_start", "target_window"]
@@ -119,7 +122,7 @@ def main() -> None:
     for tag in a.tags:
         cfg = json.loads((common.RESULTS / tag / "config.json").read_text())
         train_ends.add(cfg.get("train_end", defaults["train_end"]))
-        if "lam" in cfg:  # LDA has no target: the joint runs set it (or the defaults, with LDA alone)
+        if cfg.get("lam", 0) > 0:  # LDA and lam = 0 (topics alone) never see the target: the other runs set it
             settings.add(tuple(cfg.get(k, defaults[k]) for k in keys))
         got = pd.read_csv(common.RESULTS / tag / "months.csv", dtype={"month": str}).month.tolist()
         assert got == months, f"{tag}: its months differ from the document-term matrix's"

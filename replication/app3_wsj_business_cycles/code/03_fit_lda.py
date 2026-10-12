@@ -13,6 +13,7 @@ Usage: python 03_fit_lda.py --tag lda_k50 [--n-topics 50 --iterations 1000 --tra
 import argparse
 import json
 import time
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -39,11 +40,14 @@ def main() -> None:
     ap.add_argument("--train-docs", type=int, default=0, help="random training records to fit on; 0 = all")
     ap.add_argument("--workers", type=int, default=16)
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--dtm-dir", default=None, help="document-term matrix (default <data>/dtm, 1984-2011)")
     a = ap.parse_args()
     out = common.RESULTS / a.tag
     out.mkdir(parents=True, exist_ok=True)
-    dtm = common.DATA / "dtm"
-    assert json.loads((dtm / "settings.json").read_text())["train_end"] == a.train_end
+    dtm = Path(a.dtm_dir) if a.dtm_dir else common.DATA / "dtm"
+    built = json.loads((dtm / "settings.json").read_text())
+    vocab_end = built.get("train_end", built.get("vocab_end"))  # 02: the training period; w2_build_dtm: --vocab-end
+    assert vocab_end <= a.train_end, f"the DTM's vocabulary uses records up to {vocab_end}, after the training period"
     X = sp.load_npz(dtm / "X.npz").tocsr()
     rec = pd.read_csv(dtm / "records.csv.gz", dtype={"month": str})
     vocab = (dtm / "vocab.txt").read_text().split("\n")[:-1]
