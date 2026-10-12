@@ -20,9 +20,13 @@ The two-step regressions use the head's inputs of the joint runs (--features lev
 same for all; common.head_features) for every run, LDA included; months without the features' history are left
 out of every score.
 
-Writes results/summary_<which>_<features>.csv and results/<tag>/regression_<which>_<features>.csv.
+--lags L gives the two-step regressions the inputs of months t, t-1, ..., t-L (the own head is unchanged); months
+without that history are left out of every score.
 
-Usage: python 04_evaluate.py --tags lda_k50 joint_k50_lam0 joint_k50_lam1e4 ... [--which selected]
+Writes results/summary_<which>_<features>[_lags<L>].csv (or --out-name) and
+results/<tag>/regression_<which>_<features>[_lags<L>].csv.
+
+Usage: python 04_evaluate.py --tags lda_k50 joint_k50_lam0 joint_k50_lam1e4 ... [--which selected --lags 6]
 """
 import argparse
 import json
@@ -33,6 +37,15 @@ import scipy.sparse as sp
 from sklearn.linear_model import Lasso, Ridge
 
 import common
+
+
+def with_lags(z, lags: int):
+    """Months x (P (lags + 1)): the inputs of months t, t-1, ..., t-lags side by side (NaN without that history)."""
+    T, P = z.shape
+    out = np.full((T, P * (lags + 1)), np.nan)
+    for l in range(lags + 1):
+        out[l:, l * P:(l + 1) * P] = z[:T - l]
+    return out
 
 
 def oos_r2(y, yhat, bench):
@@ -94,30 +107,39 @@ def main() -> None:
     ap.add_argument("--which", default="selected")
     ap.add_argument("--diversity-n", type=int, default=25)
     ap.add_argument("--npmi-n", type=int, default=10)
+    ap.add_argument("--lags", type=int, default=0, help="regressions on the inputs of months t .. t-lags")
+    ap.add_argument("--out-name", default=None, help="summary file name (default summary_<which>_<features>...)")
     a = ap.parse_args()
     dtm = common.DATA / "dtm"
     rec = pd.read_csv(dtm / "records.csv.gz", dtype={"month": str})
     months = sorted(rec.month.unique())
     keys = ["train_end", "val_end", "target_start", "target_window"]
     defaults = {"train_end": "1999-12", "val_end": "2003-12", "target_start": 0, "target_window": 3}
-    settings = set()
+    settings, train_ends = set(), set()
     for tag in a.tags:
         cfg = json.loads((common.RESULTS / tag / "config.json").read_text())
-        settings.add(tuple(cfg.get(k, defaults[k]) for k in keys))
+        train_ends.add(cfg.get("train_end", defaults["train_end"]))
+        if "lam" in cfg:  # LDA has no target: the joint runs set it (or the defaults, with LDA alone)
+            settings.add(tuple(cfg.get(k, defaults[k]) for k in keys))
         got = pd.read_csv(common.RESULTS / tag / "months.csv", dtype={"month": str}).month.tolist()
         assert got == months, f"{tag}: its months differ from the document-term matrix's"
+    settings = settings or {tuple(defaults[k] for k in keys)}
     assert len(settings) == 1, f"runs disagree on {keys}: {settings}"
     a.train_end, a.val_end, a.target_start, a.target_window = settings.pop()
+    assert train_ends == {a.train_end}, f"runs disagree on the training period: {train_ends}"
     feat = {(c.get("features", "level"), c.get("change_window", 12)) for c in
             (json.loads((common.RESULTS / t / "config.json").read_text()) for t in a.tags) if "lam" in c}
     assert len(feat) <= 1, f"joint runs disagree on the head's inputs: {feat}"
     a.features, a.change_window = feat.pop() if feat else ("level", 12)
     if a.features == "change":
         common.assert_consecutive(months)
-    hist = common.head_features(np.zeros((len(months), 1)), a.features, a.change_window)[1]
+    zero = common.head_features(np.zeros((len(months), 1)), a.features, a.change_window)[0]
+    hist = ~np.isnan(with_lags(zero, a.lags)).any(axis=1)
+    suffix = f"{a.features}" + (f"_lags{a.lags}" if a.lags else "")
     mt = common.month_targets(months, a.train_end, a.val_end, a.target_start, a.target_window)
     mt.loc[~hist, "target"] = np.nan
-    print(f"head inputs: {a.features}" + (f" (window {a.change_window})" if a.features == "change" else ""))
+    print(f"head inputs: {a.features}" + (f" (window {a.change_window})" if a.features == "change" else "")
+          + f"; regressions on months t .. t-{a.lags}")
     print(f"targets: window {a.target_window} from {a.target_start}; train to {a.train_end}, validation to "
           f"{a.val_end}", flush=True)
     X = sp.load_npz(dtm / "X.npz").tocsr()
@@ -132,11 +154,11 @@ def main() -> None:
         theta = np.load(res / f"theta_{a.which}.npy")
         assert theta.shape[0] == len(months), f"{tag}: attention for {theta.shape[0]} months, expected {len(months)}"
         attention = theta
-        theta = common.head_features(theta, a.features, a.change_window)[0]
+        theta = with_lags(common.head_features(theta, a.features, a.change_window)[0], a.lags)
         beta = np.load(res / f"beta_{a.which}.npy").astype(np.float64)
         K = beta.shape[0]
         row = {"tag": tag, "lam": cfg.get("lam", np.nan), "two_step_head": cfg.get("two_step_head", False),
-               "features": a.features, "K": K,
+               "features": a.features, "lags": a.lags, "K": K,
                "step": (res / f"{a.which}_step.txt").read_text().strip() if (res / f"{a.which}_step.txt").exists()
                else ""}
         reg = pd.DataFrame({"month": months, "split": mt.split, "target": y})
@@ -150,7 +172,7 @@ def main() -> None:
             head = pd.read_csv(pred, dtype={"month": str}).set_index("month").reindex(months)["prediction"]
             reg["head"] = head.to_numpy()
             row.update({f"head_{k}": v for k, v in scores(y, head.to_numpy(), mt).items()})
-        reg.to_csv(res / f"regression_{a.which}_{a.features}.csv", index=False)
+        reg.to_csv(res / f"regression_{a.which}_{suffix}.csv", index=False)
         top = np.argsort(-beta, axis=1)[:, :a.diversity_n]
         row["diversity"] = len(np.unique(top)) / top.size
         coh = npmi(beta, ref, a.npmi_n)
@@ -160,7 +182,7 @@ def main() -> None:
         rows.append(row)
         print({k: (round(v, 4) if isinstance(v, float) else v) for k, v in row.items()}, flush=True)
     out = pd.DataFrame(rows)
-    out.to_csv(common.RESULTS / f"summary_{a.which}_{a.features}.csv", index=False)
+    out.to_csv(common.RESULTS / (a.out_name or f"summary_{a.which}_{suffix}.csv"), index=False)
     cols = ["tag", "lam", "two_step_head", "step", "head_val_r2", "head_test_r2", "lasso_val_r2", "lasso_test_r2", "ridge_test_r2",
             "diversity", "npmi", "topics_used"]
     print(out[[c for c in cols if c in out]].round(3).to_string(index=False))

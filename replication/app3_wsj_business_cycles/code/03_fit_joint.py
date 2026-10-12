@@ -25,6 +25,11 @@ final steps. --two-step-head cuts the topics off from the prediction loss (the r
 the head is then fit on topics learned from the text alone, the two-step estimator with this model's own head,
 training and step selection (lam then only scales the head's gradient, which Adam's normalization undoes).
 
+--head ridge replaces the learned head by a ridge regression re-solved exactly at every step on the training months
+(the forecasting equation of 04, with the penalty --head-penalty fixed in advance), on the inputs of months
+t .. t-(--head-lags); the gradient reaches the topics through the solution. Months without the lags' history have no
+target.
+
 Writes results/<tag>/: config.json, metrics.csv (one row per evaluation), months.csv (month, split, target),
 theta_<which>.npy (months x K attention), beta_<which>.npy (K x V topic-word probabilities), head_<which>.npz
 (c, b and the standardization mbar, s),
@@ -129,6 +134,33 @@ def train_stats(theta, tr_months, floor: float = 1e-4):
     return m, (s.clamp_min(floor) if torch.is_tensor(s) else np.maximum(s, floor))
 
 
+def with_lags(z: np.ndarray, lags: int) -> np.ndarray:
+    """The inputs of months t, t-1, ..., t-lags side by side (NaN without that history), as 04."""
+    T, P = z.shape
+    out = np.full((T, P * (lags + 1)), np.nan)
+    for l in range(lags + 1):
+        out[l:, l * P:(l + 1) * P] = z[:T - l]
+    return out
+
+
+def with_lags_t(z: torch.Tensor, lags: int) -> torch.Tensor:
+    """with_lags for a torch tensor (zeros without history: those rows carry no target)."""
+    T = z.shape[0]
+    return torch.cat([torch.cat([torch.zeros_like(z[:l]), z[:T - l]]) for l in range(lags + 1)], dim=1)
+
+
+def ridge_solve(Z, y, rho: float):
+    """Ridge with an unpenalized intercept on the standardized inputs Z (numpy or torch): (c, b) with
+    (Zc'Zc + rho I) c = Zc'yc, the solution of sklearn's Ridge(alpha=rho)."""
+    zm, ym = Z.mean(0), y.mean()
+    Zc, yc = Z - zm, y - ym
+    if torch.is_tensor(Z):
+        c = torch.linalg.solve(Zc.T @ Zc + rho * torch.eye(Z.shape[1], device=Z.device, dtype=Z.dtype), Zc.T @ yc)
+    else:
+        c = np.linalg.solve(Zc.T @ Zc + rho * np.eye(Z.shape[1]), Zc.T @ yc)
+    return c, ym - zm @ c
+
+
 def predict(theta: np.ndarray, head: dict) -> np.ndarray:
     """The head's prediction (standardized) from monthly attention, as model.predict."""
     return head["b"] + ((theta - head["mbar"]) / head["s"]) @ head["c"]
@@ -165,6 +197,10 @@ def main() -> None:
     ap.add_argument("--features", choices=["level", "change"], default="level",
                     help="the head's inputs: the monthly attention, or its change from the previous months' average")
     ap.add_argument("--change-window", type=int, default=12)
+    ap.add_argument("--head", choices=["learned", "ridge"], default="learned",
+                    help="learned: the head's coefficients are parameters (Adam); ridge: re-solved at every step")
+    ap.add_argument("--head-lags", type=int, default=0, help="ridge head: inputs of months t .. t-head_lags")
+    ap.add_argument("--head-penalty", type=float, default=None, help="ridge head: its penalty (fixed)")
     ap.add_argument("--select-after", type=int, default=None, help="first step eligible for selection "
                     "(default: the end of KL annealing)")
     ap.add_argument("--lr", type=float, default=1e-3)
@@ -182,6 +218,9 @@ def main() -> None:
     a = ap.parse_args()
     if a.select_after is None:
         a.select_after = a.kl_anneal[1]
+    if a.head == "ridge":
+        assert a.head_penalty is not None and a.features == "change", "--head ridge needs --head-penalty, change inputs"
+    assert a.head == "ridge" or a.head_lags == 0, "lags need the ridge head"
     torch.manual_seed(a.seed)
     np.random.seed(a.seed)
     dev = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -208,7 +247,8 @@ def main() -> None:
         common.assert_consecutive(months)
         if a.month_attention != "cache":
             raise ValueError("--features change needs --month-attention cache")
-    hist = common.head_features(np.zeros((T, 1)), a.features, a.change_window)[1]
+    hist = ~np.isnan(with_lags(common.head_features(np.zeros((T, 1)), a.features, a.change_window)[0],
+                               a.head_lags)).any(axis=1)
     y_raw = np.where(hist, y_raw, np.nan)  # months without the features' history have no target
     tr = (split == "train") & ~np.isnan(y_raw)
     y_mean, y_sd = float(y_raw[tr].mean()), float(y_raw[tr].std())
@@ -269,9 +309,13 @@ def main() -> None:
 
     def evaluate(step):
         theta = month_attention(model, csr, month_of_t, T, a.eval_samples)
-        feats = common.head_features(theta, a.features, a.change_window)[0]
+        feats = with_lags(common.head_features(theta, a.features, a.change_window)[0], a.head_lags)
         mbar, s = train_stats(feats, np.flatnonzero(tr))
-        c = {"c": model.head.detach().cpu().numpy(), "b": model.head_bias.item(), "mbar": mbar, "s": s}
+        if a.head == "ridge":
+            cr, br = ridge_solve((feats[tr] - mbar) / s, y_std[tr], a.head_penalty)
+            c = {"c": cr, "b": float(br), "mbar": mbar, "s": s}
+        else:
+            c = {"c": model.head.detach().cpu().numpy(), "b": model.head_bias.item(), "mbar": mbar, "s": s}
         yhat = predict(feats, c) * y_sd + y_mean
         row = {"step": step, "val_perplexity_bound": perplexity_bound(model, csr, val_idx)}
         bench = y_raw[tr].mean()
@@ -287,13 +331,15 @@ def main() -> None:
         np.save(out / f"theta_{which}.npy", theta)
         np.save(out / f"beta_{which}.npy", beta.astype(np.float32))
         np.savez(out / f"head_{which}.npz", **c)
-        feats = common.head_features(theta, a.features, a.change_window)[0]
+        feats = with_lags(common.head_features(theta, a.features, a.change_window)[0], a.head_lags)
         pd.DataFrame({"month": months, "split": split, "target": y_raw,
                       "prediction": predict(feats, c) * y_sd + y_mean}).to_csv(out / f"predictions_{which}.csv",
                                                                                index=False)
         tw = top_words(beta, background, vocab)
         tw.insert(1, "share", theta[split == "train"].mean(0).round(4))
-        tw.insert(2, "coef", reported_coefs(c).round(4))  # standardized outcome per sd of the topic's attention
+        coef = (c["c"].reshape(a.head_lags + 1, -1).sum(0) if a.head == "ridge"  # summed over lags
+                else reported_coefs(c))
+        tw.insert(2, "coef", coef.round(4))  # standardized outcome per sd of the topic's attention
         tw.to_csv(out / f"topic_words_{which}.csv", index=False)
         (out / f"{which}_step.txt").write_text(str(step))
 
@@ -322,9 +368,15 @@ def main() -> None:
                 tb = (th.detach() if a.two_step_head else th).mean(1)
                 att = msum / count_t.float().clamp_min(1).unsqueeze(1)
                 att = att.index_add(0, mb, tb - tb.detach())  # value of the cache, gradient of the batch means
-                feats = head_features_t(att, a.features, a.change_window)
+                feats = with_lags_t(head_features_t(att, a.features, a.change_window), a.head_lags)
                 mbar_t, s_t = train_stats(feats.detach(), tr_t)  # constants in the gradient
-                sq = (y_t[mb] - model.predict(feats[mb], mbar_t, s_t)) ** 2
+                if a.head == "ridge":  # the exact ridge fit of the training months, re-solved on the current topics
+                    Z = (feats[tr_t] - mbar_t) / s_t
+                    cr, br = ridge_solve(Z, y_t[tr_t], a.head_penalty)
+                    fit = torch.zeros_like(y_t).index_put((tr_t,), br + Z @ cr)
+                    sq = (y_t[mb] - fit[mb]) ** 2
+                else:
+                    sq = (y_t[mb] - model.predict(feats[mb], mbar_t, s_t)) ** 2
             else:
                 proj = model.predict(th.detach() if a.two_step_head else th, mbar_t, s_t)  # each record's part
                 sq = (y_t[mb] - proj.mean(1)) ** 2
