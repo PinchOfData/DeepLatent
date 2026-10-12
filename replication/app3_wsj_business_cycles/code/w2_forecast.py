@@ -235,7 +235,8 @@ def main() -> None:
     fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(13, 7.5), sharex=True, gridspec_kw={"height_ratios": [3, 2]})
     for ax in (ax1, ax2):
         for peak, trough in w2.NBER:
-            if pd.Period(trough, "M") >= pd.Period(fc.month.iloc[0], "M"):
+            if pd.Period(trough, "M") >= pd.Period(fc.month.iloc[0], "M") and \
+                    pd.Period(peak, "M") <= pd.Period(fc.month.iloc[-1], "M"):
                 ax.axvspan(pd.Period(peak, "M").to_timestamp(), pd.Period(trough, "M").to_timestamp(),
                            color="#e8e8e8", zorder=0)
         ax.spines[["top", "right"]].set_visible(False)
