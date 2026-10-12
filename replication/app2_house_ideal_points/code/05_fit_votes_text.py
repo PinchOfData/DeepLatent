@@ -12,23 +12,27 @@ word loadings, intercepts and encoder, like the roll calls, so the text measures
 a congress and only the legislator prior links congresses (text no longer carries language
 change across congresses, and the alignment step of step 03 stays exact for the decoders); the
 alignment (--align-every, --align-stretch) moves each congress's vote and text encoders and
-decoders together. --text shared-loadings: the pooled design (one text modality speech_terms,
-one text encoder, one decoder with word loadings shared by all congresses) plus word intercepts
-by congress (content covariates ~ 0 + C(congress), which enter every decoder: for a vote
-decoder they only duplicate its roll calls' intercepts). A congress's shift is absorbed exactly
-by its word intercepts, so the alignment moves each congress's vote encoder and roll calls and
-its word intercepts; the shared text encoder cannot be moved by congress, so a unit with
-speeches moves only through its vote expert (by about its share of the unit's precision) and
-repeated alignments do the rest. A stretch is not absorbed (the shared loadings see each
-congress's spread): --align-stretch is refused and the spreads are set by the text and the
-prior through training (the warm start below may still stretch: the speeches are off then, and
-only each decoder's position column is rescaled). --text pooled: the earlier design, one text modality speech_terms for
-all congresses (shared loadings and intercepts). Units without speeches lack the text modality (Corpus option
-"available"). Text encoders: deep MLP (default 64,64, dropout 0.2 on its hidden layers) fed the
-raw term counts and the prior covariates; vote encoders as in step 03. Word intercepts start at
-log frequencies, word loadings at 0 (--text-loadings-start). With two modalities per
-unit, training drops a modality at random per unit, so each expert also learns to infer the
-ideal point alone.
+decoders together. --text shared-loadings: the pooled design (one text modality speech_terms, one
+text encoder, one decoder with word loadings shared by all congresses) plus word intercepts by
+congress (content covariates ~ 0 + C(congress), which enter every decoder: for a vote decoder
+they only duplicate its roll calls' intercepts). A congress's shift is absorbed exactly by its
+word intercepts, so the alignment moves each congress's vote encoder and roll calls and its word
+intercepts; the shared text encoder cannot be moved by congress, so a unit with speeches moves
+only through its vote expert (by about its share of the unit's precision) and repeated alignments
+do the rest. A stretch is not absorbed (the shared loadings see each congress's spread):
+--align-stretch is refused and the spreads are set by the text and the prior through training
+(the warm start below may still stretch: the speeches are off then, and only each decoder's
+position column is rescaled). --text pooled: the earlier design, one text modality speech_terms
+for all congresses (shared loadings and intercepts). --text encode-only: the speeches are encoded
+but not decoded: one speech encoder (the only encoder, fed the term counts and the prior
+covariates) and the vote decoders (no vote encoders, no word likelihood), so each unit's
+posterior comes from its speeches and is fit to its votes; no warm start or alignment (no
+congress-specific encoder); a unit without speeches gets the prior, its votes still scored. Units
+without speeches lack the text modality (Corpus option "available"). Text encoders: deep MLP
+(default 64,64, dropout 0.2 on its hidden layers) fed the raw term counts and the prior
+covariates; vote encoders as in step 03. Word intercepts start at log frequencies, word loadings
+at 0 (--text-loadings-start). With two modalities per unit, training drops a modality at random
+per unit, so each expert also learns to infer the ideal point alone.
 
 Warm start (--warm-votes-steps N): the model is first trained N steps on the votes alone (the
 speeches switched off: every unit then fuses its vote expert only, and the text encoder and
@@ -125,10 +129,11 @@ def main():
     ap.add_argument("--draws", type=int, default=200)
     ap.add_argument("--print-every", type=int, default=1000)
     ap.add_argument("--start", choices=["party", "none"], default="party")
-    ap.add_argument("--text", choices=["per-congress", "shared-loadings", "pooled"],
+    ap.add_argument("--text", choices=["per-congress", "shared-loadings", "pooled", "encode-only"],
                     default="per-congress",
                     help="one text modality per congress with its own loadings, with loadings "
-                         "shared across congresses (own word intercepts), or one for all")
+                         "shared across congresses (own word intercepts), one for all, or speeches "
+                         "encoded only (one speech encoder, votes decoded only)")
     ap.add_argument("--align-every", type=int, default=0,
                     help="every this many steps, move each congress to where the prior wants it "
                          "(03_fit_votes.align_congresses; per-congress or shared-loadings text); "
@@ -170,6 +175,9 @@ def main():
         f"c{t}": {"type": "vote", "matrix": M, "available": (units["congress"] == t).to_numpy()}
         for t, M in votes.items()
     }
+    encode_only = args.text == "encode-only"
+    if encode_only and (args.warm_votes_steps or args.align_every):
+        raise SystemExit("--text encode-only has no vote encoders: no warm start or alignment")
     if args.text == "shared-loadings" and args.align_stretch:
         raise SystemExit("--align-stretch is not exact with shared word loadings (shifts only)")
     if args.text == "per-congress":
@@ -221,10 +229,11 @@ def main():
         learn_prior_cov=False,
         fusion="corrected_poe",
         w_prior=1.0,
-        encoder_args={**{k: {"hidden_dims": vote_hidden} for k in keys},
+        encoder_args={**{k: {"hidden_dims": vote_hidden} for k in ([] if encode_only else keys)},
                       **{k: {"hidden_dims": text_hidden, "dropout": args.text_dropout}
                          for k in tkeys}},
-        decoder_args={k: {"hidden_dims": [], "bias": True} for k in keys + tkeys},
+        decoder_args={k: {"hidden_dims": [], "bias": True}
+                      for k in (keys if encode_only else keys + tkeys)},
         batch_size=256,
         num_steps=0,
         num_workers=args.workers,
@@ -240,11 +249,12 @@ def main():
         fit03.start_values(model, corpus, units, votes)
     if args.text == "shared-loadings":
         text_start_values_by_congress(model, S, units, corpus, args.text_loadings_start)
-    else:
+    elif not encode_only:  # encode-only: no text decoder
         text_start_values(model, text_mats, args.text_loadings_start)
 
     names = list(model.encoder.encoders.keys())
-    vote_cols, text_cols = [names.index(k) for k in keys], [names.index(k) for k in tkeys]
+    if not encode_only:
+        vote_cols, text_cols = [names.index(k) for k in keys], [names.index(k) for k in tkeys]
     pkg = Path(deeplatent.__file__).resolve().parent
     record = {
         "args": vars(args), "units": len(units), "legislators": int(units["bioguide"].nunique()),
@@ -291,7 +301,8 @@ def main():
         est.to_csv(out / f"estimates_warm_{W}.csv", index=False)
         model.save_model(str(ckpt / f"model_warm_{W}.ckpt"))
         rec = {"step": W, "phase": "votes only (warm start)", "minutes": (time.time() - t0) / 60,
-               "sign": float(sign), "model": str(ckpt / f"model_warm_{W}.ckpt"), **{k: correlations(est, k) for k in ("theta_mean", "prior_mean")}}
+               "sign": float(sign), "model": str(ckpt / f"model_warm_{W}.ckpt"),
+               **{k: correlations(est, k) for k in ("theta_mean", "prior_mean")}}
         record["checkpoints"].append(rec)
         (out / "summary.json").write_text(json.dumps(record, indent=1))
         print("CKPT", json.dumps(rec), flush=True)
@@ -313,36 +324,42 @@ def main():
             continue
         with fit03.readout_rng():
             mean, sd = model.get_ideal_points(corpus, num_samples=args.draws, return_std=True)
-            v_mean, v_sd = model.get_ideal_points(votes_only, num_samples=args.draws,
-                                                  return_std=True)
-            t_mean, t_sd = model.get_ideal_points(text_only, num_samples=args.draws,
-                                                  return_std=True)
-            inc = model.get_modality_weights(corpus, increments=True)
-        t_mean[~has_text], t_sd[~has_text] = np.nan, np.nan  # no speeches: the prior
+            if not encode_only:  # encode-only: one expert, the speeches
+                v_mean, v_sd = model.get_ideal_points(votes_only, num_samples=args.draws,
+                                                      return_std=True)
+                t_mean, t_sd = model.get_ideal_points(text_only, num_samples=args.draws,
+                                                      return_std=True)
+                inc = model.get_modality_weights(corpus, increments=True)
         with torch.no_grad():
             prior_mean = model.prior.mean_net(Z).cpu().numpy()[:, 0]
         est = units[["unit", "congress", "bioguide", "party_code", "state_abbrev", "trend",
                      "n_votes", "n_terms", "nominate_dim1", "nokken_poole_dim1"]].copy()
         est["theta_mean"], est["theta_sd"] = mean[:, 0], sd[:, 0]
-        est["theta_votes"], est["theta_votes_sd"] = v_mean[:, 0], v_sd[:, 0]
-        est["theta_text"], est["theta_text_sd"] = t_mean[:, 0], t_sd[:, 0]
+        ests = ["theta_mean", "prior_mean"]
+        if not encode_only:
+            t_mean[~has_text], t_sd[~has_text] = np.nan, np.nan  # no speeches: the prior
+            est["theta_votes"], est["theta_votes_sd"] = v_mean[:, 0], v_sd[:, 0]
+            est["theta_text"], est["theta_text_sd"] = t_mean[:, 0], t_sd[:, 0]
+            est["precision_votes"] = np.nansum(inc[:, vote_cols], axis=1)  # each unit has one
+            est["precision_text"] = np.where(has_text, np.nansum(inc[:, text_cols], axis=1),
+                                             np.nan)
+            est["text_share"] = est["precision_text"] / (est["precision_votes"]
+                                                         + est["precision_text"])
+            ests = ["theta_mean", "theta_votes", "theta_text", "prior_mean"]
         est["prior_mean"] = prior_mean
-        est["precision_votes"] = np.nansum(inc[:, vote_cols], axis=1)  # each unit has one
-        est["precision_text"] = np.where(has_text, np.nansum(inc[:, text_cols], axis=1), np.nan)
-        est["text_share"] = est["precision_text"] / (est["precision_votes"] + est["precision_text"])
         sign = np.sign(np.corrcoef(est["theta_mean"], est["nominate_dim1"].fillna(0))[0, 1])
-        for k in ("theta_mean", "theta_votes", "theta_text", "prior_mean"):
+        for k in ests:
             est[k] *= sign
         est.to_csv(out / f"estimates_{step}.csv", index=False)
         model.save_model(str(ckpt / f"model_{step}.ckpt"))
         rec = {"step": step, "minutes": (time.time() - t0) / 60, "sign": float(sign),
                "model": str(ckpt / f"model_{step}.ckpt"),
-               **{k: correlations(est, k)
-                  for k in ("theta_mean", "theta_votes", "theta_text", "prior_mean")},
-               "theta_sd_median": float(est["theta_sd"].median()),
-               "precision_votes_median": float(est["precision_votes"].median()),
-               "precision_text_median": float(est["precision_text"].median()),
-               "text_share_median": float(est["text_share"].median())}
+               **{k: correlations(est, k) for k in ests},
+               "theta_sd_median": float(est["theta_sd"].median())}
+        if not encode_only:
+            rec.update({"precision_votes_median": float(est["precision_votes"].median()),
+                        "precision_text_median": float(est["precision_text"].median()),
+                        "text_share_median": float(est["text_share"].median())})
         record["checkpoints"].append(rec)
         (out / "summary.json").write_text(json.dumps(record, indent=1))
         print("CKPT", json.dumps(rec), flush=True)

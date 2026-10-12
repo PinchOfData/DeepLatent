@@ -8,6 +8,20 @@ from typing import List, Optional, Tuple, Dict, Callable, Union
 from .priors import FixedGaussianPrior, FixedLogisticNormalPrior, FixedDirichletPrior
 from .utils import contrast_basis
 
+# Mean-field corrected-PoE experts output raw = -log Δ, Δ the expert's precision
+# increment over the prior. raw is floored at -MAX_LOG_PRECISION_INCREMENT before
+# exponentiating: one overshooting encoder step early in training can otherwise push Δ
+# past the float32 range (exp(88.7)) and turn the whole fit into NaN. The cap,
+# Δ ≤ e^30 (~1e13, a posterior sd of ~3e-7 in the prior's units), never binds at a
+# fitted solution.
+MAX_LOG_PRECISION_INCREMENT = 30.0
+
+
+def precision_increment(raw: torch.Tensor) -> torch.Tensor:
+    """Δ = exp(-raw), the mean-field corrected-PoE precision increment, capped at
+    exp(MAX_LOG_PRECISION_INCREMENT)."""
+    return torch.exp(-raw.clamp_min(-MAX_LOG_PRECISION_INCREMENT))
+
 
 class FiLMLayer(nn.Module):
     """Feature-wise Linear Modulation layer for conditioning CNNs on covariates."""
@@ -1695,8 +1709,8 @@ class MultiModalEncoder(nn.Module):
             _, logvar_p = self.prior.get_prior_params(prevalence_covariates)
             Lambda_0_diag = torch.exp(-logvar_p)
 
-        # Total unimodal precision: Λ_m = Λ_0 + Δ_m, with Δ_m = exp(-logvar)
-        return -torch.log(Lambda_0_diag + torch.exp(-logvar))
+        # Total unimodal precision: Λ_m = Λ_0 + Δ_m, with Δ_m = exp(-logvar) (capped)
+        return -torch.log(Lambda_0_diag + precision_increment(logvar))
 
     def _forward_unit_mask(
         self,

@@ -23,6 +23,7 @@ from .autoencoders import (
     MultiModalEncoder,
     ImageEncoder,
     ImageDecoder,
+    precision_increment,
 )
 from .predictors import Predictor, MultiLabelPredictor
 from .priors import (
@@ -2791,7 +2792,7 @@ class DeepLatent:
             n = z.size(0)
             if self.vi_type == "mean_field":
                 # Δ_m read directly: subtracting Λ_0 here would remove the prior twice.
-                inc = torch.exp(-torch.chunk(z, 2, dim=1)[1])
+                inc = precision_increment(torch.chunk(z, 2, dim=1)[1])
             elif self.vi_type == "full_rank":
                 # L L^T is the unimodal posterior covariance (Λ_0 + Δ_m)^(-1); the
                 # fusion adds Δ_m = Λ_m - Λ_0 (product_of_experts_full_rank, same
